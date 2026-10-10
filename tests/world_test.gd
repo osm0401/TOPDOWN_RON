@@ -16,6 +16,7 @@ func _ready() -> void:
 	await _mission_tests()
 	await _solo_tests()
 	await _stage5_tests()
+	await _view3d_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	Session.leave()
@@ -490,3 +491,47 @@ func _stage5_tests() -> void:
 	_w._do_act(0, Act.VOTE_RETRY, 0)
 	_check(restarts.size() == 1, "solo: one vote restarts the mission")
 	Session.leave()
+
+
+## Placeholder angled 3D view: cursor-to-ground mapping, aim hook, fog mesh, sight test, cutaway.
+func _view3d_tests() -> void:
+	Session.host(true)
+	await _boot(true)
+	var at := Vector2(800, 480)
+	_place(0, at)
+	# the aim hook replaces the 2D mouse position
+	_w.mouse_world = func() -> Vector2: return at + Vector2(0, 100)
+	_check(absf(float(_w._local_input()["aim"]) - PI * 0.5) < 0.01, "aim hook: cursor below the player aims south")
+	_w.mouse_world = Callable()
+	var v3 := WorldView3D.new()
+	v3.world = _w
+	v3.view = _w.get_node("View")
+	_w.add_child(v3)
+	await _frames(2)
+	_check(_w.mouse_world.is_valid(), "3D view installs the aim hook")
+	v3._cam_pos = at
+	v3._update_camera(0.0)
+	var cfg := JsonData.load_dict("res://data/view3d.json")
+	var k := 1.0 / float(cfg["px_per_m"])
+	var shift := float(cfg["aim_height_m"]) / tan(deg_to_rad(float(cfg["camera"]["pitch_deg"]))) / k
+	var mid := v3.get_viewport().get_visible_rect().size * 0.5
+	var c := v3.ground_at(mid)
+	_check(c.distance_to(at + Vector2(0, shift)) < 1.0, "3D cursor: screen center -> aim-plane point under the camera target")
+	var east := v3.ground_at(mid + Vector2(100, 0))
+	var north := v3.ground_at(mid + Vector2(0, -100))
+	_check(east.x > c.x and absf(east.y - c.y) < 2.0, "3D cursor: right on screen is east on the ground")
+	_check(north.y < c.y and absf(north.x - c.x) < 2.0, "3D cursor: up on screen is north on the ground")
+	# fog mesh: one quad per sight-polygon edge
+	v3.view._vis = PackedVector2Array([Vector2(700, 400), Vector2(900, 400), Vector2(900, 560)])
+	v3.view._vis_origin = at
+	v3._update_fog()
+	var verts: PackedVector3Array = v3._fog.surface_get_arrays(0)[Mesh.ARRAY_VERTEX]
+	_check(v3._fog.get_surface_count() == 1 and verts.size() == 12, "fog mesh has 4 vertices per polygon edge")
+	_check(v3._in_sight(Rect2(850, 420, 10, 10)), "rect inside the sight polygon is in sight")
+	_check(not v3._in_sight(Rect2(100, 100, 10, 10)), "rect outside the sight polygon is fogged")
+	v3._update_level(1.0)
+	_check(not v3._walls[0].visible, "far wall hidden by fog")
+	_check(v3._wall_cut[10] < 1.0 and v3._wall_cut[0] == 1.0, "wall south of the player is lowered, others stay full height")
+	_w.remove_child(v3)
+	v3.free()
+	_check(not _w.mouse_world.is_valid(), "removing the 3D view releases the aim hook")

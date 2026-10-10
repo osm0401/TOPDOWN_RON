@@ -59,6 +59,7 @@ var auto_role := ""
 var scenario := ""
 var generation := 0  ## how many times the mission was restarted by a vote
 var shot_path := ""
+var mouse_world := Callable()  ## set by a 3D view: cursor position on the 2D ground plane (px)
 
 var tuning: Dictionary = {}
 var score_rules: Dictionary = {}
@@ -261,7 +262,8 @@ func _local_input() -> Dictionary:
 	var m := Vector2(
 		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
 		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
-	var a := (get_global_mouse_position() - display_pos(my_slot)).angle()
+	var mouse: Vector2 = mouse_world.call() if mouse_world.is_valid() else get_global_mouse_position()
+	var a := (mouse - display_pos(my_slot)).angle()
 	return {"move": m.limit_length(1.0), "aim": a}
 
 

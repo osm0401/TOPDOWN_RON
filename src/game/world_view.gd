@@ -22,8 +22,12 @@ const WEAPON_NAMES := {"pistol": "권총", "rifle_lethal": "살상 소총", "rif
 const TOOL_NAMES := {"camera": "문틈 카메라", "lockpick": "락픽", "taser": "테이저"}
 const ACTION_LABELS: Array[String] = ["", "락픽", "구속", "카메라"]
 
+## F5 switches between this 2D drawing and the placeholder angled WorldView3D (or --view3d).
+static var use_3d := OS.get_cmdline_user_args().has("--view3d")
+
 var world: NetWorld
 
+var _view3d: WorldView3D
 var _ripples: Array[Dictionary] = []
 var _tracers: Array[Dictionary] = []
 var _bubbles: Array[Dictionary] = []
@@ -76,6 +80,7 @@ func _ready() -> void:
 	_notice.size = Vector2(600, 40)
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer.add_child(_notice)
+	_set_3d(use_3d)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -84,6 +89,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			_show_sound = not _show_sound
 		elif event.physical_keycode == KEY_F4:
 			_debug = not _debug
+		elif event.physical_keycode == KEY_F5:
+			_set_3d(not use_3d)
+
+
+func _set_3d(on: bool) -> void:
+	use_3d = on
+	if on and _view3d == null and not _headless:
+		_view3d = WorldView3D.new()
+		_view3d.world = world
+		_view3d.view = self
+		add_child(_view3d)
+	elif not on and _view3d != null:
+		_view3d.queue_free()
+		_view3d = null
 
 
 # ---- events -------------------------------------------------------------------
@@ -196,6 +215,8 @@ func _update_camera(delta: float) -> void:
 # ---- drawing ----------------------------------------------------------------
 
 func _draw() -> void:
+	if use_3d and not _headless:
+		return  # WorldView3D draws the world; HUD and mission panel stay 2D layers
 	var lv := world.level
 	draw_rect(lv.bounds, Color(0.09, 0.09, 0.1), true)
 	draw_rect(lv.building, Color(0.17, 0.17, 0.18), true)
@@ -427,7 +448,7 @@ func _update_hud() -> void:
 	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
 	lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / Esc 나가기"))
+	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 3D 전환 / Esc 나가기"))
 	lines.append(tr("%s  %d / 예비 탄창 %d개 (%s) %s") % [WEAPON_NAMES[kind], w.current, w.spares.size(), spare, tr("[재장전 중]") if w.reloading else ""])
 	lines.append(tr("도구: %s   손전등 %s   레이저 %s") % [", ".join(tools), tr("켬") if me.flash else tr("끔"), tr("켬") if me.laser else tr("끔")])
 	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수 %d   RTT %s") % [

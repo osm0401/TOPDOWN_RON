@@ -7,5 +7,15 @@
   "cutaway": {"reach_px": 100.0, "low": 0.3},
   "actor_h": 1.7,
   "aim_height_m": 1.1,
-  "fog_y": 0.03
+  "fog_y": 0.03,
+  "lighting": {
+    "_note": "PROTOTYPE/TUNING: 임시값. 색은 RGB 0~1. 밝은 방마다 천장등, 어두운 방은 조명 없음.",
+    "ambient": {"color": [0.12, 0.14, 0.2], "energy": 0.55},
+    "room": {"height_m": 2.3, "spacing_m": 6.0, "energy": 1.6, "range_m": 7.5, "color": [1.0, 0.92, 0.78]},
+    "street": {"height_m": 3.5, "energy": 1.4, "range_m": 14.0, "color": [0.75, 0.85, 1.0]},
+    "flash": {"height_m": 1.3, "energy": 8.0, "pitch_deg": -4.0, "color": [1.0, 0.97, 0.88], "fog_energy": 2.0},
+    "muzzle": {"height_m": 1.3, "energy": 5.0, "range_m": 7.0, "life_s": 0.08, "color": [1.0, 0.8, 0.5]},
+    "haze_density": 0.02,
+    "shadow_caster_h": 3.0
+  }
 }

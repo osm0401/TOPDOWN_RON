@@ -553,6 +553,23 @@ func _view3d_tests() -> void:
 	ps0.flash = true
 	_check(not view._outline_only(ps0, Vector2(700, 330)), "flashlight on lifts the outline-only cue")
 	ps0.flash = false
+	# lighting: ceiling lights only in lit rooms, flashlight beam follows the flash flag, full-height shadow casters
+	var dark_lights := 0
+	for l in v3._lights:
+		if _w.level.is_dark(l["pos"]):
+			dark_lights += 1
+	_check(v3._lights.size() >= 6 and dark_lights == 0, "ceiling lights exist and none hang in dark rooms")
+	v3._update_players(0.016)
+	_check(not (v3._players[0]["spot"] as Node3D).visible, "flashlight beam is off while the flash flag is off")
+	ps0.flash = true
+	v3._update_players(0.016)
+	_check((v3._players[0]["spot"] as Node3D).visible, "flashlight beam follows the flash flag")
+	ps0.flash = false
+	var casters := 0
+	for ch in v3.get_children():
+		if ch is MeshInstance3D and (ch as MeshInstance3D).cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
+			casters += 1
+	_check(casters >= _w.level.wall_rects.size() + _w.level.door_rects.size(), "every wall and door has a shadow caster")
 	_w.remove_child(v3)
 	v3.free()
 	_check(not _w.mouse_world.is_valid(), "removing the 3D view releases the aim hook")

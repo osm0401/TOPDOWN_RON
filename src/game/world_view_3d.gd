@@ -32,7 +32,8 @@ var _wall_cut: Array[float] = []  ## per-wall height factor, lowered while it hi
 var _doors: Array[Dictionary] = []
 var _players: Array[Dictionary] = []
 var _npcs: Array[Dictionary] = []
-var _fx: Array[Dictionary] = []  ## live ripples, tracers and speech bubbles
+var _fx: Array[Dictionary] = []  ## live ripples, tracers, muzzle flashes and speech bubbles
+var _lights: Array[Dictionary] = []  ## static ceiling/street lights: {node, pos (px)}
 
 
 func _ready() -> void:
@@ -85,8 +86,15 @@ func _add(mesh: Mesh, mat: Material, parent: Node3D = null) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.material_override = mat
+	var bm := mat as BaseMaterial3D
+	if bm != null and (bm.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED or bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED):
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # overlays, beams, fog never shade
 	(parent if parent != null else self).add_child(mi)
 	return mi
+
+
+func _col(a: Array) -> Color:
+	return Color(float(a[0]), float(a[1]), float(a[2]))
 
 
 func _box(size: Vector3) -> BoxMesh:
@@ -123,6 +131,7 @@ func _floor(r: Rect2, y: float, mat: Material) -> MeshInstance3D:
 	var pm := PlaneMesh.new()
 	pm.size = r.size * _k
 	var mi := _add(pm, mat)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	mi.position = _p3(r.get_center(), y)
 	return mi
 
@@ -176,16 +185,26 @@ func _build_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = FOG
+	var lc: Dictionary = _cfg["lighting"]
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.62, 0.64, 0.72)
-	env.ambient_light_energy = 0.7
+	env.ambient_light_color = _col(lc["ambient"]["color"])
+	env.ambient_light_energy = float(lc["ambient"]["energy"])
+	# Forward+ look: contact shadows, bloom around lights, haze that shows beams, filmic grade
+	env.ssao_enabled = true
+	env.ssao_intensity = 2.0
+	env.glow_enabled = true
+	env.glow_intensity = 0.6
+	env.glow_bloom = 0.05
+	env.volumetric_fog_enabled = true
+	env.volumetric_fog_density = float(lc["haze_density"])
+	env.volumetric_fog_albedo = Color(0.7, 0.75, 0.85)
+	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.adjustment_enabled = true
+	env.adjustment_contrast = 1.1
+	env.adjustment_saturation = 0.85
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
-	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-60.0, -25.0, 0.0)
-	sun.light_energy = 0.8
-	add_child(sun)
 	_cam = Camera3D.new()
 	_cam.fov = float(_cfg["camera"]["fov_deg"])
 	_cam.far = 300.0
@@ -201,8 +220,7 @@ func _build_level() -> void:
 	_floor(lv.bounds, 0.0, _mat(Color(0.12, 0.12, 0.13)))
 	_floor(lv.building, 0.005, _mat(Color(0.24, 0.24, 0.26)))
 	for rm in lv.rooms:
-		if rm["dark"]:
-			_floor(rm["rect"], 0.01, _mat(Color(0, 0, 0, 0.7), true))
+		if rm["dark"]:  # darkness itself comes from the missing ceiling light
 			var sign_label := _label(0.02, Color(0.75, 0.82, 1.0, 0.45))  # flat on the floor, under the fog
 			sign_label.text = tr("어두운 방")
 			sign_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
@@ -214,19 +232,60 @@ func _build_level() -> void:
 	_sil_ring.visible = false
 	_floor(lv.exit_zone, 0.015, _mat(Color(0.1, 0.5, 0.2, 0.5), true))
 	var wall_mat := _mat(Color(0.5, 0.5, 0.54))
+	var caster_h := float(_cfg["lighting"]["shadow_caster_h"])
 	for r in lv.wall_rects:
 		var mi := _add(_box(Vector3(r.size.x * _k, _wall_h, r.size.y * _k)), wall_mat)
 		mi.position = _p3(r.get_center(), _wall_h * 0.5)
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # the full-height caster below shades
 		_walls.append(mi)
 		_wall_cut.append(1.0)
+		var sh := _add(_box(Vector3(r.size.x * _k, caster_h, r.size.y * _k)), wall_mat)
+		sh.position = _p3(r.get_center(), caster_h * 0.5)
+		sh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY  # light must not pass over low walls
 	for i in lv.door_rects.size():
 		var leaf_mat := _mat(WorldView.DOOR_COLORS[0])
 		var mark_mat := _mat(Color(1, 1, 1, 0.0), true)
+		var leaf := _add(_box(Vector3.ONE), leaf_mat)
+		leaf.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var shade := _add(_box(Vector3.ONE), leaf_mat)
+		shade.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
 		_doors.append({
-			"leaf": _add(_box(Vector3.ONE), leaf_mat), "leaf_mat": leaf_mat, "cut": 1.0,
+			"leaf": leaf, "leaf_mat": leaf_mat, "cut": 1.0, "shade": shade, "shade_rect": Rect2(),
 			"mark": _floor(lv.door_rects[i], 0.02, mark_mat), "mark_mat": mark_mat,
 			"lock": _add(_sphere(0.12), _mat(Color(0.9, 0.1, 0.1), true))})
+	_build_lights()
 	_add(_fog, _mat(FOG, true))
+
+
+## Ceiling lights in lit rooms only (long rooms get one per spacing_m), a street lamp at
+## the exit. Dark rooms get none, so light spills in only through open doors.
+func _build_lights() -> void:
+	var lc: Dictionary = _cfg["lighting"]
+	var rc: Dictionary = lc["room"]
+	for rm in world.level.rooms:
+		if rm["dark"]:
+			continue
+		var r: Rect2 = rm["rect"]
+		var along_x := r.size.x >= r.size.y
+		var n := maxi(1, roundi((r.size.x if along_x else r.size.y) * _k / float(rc["spacing_m"])))
+		for i in n:
+			var t := (float(i) + 0.5) / float(n)
+			_add_omni(r.position + (Vector2(r.size.x * t, r.size.y * 0.5) if along_x else Vector2(r.size.x * 0.5, r.size.y * t)),
+					float(rc["height_m"]), float(rc["energy"]), float(rc["range_m"]), _col(rc["color"]))
+	var sc: Dictionary = lc["street"]
+	_add_omni(world.level.exit_zone.get_center(), float(sc["height_m"]), float(sc["energy"]), float(sc["range_m"]), _col(sc["color"]))
+
+
+func _add_omni(at: Vector2, height: float, energy: float, range_m: float, color: Color) -> OmniLight3D:
+	var l := OmniLight3D.new()
+	l.light_energy = energy
+	l.omni_range = range_m
+	l.light_color = color
+	l.shadow_enabled = true
+	l.position = _p3(at, height)
+	add_child(l)
+	_lights.append({"node": l, "pos": at})
+	return l
 
 
 func _make_player(slot: int) -> Dictionary:
@@ -235,6 +294,7 @@ func _make_player(slot: int) -> Dictionary:
 	var rig := Node3D.new()
 	root.add_child(rig)
 	var mat := _mat(WorldView.PLAYER_COLORS[slot])
+	mat.emission_enabled = true
 	_add(_capsule(), mat, rig).position.y = _body_h * 0.5
 	_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
 	var gun := _add(_box(Vector3(0.6, 0.08, 0.08)), _mat(Color.WHITE), rig)
@@ -246,10 +306,22 @@ func _make_player(slot: int) -> Dictionary:
 	ring.position.y = 0.02
 	ring.scale = Vector3(0.4, 1.0, 0.4)
 	ring.visible = slot == world.my_slot
-	var cone := ArrayMesh.new()
-	_add(cone, _mat(Color(1.0, 0.95, 0.6, 0.16), true))
+	var cone := ArrayMesh.new()  # exact sim beam area, kept faint beside the real light
+	_add(cone, _mat(Color(1.0, 0.95, 0.6, 0.07), true))
+	var fc: Dictionary = _cfg["lighting"]["flash"]
+	var spot := SpotLight3D.new()
+	spot.light_energy = float(fc["energy"])
+	spot.light_color = _col(fc["color"])
+	spot.light_volumetric_fog_energy = float(fc["fog_energy"])
+	spot.spot_range = float(world.tuning["light"]["flash_range"]) * _k
+	spot.spot_angle = float(world.tuning["light"]["flash_fov_deg"]) * 0.5
+	spot.shadow_enabled = true
+	spot.position = Vector3(0.3, float(fc["height_m"]), 0.0)
+	spot.rotation_degrees = Vector3(float(fc["pitch_deg"]), -90.0, 0.0)  # -Z of the light -> rig +X (aim)
+	spot.visible = false
+	rig.add_child(spot)
 	return {
-		"root": root, "rig": rig, "mat": mat, "gun": gun, "label": label, "cone": cone,
+		"root": root, "rig": rig, "mat": mat, "gun": gun, "label": label, "cone": cone, "spot": spot,
 		"beam": _add(_box(Vector3(0.02, 0.02, 1.0)), _mat(Color(1.0, 0.1, 0.1, 0.75), true)),
 		"dot": _add(_sphere(0.05), _mat(Color(1.0, 0.2, 0.2), true))}
 
@@ -326,6 +398,15 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
 	var mi := _add(_box(Vector3(0.04, 0.04, 1.0)), m)
 	_beam(mi, _p3(from, BEAM_Y), _p3(to, BEAM_Y))
 	_fx.append({"type": "tracer", "node": mi, "mat": m, "age": 0.0})
+	var mc: Dictionary = _cfg["lighting"]["muzzle"]  # the shot lights the room for a moment
+	var flash := OmniLight3D.new()
+	flash.light_energy = float(mc["energy"])
+	flash.omni_range = float(mc["range_m"])
+	flash.light_color = _col(mc["color"])
+	flash.shadow_enabled = true
+	flash.position = _p3(from, float(mc["height_m"]))
+	add_child(flash)
+	_fx.append({"type": "flash", "node": flash, "age": 0.0, "energy": float(mc["energy"]), "life": float(mc["life_s"])})
 
 
 func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
@@ -438,6 +519,14 @@ func _update_level(delta: float) -> void:
 			(leaf.mesh as BoxMesh).size = Vector3(r.size.x * _k, h, r.size.y * _k)
 			leaf.position = _p3(r.get_center(), h * 0.5)
 			(d["leaf_mat"] as StandardMaterial3D).albedo_color = col
+		var shade: MeshInstance3D = d["shade"]  # full-height shadow caster, independent of fog visibility
+		var cr := lv.door_collider_rect(i)
+		shade.visible = st != Level.DoorState.OPEN
+		if shade.visible and cr != d["shade_rect"]:
+			var caster_h := float(_cfg["lighting"]["shadow_caster_h"])
+			d["shade_rect"] = cr
+			(shade.mesh as BoxMesh).size = Vector3(cr.size.x * _k, caster_h, cr.size.y * _k)
+			shade.position = _p3(cr.get_center(), caster_h * 0.5)
 		(d["mark"] as MeshInstance3D).visible = seen
 		(d["mark_mat"] as StandardMaterial3D).albedo_color = Color(col, 0.5 if st == Level.DoorState.OPEN else 0.0)
 		var lock: MeshInstance3D = d["lock"]
@@ -464,8 +553,11 @@ func _update_players(delta: float) -> void:
 		var rig: Node3D = n["rig"]
 		rig.basis = Basis(Vector3.UP, yaw) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
 		rig.position.y = LYING_Y if dead else 0.0
-		(n["mat"] as StandardMaterial3D).albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
+		var pm := n["mat"] as StandardMaterial3D
+		pm.albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
+		pm.emission = pm.albedo_color * 0.3  # officers stay readable in a dark room
 		(n["gun"] as Node3D).visible = not dead
+		(n["spot"] as Node3D).visible = ps.flash and not dead
 		var text := "" if dead else "HP %d/%d" % [ps.hp, ps.max_hp]
 		if ps.busy():
 			text += "\n%s %d%%" % [WorldView.ACTION_LABELS[ps.action], int(100.0 * clampf(ps.action_t / ps.action_dur, 0.0, 1.0))]
@@ -569,6 +661,10 @@ func _update_fx(delta: float) -> void:
 				node.visible = view._show_sound
 				var c: Color = WorldView.SOUND_COLORS[f["kind"]]
 				(f["mat"] as StandardMaterial3D).albedo_color = Color(c, 1.0 - k)
+				done = k >= 1.0
+			"flash":
+				var k: float = f["age"] / f["life"]
+				(node as OmniLight3D).light_energy = f["energy"] * (1.0 - k)
 				done = k >= 1.0
 			"tracer":
 				var k: float = f["age"] / WorldView.TRACER_S

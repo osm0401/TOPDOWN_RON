@@ -8,6 +8,7 @@ const ACTION_RESTRAIN := 2
 const ACTION_CAMERA := 3
 const ACTION_NAMES: Array[String] = ["", "lockpick", "restrain", "camera"]
 
+var present := true                  ## false for the missing second officer in single player
 var pos := Vector2.ZERO
 var aim := 0.0
 var hp := 5

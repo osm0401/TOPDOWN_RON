@@ -16,6 +16,8 @@ var is_hosting := false
 var room_code := ""      ## "" while the address is still being resolved
 var route := ""          ## "vpn" | "upnp" | "local" (valid once room_code is set)
 var host_note := ""      ## status / warning text for the host HUD
+var solo := false         ## single player: no network peer, the second officer is absent
+var solo_loadout := {"primary": "rifle_nonlethal", "tools": ["lockpick", "taser"]}
 var difficulty := "normal"  ## preset key in data/difficulty.json (only the host's value matters)
 
 var _log: FileAccess
@@ -65,6 +67,15 @@ func host(force_local: bool = false) -> bool:
 	return true
 
 
+## Single player: same world and rules, no connection. The second officer does not exist.
+func start_solo() -> void:
+	leave()
+	_open_log("solo")
+	solo = true
+	is_hosting = true
+	log_line("solo game")
+
+
 func join(code: String) -> bool:
 	leave()
 	var d := RoomCode.decode(code)
@@ -94,6 +105,7 @@ func leave() -> void:
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
 	is_hosting = false
+	solo = false
 	room_code = ""
 	route = ""
 	host_note = ""

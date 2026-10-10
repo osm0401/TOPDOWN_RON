@@ -53,6 +53,7 @@ var shown: Array[Vector2] = []
 var director: NpcDirector
 var mission := MissionState.new()
 var is_host := false
+var solo := false
 var my_slot := 0
 var running := false
 var rtt_ms := -1
@@ -88,6 +89,7 @@ func _ready() -> void:
 	_snap_interval = 1.0 / float(Session.cfg.get("tick_hz", 20))
 	_ping_interval = float(Session.cfg.get("ping_interval_s", 1.0))
 	is_host = Session.is_hosting
+	solo = Session.solo
 	my_slot = SLOT_HOST if is_host else SLOT_CLIENT
 
 	level = Level.new()
@@ -99,7 +101,15 @@ func _ready() -> void:
 		ps.pos = level.spawns[s]
 		players.append(ps)
 		shown.append(ps.pos)
-	apply_loadout(JsonData.load_dict("res://data/loadout.json"))
+	var lo := JsonData.load_dict("res://data/loadout.json")
+	if solo:
+		lo["host"] = Session.solo_loadout
+	apply_loadout(lo)
+	if solo:
+		players[SLOT_CLIENT].present = false
+		players[SLOT_CLIENT].hp = 0
+		running = true
+		mission.mark_ready(SLOT_CLIENT)
 
 	var presets: Dictionary = JsonData.load_dict("res://data/difficulty.json")["presets"]
 	var diff: Dictionary = presets.get(Session.difficulty, presets["normal"])
@@ -147,13 +157,18 @@ func display_pos(slot: int) -> Vector2:
 func score_counts() -> Dictionary:
 	var dead := 0
 	for ps in players:
-		if ps.dead():
+		if ps.present and ps.dead():
 			dead += 1
 	return ScoreRules.counts(mission, dead)
 
 
 func current_score() -> int:
 	return ScoreRules.compute(score_counts(), score_rules)
+
+
+## True when there is a peer to talk to (never in single player).
+func _online() -> bool:
+	return running and not solo
 
 
 func _active() -> bool:
@@ -288,6 +303,8 @@ func _step_host(delta: float, host_move: Vector2) -> void:
 		var moves: Array[Vector2] = [host_move, _client_move]
 		for s in 2:
 			var ps := players[s]
+			if not ps.present:
+				continue
 			var b := _bodies[s]
 			b.velocity = moves[s] * _speed if not (ps.busy() or ps.dead()) else Vector2.ZERO
 			b.move_and_slide()
@@ -303,7 +320,7 @@ func _step_host(delta: float, host_move: Vector2) -> void:
 		director.tick(delta)
 		_update_mission()
 	_snap_accum += delta
-	if _snap_accum >= _snap_interval:
+	if _online() and _snap_accum >= _snap_interval:
 		_snap_accum = 0.0
 		var pk := director.pack()
 		rpc_snapshot.rpc(players[0].pos, players[1].pos, players[0].aim, players[1].aim,
@@ -482,7 +499,8 @@ func _taser(slot: int) -> void:
 		to = wall["position"]
 	var hit := director.taser(slot, reach)
 	_apply_shot(slot, ps.pos, to, hit >= 0)
-	rpc_shot.rpc(slot, ps.pos, to, hit >= 0)
+	if _online():
+		rpc_shot.rpc(slot, ps.pos, to, hit >= 0)
 
 
 func _command(slot: int, cmd: int) -> void:
@@ -511,7 +529,8 @@ func _host_fire(slot: int, angle: float) -> void:
 	to = res["end"]
 	var hit_npc := int(res["npc"]) >= 0
 	_apply_shot(slot, from, to, hit_npc)
-	rpc_shot.rpc(slot, from, to, hit_npc)
+	if _online():
+		rpc_shot.rpc(slot, from, to, hit_npc)
 	_emit_sound(SoundProp.Kind.GUNSHOT, from)
 	_push_weapons()
 
@@ -533,7 +552,8 @@ func _on_player_hit(slot: int, _npc: int) -> void:
 	if ps.busy():
 		ps.end_action()
 	damaged.emit(slot)
-	rpc_hit.rpc(slot)
+	if _online():
+		rpc_hit.rpc(slot)
 	Session.log_line("player %d hit, hp=%d" % [slot, ps.hp])
 
 
@@ -551,7 +571,8 @@ func _on_npc_killed(npc: int, _slot: int) -> void:
 
 func _on_npc_shot(npc: int, from: Vector2, to: Vector2) -> void:
 	_apply_shot(2 + npc, from, to, false)
-	rpc_shot.rpc(2 + npc, from, to, false)
+	if _online():
+		rpc_shot.rpc(2 + npc, from, to, false)
 
 
 func _apply_shot(shooter: int, from: Vector2, to: Vector2, hit_npc: bool) -> void:
@@ -560,37 +581,37 @@ func _apply_shot(shooter: int, from: Vector2, to: Vector2, hit_npc: bool) -> voi
 
 func _say(text: String, at: Vector2, from_npc: bool = false) -> void:
 	speech_emitted.emit(text, at, from_npc)
-	if running:
+	if _online():
 		rpc_speech.rpc(text, at, from_npc)
 
 
 func _notice(slot: int, text: String) -> void:
 	if slot == my_slot:
 		notice_emitted.emit(text)
-	elif running:
+	elif _online():
 		rpc_notice.rpc_id(_client_id, text)
 
 
 func _emit_sound(kind: int, at: Vector2, from_npc: bool = false) -> void:
 	sound_emitted.emit(kind, at)
-	if running:
+	if _online():
 		rpc_sound.rpc(kind, at)
 	if not from_npc and is_host:
 		director.on_sound(kind, at, -1)
 
 
 func _push_state() -> void:
-	if running:
+	if _online():
 		rpc_state.rpc(level.pack_doors())
 
 
 func _push_mission() -> void:
-	if running:
+	if _online():
 		rpc_mission.rpc(mission.pack())
 
 
 func _push_weapons() -> void:
-	if running:
+	if _online():
 		rpc_weapons.rpc(_pack_weapons())
 
 

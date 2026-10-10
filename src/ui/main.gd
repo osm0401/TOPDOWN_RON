@@ -31,7 +31,7 @@ func _build_lobby() -> void:
 	_lobby.add_child(box)
 
 	var title := Label.new()
-	title.text = tr("2인 협동 CQB 프로토타입 (단계 1: 온라인 연결 시험)")
+	title.text = tr("CQB 전술 협동 프로토타입")
 	box.add_child(title)
 
 	var diff_box := OptionButton.new()
@@ -42,8 +42,23 @@ func _build_lobby() -> void:
 	diff_box.item_selected.connect(func(i: int) -> void: Session.difficulty = str(diff_box.get_item_metadata(i)))
 	box.add_child(diff_box)
 
+	box.add_child(HSeparator.new())
+	var solo_title := Label.new()
+	solo_title.text = tr("싱글 플레이 (혼자)  -  장비 선택")
+	box.add_child(solo_title)
+	var gear := HBoxContainer.new()
+	box.add_child(gear)
+	gear.add_child(_gear_box(["rifle_lethal", "rifle_nonlethal"], [tr("살상 소총"), tr("비살상 소총")], str(Session.solo_loadout["primary"]), _on_solo_primary))
+	for slot in 2:
+		gear.add_child(_gear_box(["camera", "lockpick", "taser"], [tr("문틈 카메라"), tr("락픽"), tr("테이저")], str(Session.solo_loadout["tools"][slot]), _on_solo_tool.bind(slot)))
+	var solo_btn := Button.new()
+	solo_btn.text = tr("혼자 하기")
+	solo_btn.pressed.connect(_on_solo_pressed)
+	box.add_child(solo_btn)
+
+	box.add_child(HSeparator.new())
 	var host_btn := Button.new()
-	host_btn.text = tr("방 만들기")
+	host_btn.text = tr("방 만들기 (2인 협동)")
 	host_btn.pressed.connect(_on_host_pressed)
 	box.add_child(host_btn)
 
@@ -60,6 +75,30 @@ func _build_lobby() -> void:
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_status)
+
+
+func _gear_box(keys: Array, labels: Array, current: String, on_pick: Callable) -> OptionButton:
+	var ob := OptionButton.new()
+	for i in keys.size():
+		ob.add_item(str(labels[i]))
+		ob.set_item_metadata(i, keys[i])
+		if keys[i] == current:
+			ob.select(i)
+	ob.item_selected.connect(func(i: int) -> void: on_pick.call(str(ob.get_item_metadata(i))))
+	return ob
+
+
+func _on_solo_primary(kind: String) -> void:
+	Session.solo_loadout["primary"] = kind
+
+
+func _on_solo_tool(kind: String, slot: int) -> void:
+	Session.solo_loadout["tools"][slot] = kind
+
+
+func _on_solo_pressed() -> void:
+	Session.start_solo()
+	_enter_world()
 
 
 func _on_host_pressed() -> void:
@@ -110,7 +149,14 @@ func _run_auto() -> void:
 			Session.difficulty = a.substr(13)
 		elif a.begins_with("--scenario="):
 			_scenario = a.substr(11)
-	if "--auto-host" in args:
+		elif a.begins_with("--lobby-shot="):
+			_lobby_shot(a.substr(13))
+	if "--solo" in args:
+		if _scenario != "":
+			_auto_role = "host"
+		Session.start_solo()
+		_enter_world()
+	elif "--auto-host" in args:
 		_auto_role = "host"
 		if not Session.host("--vpn" not in args):
 			get_tree().quit(1)
@@ -123,3 +169,11 @@ func _run_auto() -> void:
 			if a.begins_with("--code="):
 				code = a.substr(7)
 		Session.join(code)
+
+
+## Test aid: save a screenshot of the lobby and quit.
+func _lobby_shot(path: String) -> void:
+	await get_tree().create_timer(0.6).timeout
+	await RenderingServer.frame_post_draw
+	get_viewport().get_texture().get_image().save_png(path)
+	get_tree().quit()

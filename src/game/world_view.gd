@@ -345,6 +345,8 @@ func _draw_players() -> void:
 	for s in 2:
 		var ps := world.players[s]
 		var p := world.display_pos(s)
+		if not ps.present:
+			continue
 		if ps.dead():
 			draw_line(p + Vector2(-10, -10), p + Vector2(10, 10), PLAYER_COLORS[s], 3.0)
 			draw_line(p + Vector2(-10, 10), p + Vector2(10, -10), PLAYER_COLORS[s], 3.0)
@@ -420,7 +422,7 @@ func _update_hud() -> void:
 	var E := NpcBrain.Role.ENEMY
 	var C := NpcBrain.Role.CIVILIAN
 	var S := NpcBrain.State
-	var rtt := tr("호스트") if world.is_host else "%d ms" % world.rtt_ms
+	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
 	lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
 	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / Esc 나가기"))

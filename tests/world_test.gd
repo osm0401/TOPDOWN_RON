@@ -14,6 +14,7 @@ func _ready() -> void:
 	await _boot(true)
 	await _run()
 	await _mission_tests()
+	await _solo_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	Session.leave()
@@ -283,3 +284,48 @@ func _mission_tests() -> void:
 	_place(1, Vector2(60, 520))
 	await _frames(4)
 	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.current_score() == 70, "dead civilians do not block the objective: success with 70 points")
+
+
+func _solo_tests() -> void:
+	var S := NpcBrain.State
+	Session.start_solo()
+	await _boot(false)
+	_check(_w.solo and _w.running and _w.is_host, "solo world runs without any peer")
+	_check(not _w.players[1].present and _w.players[1].dead(), "the second officer does not exist")
+	_check(_w.mission.phase == MissionState.Phase.BRIEFING, "solo starts in the briefing")
+	_w._do_act(0, NetWorld.Act.READY, 0)
+	_check(_w.mission.phase == MissionState.Phase.ACTIVE, "only the player has to get ready")
+	var me := _w.players[0]
+	_check(me.has_tool("lockpick") and me.has_tool("taser") and me.weapon_kinds[0] == "rifle_nonlethal", "solo loadout from the lobby selection is used")
+	_check(int(_w.score_counts()["player_dead"]) == 0, "the absent officer is not counted as dead")
+	var before := _w.players[1].pos
+	await _seconds(0.5)
+	_check(_w.players[1].pos == before, "the absent officer never moves")
+
+	# a solo player can lockpick the suspect's room
+	_place(0, Vector2(1200, 480))
+	await _frames(3)
+	_w._do_act(0, NetWorld.Act.INTERACT_DOWN, 0)
+	_check(me.action == PlayerState.ACTION_LOCKPICK, "solo player lockpicks the locked door")
+	_w._do_act(0, NetWorld.Act.INTERACT_UP, 0)
+
+	# success needs only the one officer back at the exit
+	for a in _w.director.agents:
+		if a.suspect or a.brain.role == NpcBrain.Role.CIVILIAN:
+			a.brain.state = S.RESTRAINED
+		else:
+			a.brain.state = S.DEAD
+	_place(0, Vector2(60, 500))
+	await _frames(4)
+	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.mission.phase == MissionState.Phase.RESULT, "solo success: the lone officer back at the exit")
+
+	# failure when the one officer dies
+	await _boot(false)
+	_w._do_act(0, NetWorld.Act.READY, 0)
+	for i in 5:
+		_w._on_player_hit(0, 0)
+	await _frames(4)
+	_check(_w.mission.status == MissionState.Status.FAILED and _w.mission.reason_key() == "all_dead", "solo failure when the officer dies")
+
+	Session.leave()
+	_check(not Session.solo and not Session.is_hosting, "leaving resets solo mode")

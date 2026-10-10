@@ -89,8 +89,8 @@ func _draw_briefing() -> void:
 	var other := world.mission.ready[1 - me]
 	var msg := tr("Enter: 준비 완료") if not mine else tr("준비 완료 - 상대를 기다리는 중")
 	_text(Vector2(x, panel.end.y - 30.0), msg, 20, GOOD if mine else TEXT)
-	_text(Vector2(panel.position.x + panel.size.x * 0.52, panel.end.y - 30.0),
-			tr("나: %s    상대: %s") % [tr("준비") if mine else tr("대기"), tr("준비") if other else tr("대기")], 17, DIM)
+	var status := tr("싱글 플레이") if world.solo else tr("나: %s    상대: %s") % [tr("준비") if mine else tr("대기"), tr("준비") if other else tr("대기")]
+	_text(Vector2(panel.position.x + panel.size.x * 0.52, panel.end.y - 30.0), status, 17, DIM)
 
 
 func _draw_plan(area: Rect2) -> void:
@@ -165,6 +165,8 @@ func _draw_result() -> void:
 		y += 22.0
 	y += 18.0
 	for s in 2:
+		if not world.players[s].present:
+			continue
 		var alive := not world.players[s].dead()
 		_text(Vector2(x, y + 20.0), tr("경찰관 %d: %s") % [s + 1, tr("생존") if alive else tr("사망")], 16, GOOD if alive else BAD)
 		y += 24.0

@@ -1,7 +1,8 @@
 {
   "_note": "PROTOTYPE/TUNING: 임시값. 비스듬한 3D 화면(도형 임시 표현) 설정. 시뮬레이션은 2D 좌표 그대로이고 화면만 3D. 1 m = px_per_m 픽셀.",
   "px_per_m": 50.0,
-  "camera": {"pitch_deg": 58.0, "distance_m": 20.0, "fov_deg": 35.0},
+  "camera": {"pitch_deg": 58.0, "distance_m": 35.0, "fov_deg": 20.0},
+  "ease_rate": 20.0,
   "wall_h": 1.6,
   "cutaway": {"reach_px": 100.0, "low": 0.3},
   "actor_h": 1.7,

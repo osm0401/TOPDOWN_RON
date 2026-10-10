@@ -32,6 +32,7 @@ var _ripples: Array[Dictionary] = []
 var _tracers: Array[Dictionary] = []
 var _bubbles: Array[Dictionary] = []
 var _flash_t := 0.0
+var _was_dark := false  ## the local officer was in a dark room last frame (entry notice)
 var _notice_t := 0.0
 var _npc_flash: Dictionary = {}
 var _vis := PackedVector2Array()
@@ -166,6 +167,11 @@ func _physics_process(_delta: float) -> void:
 		_npc_seen.append(_seen_level(a.pos))
 
 
+## Dark room and no flashlight: only close silhouettes show (also read by WorldView3D).
+func _outline_only(ps: PlayerState, p: Vector2) -> bool:
+	return not ps.dead() and not ps.flash and world.level.is_dark(p)
+
+
 func _seen_level(p: Vector2) -> int:
 	if p.distance_to(_vis_origin) > _view_radius:
 		return LightModel.Seen.NONE
@@ -190,6 +196,11 @@ func _process(delta: float) -> void:
 		_npc_flash[k] -= delta
 		if _npc_flash[k] <= 0.0:
 			_npc_flash.erase(k)
+	var me := world.players[world.my_slot]
+	var dark := me.present and not me.dead() and world.level.is_dark(world.display_pos(world.my_slot))
+	if dark and not _was_dark:
+		_on_notice(tr("어두운 방이다: 손전등(F)으로 비춰야 적을 알아볼 수 있다"))
+	_was_dark = dark
 	_flash_t = maxf(_flash_t - delta, 0.0)
 	_red.color.a = _flash_t
 	_notice_t = maxf(_notice_t - delta, 0.0)
@@ -222,7 +233,9 @@ func _draw() -> void:
 	draw_rect(lv.building, Color(0.17, 0.17, 0.18), true)
 	for rm in lv.rooms:
 		if rm["dark"]:
-			draw_rect(rm["rect"], Color(0, 0, 0, 0.5), true)
+			draw_rect(rm["rect"], Color(0, 0, 0, 0.7), true)
+			draw_string(ThemeDB.fallback_font, (rm["rect"] as Rect2).get_center() + Vector2(-50, 8), tr("어두운 방"),
+					HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(0.75, 0.82, 1.0, 0.45))
 	draw_rect(lv.exit_zone, Color(0.1, 0.5, 0.2, 0.4), true)
 	for r in lv.wall_rects:
 		draw_rect(r, Color(0.45, 0.45, 0.48), true)
@@ -378,6 +391,8 @@ func _draw_players() -> void:
 		draw_line(p, p + Vector2.from_angle(ps.aim) * 30.0, Color.WHITE, 3.0)
 		if s == world.my_slot:
 			draw_arc(p, 20.0, 0.0, TAU, 24, Color.WHITE, 1.5)
+			if _outline_only(ps, p):  # dark room, no flashlight: outlines show only inside this ring
+				draw_arc(p, float(world.tuning["light"]["silhouette_radius"]), 0.0, TAU, 40, Color(0.7, 0.8, 1.0, 0.4), 1.5)
 		var w := 30.0
 		draw_rect(Rect2(p + Vector2(-w * 0.5, -26), Vector2(w, 4)), Color(0, 0, 0, 0.6), true)
 		draw_rect(Rect2(p + Vector2(-w * 0.5, -26), Vector2(w * float(ps.hp) / maxf(ps.max_hp, 1), 4)), Color(0.3, 0.9, 0.3), true)
@@ -455,6 +470,8 @@ func _update_hud() -> void:
 		me.hp, me.max_hp, tr(" (사망)") if me.dead() else "",
 		d.count_state(E, S.RESTRAINED), d.count_state(E, S.DEAD),
 		d.count_state(C, S.RESTRAINED), d.count_state(C, S.DEAD), world.current_score(), rtt])
+	if not me.dead() and world.level.is_dark(world.display_pos(world.my_slot)):
+		lines.append(tr("어두운 방: 손전등 빛줄기 안의 적만 알아볼 수 있다") if me.flash else tr("어두운 방: 손전등(F)을 켜지 않으면 가까이 있는 적의 윤곽만 보인다"))
 	if me.cam_door >= 0:
 		lines.append(tr("문틈 카메라 사용 중 (C로 종료)"))
 	if world.mission.reinforce == ReinforcementClock.Phase.WARNED:

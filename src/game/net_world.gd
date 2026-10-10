@@ -37,6 +37,10 @@ const SCENARIOS := {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 0.6, "final": 3.0,
 	},
+	"dark": {
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_dark", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 1.0, "final": 3.0,
+	},
 	"result": {
 		"events": {"host": [[0.1, "ready", 0], [2.0, "kill_suspect", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 3.5, "final": 5.0,
@@ -933,6 +937,10 @@ func _auto_do(name: String, arg: int) -> void:
 		"teleport_c":  # test aid: put the host inside room C to look at the suspect and the decoys
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)
+			players[0].aim = 0.0
+		"teleport_dark":  # test aid: put the host inside dark room B to look at the darkness cues
+			_bodies[0].position = Vector2(700, 330)
+			players[0].pos = Vector2(700, 330)
 			players[0].aim = 0.0
 		"vote_retry":
 			_send(Act.VOTE_RETRY, 0)

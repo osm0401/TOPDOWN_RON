@@ -509,7 +509,8 @@ func _view3d_tests() -> void:
 	_w.add_child(v3)
 	await _frames(2)
 	_check(_w.mouse_world.is_valid(), "3D view installs the aim hook")
-	v3._cam_pos = at
+	v3._cam_off = Vector2.ZERO  # no mouse look-ahead: the camera sits exactly on the player
+	v3._cam_blend = 0.0
 	v3._update_camera(0.0)
 	var cfg := JsonData.load_dict("res://data/view3d.json")
 	var k := 1.0 / float(cfg["px_per_m"])
@@ -532,6 +533,26 @@ func _view3d_tests() -> void:
 	v3._update_level(1.0)
 	_check(not v3._walls[0].visible, "far wall hidden by fog")
 	_check(v3._wall_cut[10] < 1.0 and v3._wall_cut[0] == 1.0, "wall south of the player is lowered, others stay full height")
+	# render smoothing: eased position moves partway, yaw turns the short way round
+	var st := {}
+	_check(v3._ease_pos(st, Vector2(100, 100), 0.016) == Vector2(100, 100), "eased position starts at the sim position")
+	var eased := v3._ease_pos(st, Vector2(150, 100), 0.016)
+	_check(eased.x > 100.0 and eased.x < 150.0, "eased position moves partway toward a stepped target")
+	_check(v3._ease_pos(st, Vector2(900, 900), 0.016) == Vector2(900, 900), "eased position snaps after a teleport")
+	var spin := Node3D.new()
+	spin.rotation.y = 3.0
+	v3._ease_yaw(spin, -3.0, 0.05)
+	_check(absf(spin.rotation.y) > 3.0, "eased yaw takes the short way across +-PI")
+	spin.free()
+	# dark-room cue: outline-only mode = alive, flashlight off, standing in a dark room
+	var ps0 := _w.players[0]
+	var view: WorldView = v3.view
+	ps0.flash = false
+	_check(view._outline_only(ps0, Vector2(700, 330)), "dark room B without flashlight is outline-only")
+	_check(not view._outline_only(ps0, Vector2(400, 300)), "lit room A is not outline-only")
+	ps0.flash = true
+	_check(not view._outline_only(ps0, Vector2(700, 330)), "flashlight on lifts the outline-only cue")
+	ps0.flash = false
 	_w.remove_child(v3)
 	v3.free()
 	_check(not _w.mouse_world.is_valid(), "removing the 3D view releases the aim hook")

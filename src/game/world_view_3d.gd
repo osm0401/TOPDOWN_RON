@@ -21,9 +21,12 @@ var _actor_h := 1.7
 var _body_h := 1.4
 var _cam: Camera3D
 var _cam_pos := Vector2.ZERO
+var _cam_off := Vector2.ZERO  ## eased mouse look-ahead; the camera itself rides rigidly on the player
+var _cam_blend := 0.0  ## 0 follow the player, 1 door camera
 var _fog := ArrayMesh.new()
 var _ring := TorusMesh.new()
 var _cam_ring: MeshInstance3D
+var _sil_ring: MeshInstance3D  ## outline range around the local officer in a dark room
 var _walls: Array[MeshInstance3D] = []
 var _wall_cut: Array[float] = []  ## per-wall height factor, lowered while it hides the local player
 var _doors: Array[Dictionary] = []
@@ -199,7 +202,16 @@ func _build_level() -> void:
 	_floor(lv.building, 0.005, _mat(Color(0.24, 0.24, 0.26)))
 	for rm in lv.rooms:
 		if rm["dark"]:
-			_floor(rm["rect"], 0.01, _mat(Color(0, 0, 0, 0.5), true))
+			_floor(rm["rect"], 0.01, _mat(Color(0, 0, 0, 0.7), true))
+			var sign_label := _label(0.02, Color(0.75, 0.82, 1.0, 0.45))  # flat on the floor, under the fog
+			sign_label.text = tr("어두운 방")
+			sign_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+			sign_label.rotation_degrees.x = -90.0
+			sign_label.position = _p3((rm["rect"] as Rect2).get_center(), 0.02)
+			add_child(sign_label)
+	_sil_ring = _add(_ring, _mat(Color(0.7, 0.8, 1.0, 0.5), true))
+	_sil_ring.scale = Vector3.ONE * (float(world.tuning["light"]["silhouette_radius"]) * _k)
+	_sil_ring.visible = false
 	_floor(lv.exit_zone, 0.015, _mat(Color(0.1, 0.5, 0.2, 0.5), true))
 	var wall_mat := _mat(Color(0.5, 0.5, 0.54))
 	for r in lv.wall_rects:
@@ -330,20 +342,37 @@ func _process(delta: float) -> void:
 	_update_camera(delta)
 	_update_fog()
 	_update_level(delta)
-	_update_players()
-	_update_npcs()
+	_update_players(delta)
+	_update_npcs(delta)
 	_update_fx(delta)
+
+
+## Render-side smoothing: sim positions arrive in steps (60 Hz host physics, 20 Hz client
+## snapshots), so remote figures ease toward them instead of jumping.
+func _ease_pos(n: Dictionary, target: Vector2, delta: float) -> Vector2:
+	var p: Vector2 = n.get("pos", target)
+	if p.distance_to(target) > 120.0:
+		p = target
+	p = p.lerp(target, minf(delta * float(_cfg["ease_rate"]), 1.0))
+	n["pos"] = p
+	return p
+
+
+func _ease_yaw(node: Node3D, target: float, delta: float) -> void:
+	node.rotation.y = lerp_angle(node.rotation.y, target, minf(delta * float(_cfg["ease_rate"]) * 0.6, 1.0))
 
 
 func _update_camera(delta: float) -> void:
 	var me := world.players[world.my_slot]
-	var target := world.display_pos(world.my_slot)
-	if me.cam_door >= 0:
-		target = view._vis_origin
-	elif world.auto_role == "":
+	var step := minf(delta * 12.0, 1.0)
+	var off := Vector2.ZERO
+	if me.cam_door < 0 and world.auto_role == "":
 		var vp := get_viewport()
-		target += ((vp.get_mouse_position() - vp.get_visible_rect().size * 0.5) * 0.3).limit_length(160.0)
-	_cam_pos = _cam_pos.lerp(target, minf(delta * 12.0, 1.0))
+		off = ((vp.get_mouse_position() - vp.get_visible_rect().size * 0.5) * 0.3).limit_length(160.0)
+	_cam_off = _cam_off.lerp(off, step)
+	_cam_blend = move_toward(_cam_blend, 1.0 if me.cam_door >= 0 else 0.0, delta * 6.0)
+	var target := (world.display_pos(world.my_slot) + _cam_off).lerp(view._vis_origin, _cam_blend)
+	_cam_pos = target
 	var c: Dictionary = _cfg["camera"]
 	var pitch := deg_to_rad(float(c["pitch_deg"]))
 	var at := _p3(_cam_pos)
@@ -351,6 +380,9 @@ func _update_camera(delta: float) -> void:
 	_cam.look_at(at)
 	_cam_ring.visible = me.cam_door >= 0
 	_cam_ring.position = _p3(view._vis_origin, 0.04)
+	var here := world.display_pos(world.my_slot)
+	_sil_ring.visible = me.present and view._outline_only(me, here)
+	_sil_ring.position = _p3(here, 0.04)
 
 
 ## Fog = quads from every sight-polygon edge out to FAR, flat on the floor.
@@ -413,7 +445,7 @@ func _update_level(delta: float) -> void:
 		lock.position = _p3(lv.door_rects[i].get_center(), _wall_h + 0.2)
 
 
-func _update_players() -> void:
+func _update_players(delta: float) -> void:
 	for s in 2:
 		var ps := world.players[s]
 		var n: Dictionary = _players[s]
@@ -422,10 +454,15 @@ func _update_players() -> void:
 		if not ps.present:
 			continue
 		var at := world.display_pos(s)
+		var yaw := -ps.aim
+		if s != world.my_slot:  # the local figure stays exact; the other officer is eased
+			at = _ease_pos(n, at, delta)
+			yaw = lerp_angle(n.get("yaw", yaw), yaw, minf(delta * float(_cfg["ease_rate"]) * 0.6, 1.0))
+			n["yaw"] = yaw
 		var dead := ps.dead()
 		root.position = _p3(at)
 		var rig: Node3D = n["rig"]
-		rig.basis = Basis(Vector3.UP, -ps.aim) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
+		rig.basis = Basis(Vector3.UP, yaw) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
 		rig.position.y = LYING_Y if dead else 0.0
 		(n["mat"] as StandardMaterial3D).albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
 		(n["gun"] as Node3D).visible = not dead
@@ -445,7 +482,7 @@ func _update_players() -> void:
 			_beam(beam, _p3(at + Vector2.from_angle(ps.aim) * 18.0, BEAM_Y), dot_node.position)
 
 
-func _update_npcs() -> void:
+func _update_npcs(delta: float) -> void:
 	var S := NpcBrain.State
 	var agents := world.director.agents
 	for i in agents.size():
@@ -455,9 +492,11 @@ func _update_npcs() -> void:
 		var seen: int = view._npc_seen[i] if i < view._npc_seen.size() else LightModel.Seen.IDENTIFIED
 		root.visible = not a.dormant and seen != LightModel.Seen.NONE
 		if not root.visible:
+			n.erase("pos")  # next appearance snaps to the sim position
 			continue
 		var sil := seen == LightModel.Seen.SILHOUETTE
-		root.position = _p3(a.pos)
+		var fresh := not n.has("pos")
+		root.position = _p3(_ease_pos(n, a.pos, delta))
 		(n["sil"] as Node3D).visible = sil
 		(n["rig"] as Node3D).visible = not sil
 		(n["marker"] as Label3D).visible = not sil
@@ -467,8 +506,11 @@ func _update_npcs() -> void:
 			continue
 		var b := a.brain
 		var st: int = b.state
-		root.rotation.y = -b.facing
-		var base := WorldView.ENEMY_COLOR if b.role == NpcBrain.Role.ENEMY else WorldView.CIVILIAN_COLOR
+		if fresh:
+			root.rotation.y = -b.facing
+		else:
+			_ease_yaw(root, -b.facing, delta)  # the sim snaps facing at path corners; turn smoothly
+		var base :=WorldView.ENEMY_COLOR if b.role == NpcBrain.Role.ENEMY else WorldView.CIVILIAN_COLOR
 		var col := base
 		match st:
 			S.DEAD:

@@ -15,9 +15,12 @@ func _ready() -> void:
 	await _run()
 	await _mission_tests()
 	await _solo_tests()
+	await _solo_selection_test()
 	await _stage5_tests()
 	await _view3d_tests()
 	await _audio_tests()
+	await _audio_extra_tests()
+	await _death_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	Session.leave()
@@ -299,7 +302,7 @@ func _solo_tests() -> void:
 	_w._do_act(0, NetWorld.Act.READY, 0)
 	_check(_w.mission.phase == MissionState.Phase.ACTIVE, "only the player has to get ready")
 	var me := _w.players[0]
-	_check(me.has_tool("lockpick") and me.has_tool("taser") and me.weapon_kinds[0] == "rifle_nonlethal", "solo loadout from the lobby selection is used")
+	_check(me.has_tool("lockpick") and me.has_tool("taser") and me.weapon_kinds[0] == "rifle_lethal", "solo defaults to the lethal rifle with lockpick and taser")
 	_check(int(_w.score_counts()["player_dead"]) == 0, "the absent officer is not counted as dead")
 	var before := _w.players[1].pos
 	await _seconds(0.5)
@@ -595,5 +598,123 @@ func _audio_tests() -> void:
 	_check(_w.level.get_door_state(1) == Level.DoorState.CLOSED, "test door starts closed")
 	var door := au.hearing(Vector2(820, 300), Vector2(820, 500), 600.0)  # through the closed door of room B
 	_check(door["muffled"] and float(door["loud"]) < float(clear["loud"]), "a closed door muffles and quiets the sound")
+	# graded dulling, room reverb, ear ringing
+	_check(au.bus_for(0.9, false) == GameAudio.BUS_SFX and au.bus_for(0.5, false) == GameAudio.BUS_MID and au.bus_for(0.1, false) == GameAudio.BUS_FAR, "farther sounds go through duller buses")
+	_check(au.bus_for(0.9, true) == GameAudio.BUS_MUFFLED, "sounds behind solids always use the muffled bus")
+	var hall := au.reverb_for(Vector2(700, 500))  # long corridor
+	var room := au.reverb_for(Vector2(400, 300))  # room A
+	var outside := au.reverb_for(Vector2(60, 500))
+	_check(float(hall["wet"]) > float(outside["wet"]) and float(room["room_size"]) > float(outside["room_size"]), "indoor spaces ring more than outside")
+	_check(float(hall["room_size"]) > float(room["room_size"]), "a long corridor rings longer than a small room")
+	_check(au._ear == 0.0, "ears start clear")
+	au._on_sound(SoundProp.Kind.GUNSHOT, _w.players[0].pos + Vector2(0, 40))  # a teammate's shot right beside you
+	_check(au._ear > 0.6, "a loud nearby shot from someone else deafens")
+	au._ear = 0.0
+	au._on_sound(SoundProp.Kind.GUNSHOT, _w.players[0].pos + Vector2(0, 40))
+	_check(au._ear == 0.0, "ringing does not retrigger inside the minimum gap")
+	au._ear_gap = 0.0
+	au._on_sound(SoundProp.Kind.GUNSHOT, _w.players[0].pos)  # your own shot
+	_check(au._ear == 0.0, "your own shots do not deafen you")
+	# generated/recorded samples (not in git): when present they must be usable mono streams
+	var path := "res://assets/audio/rifle_1.wav"
+	if ResourceLoader.exists(path):
+		var s := load(path) as AudioStreamWAV
+		_check(s != null and not s.stereo and s.get_length() > 0.5 and s.get_length() < 4.0, "rifle sample is a mono stream of a sensible length")
+	else:
+		print("SKIP rifle sample test: ", path, " not present (synthesized stand-in is used)")
+	_w.remove_child(au)
+	au.free()
+
+
+## A killed NPC never gets back up; a non-lethal hit only stuns (wakes up unarmed, surrendering).
+func _death_tests() -> void:
+	var S := NpcBrain.State
+	Session.host(true)
+	await _boot(true)
+	var a := _agent(0)
+	var at := a.pos
+	_w.director.resolve_player_shot(0, at + Vector2(-60, 0), at + Vector2(60, 0), 99, false)
+	_check(a.brain.state == S.DEAD, "lethal hit kills the enemy")
+	for i in 20:  # twenty seconds of gunfire and shouting around the body
+		_w._emit_sound(SoundProp.Kind.GUNSHOT, at + Vector2(30, 0))
+		_w.director.command(0, NpcBrain.Cmd.FREEZE)
+		await _seconds(1.0)
+	_check(a.brain.state == S.DEAD and not a.brain.alive() and a.brain.hp == 0, "a dead enemy stays dead")
+	var packed := _w.director.pack()
+	_w.director.unpack(packed[0], packed[1], packed[2])
+	_check(a.brain.state == S.DEAD, "dead survives a snapshot round trip")
+
+	await _boot(true)
+	var b := _agent(0)
+	var bat := b.pos
+	_w.director.resolve_player_shot(0, bat + Vector2(-60, 0), bat + Vector2(60, 0), 0, true)
+	_check(b.brain.state == S.DOWN and b.brain.alive() and b.brain.hp > 0, "non-lethal hit only knocks the enemy down (still alive)")
+	await _seconds(float(_w.tuning["npc"]["stun_s"]) + 1.5)
+	_check(b.brain.alive() and not b.brain.armed and b.brain.state != S.DOWN, "after the stun the enemy is back up, unarmed")
+
+
+## The lobby selection decides the solo weapon (the default is the lethal rifle).
+func _solo_selection_test() -> void:
+	Session.start_solo()
+	Session.solo_loadout["primary"] = "rifle_nonlethal"
+	await _boot(false)
+	_check(_w.players[0].weapon_kinds[0] == "rifle_nonlethal", "solo uses the non-lethal rifle when the lobby selects it")
+	Session.solo_loadout["primary"] = "rifle_lethal"
+	Session.leave()
+
+
+## Sound variants, voice file names, recorded-line mapping and the F7 audition panel.
+func _audio_extra_tests() -> void:
+	Session.host(true)
+	await _boot(true)
+	var au := GameAudio.new()
+	au.world = _w
+	_w.add_child(au)
+	await _frames(2)
+	# no variant is played twice in a row
+	var set_a: Array = [SfxSynth.footstep(1), SfxSynth.footstep(2), SfxSynth.footstep(3)]
+	var repeats := 0
+	var last: Variant = null
+	for i in 200:
+		var pick: Variant = au._pick("k", set_a)
+		if pick == last:
+			repeats += 1
+		last = pick
+	_check(repeats == 0, "the same variant never plays twice in a row")
+	# faint sounds use the _far set when one exists
+	au._bank = {"rifle": [1], "rifle_far": [2], "pistol": [3]}
+	_check(au.set_key("rifle", 0.1) == "rifle_far" and au.set_key("rifle", 0.9) == "rifle" and au.set_key("pistol", 0.1) == "pistol", "faint sounds switch to the far set only when it exists")
+	_check(GameAudio.sample_streams("no_such_sound").is_empty(), "no files means no replacement (the synthesized stand-in stays)")
+	# recorded voice lines: file names follow commands.json order
+	var lines := JsonData.load_dict("res://data/commands.json")
+	var stems := GameAudio.voice_stems(lines)
+	_check(stems[str(lines["weapon_drop"][0])] == "voice_weapon_drop_0" and stems[str(lines["turn"][3])] == "voice_turn_3", "command sentences map to voice_<command>_<line>")
+	_check(stems[GameAudio.SCREAM_LINE] == "voice_npc_scream" and stems.size() == 17, "all 16 command lines and the NPC scream have a file name")
+	_check(GameAudio.voice_lines(lines, "res://no_such_dir/").is_empty(), "no recordings means no voice lines")
+	# room tone files loop over their whole length
+	var tone := SfxSynth.footstep(1)
+	GameAudio.loop_whole(tone)
+	_check(tone.loop_mode == AudioStreamWAV.LOOP_FORWARD and tone.loop_end == tone.data.size() / 2, "loop_whole makes a sample repeat over its whole length")
+	# reverb presets grow with the room
+	_check(float(au.reverb_for_size(23.0)["room_size"]) > float(au.reverb_for_size(5.0)["room_size"]) and float(au.reverb_outdoor()["wet"]) < float(au.reverb_for_size(5.0)["wet"]), "reverb presets grow with the room and outdoors stays dry")
+	# the audition panel (needs real streams in the bank)
+	au._bank = {"rifle": [SfxSynth.footstep(1)]}
+	var panel := AudioAudition.new()
+	panel.audio = au
+	au.add_child(panel)
+	await _frames(1)
+	var f7 := InputEventKey.new()
+	f7.physical_keycode = KEY_F7
+	f7.pressed = true
+	panel._unhandled_input(f7)
+	_check(panel.visible, "F7 opens the audition panel")
+	var next_room := InputEventKey.new()
+	next_room.physical_keycode = KEY_EQUAL
+	next_room.pressed = true
+	panel._unhandled_input(next_room)
+	panel._unhandled_input(next_room)
+	_check(not au.audition_reverb.is_empty(), "choosing a room in the panel overrides the reverb")
+	panel._unhandled_input(f7)
+	_check(not panel.visible and au.audition_reverb.is_empty(), "closing the panel gives the reverb back to the room")
 	_w.remove_child(au)
 	au.free()

@@ -37,6 +37,10 @@ const SCENARIOS := {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 0.6, "final": 3.0,
 	},
+	"down": {
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0], [0.4, "stun_suspect", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 1.2, "final": 3.0,
+	},
 	"dark": {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_dark", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.0, "final": 3.0,
@@ -948,6 +952,10 @@ func _auto_do(name: String, arg: int) -> void:
 			_send(Act.VOTE_LOBBY, 0)
 		"clock_soon":  # test aid: reinforcements in ~10 s instead of minutes
 			clock.remaining = 9.5
+		"stun_suspect":  # test aid: a non-lethal round knocks the suspect down (alive, wakes up later)
+			for a in director.agents:
+				if a.suspect:
+					director.resolve_player_shot(0, a.pos + Vector2(-60, 0), a.pos + Vector2(60, 0), 0, true)
 		"kill_suspect":
 			for a in director.agents:
 				if a.suspect:

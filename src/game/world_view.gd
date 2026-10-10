@@ -33,6 +33,7 @@ var _tracers: Array[Dictionary] = []
 var _bubbles: Array[Dictionary] = []
 var _flash_t := 0.0
 var _was_dark := false  ## the local officer was in a dark room last frame (entry notice)
+var _stun_notice_cd := 0.0  ## seconds until the "non-lethal only stuns" hint may show again
 var _notice_t := 0.0
 var _npc_flash: Dictionary = {}
 var _vis := PackedVector2Array()
@@ -119,6 +120,11 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, hit_npc: bool) -> void:
 	_tracers.append({"from": from, "to": to, "age": 0.0, "npc": shooter >= 2})
 	if hit_npc:
 		_npc_flash[to.snapped(Vector2(8, 8))] = 0.25
+		if shooter == world.my_slot and _stun_notice_cd <= 0.0:
+			var ps := world.players[shooter]
+			if ps.weapon_kinds.size() > ps.active and ps.weapon_kinds[ps.active] == "rifle_nonlethal":
+				_on_notice(tr("비살상 소총은 기절만 시킨다: 잠시 뒤 깨어난다. 구속(E)하거나 살상 소총을 쓴다"))
+				_stun_notice_cd = 20.0
 
 
 func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
@@ -204,6 +210,7 @@ func _process(delta: float) -> void:
 	if dark and not _was_dark:
 		_on_notice(tr("어두운 방이다: 손전등(F)으로 비춰야 적을 알아볼 수 있다"))
 	_was_dark = dark
+	_stun_notice_cd = maxf(_stun_notice_cd - delta, 0.0)
 	_flash_t = maxf(_flash_t - delta, 0.0)
 	_red.color.a = _flash_t
 	_notice_t = maxf(_notice_t - delta, 0.0)
@@ -334,6 +341,7 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 			draw_line(p + Vector2(-10, -10), p + Vector2(10, 10), Color(0.5, 0.5, 0.5), 3.0)
 			draw_line(p + Vector2(-10, 10), p + Vector2(10, -10), Color(0.5, 0.5, 0.5), 3.0)
 			_draw_dropped(a)
+			_draw_status(p, tr("사망"), Color(0.75, 0.75, 0.75))
 			return
 		S.DOWN:
 			draw_rect(Rect2(p - Vector2(14, 7), Vector2(28, 14)), base.darkened(0.2), true)
@@ -359,6 +367,12 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 	_draw_dropped(a)
 	var pulse := 1.0 + 0.25 * sin(Time.get_ticks_msec() / 80.0)
 	match b.state:
+		S.DOWN:
+			_draw_status(p, tr("엎드림"), Color(0.6, 0.8, 1.0))  # alive: a stunned enemy gets up again
+		S.SURRENDER:
+			_draw_status(p, tr("항복"), Color.WHITE)
+		S.RESTRAINED:
+			_draw_status(p, tr("구속"), Color(0.5, 1.0, 0.5))
 		S.SPOTTED:
 			draw_string(ThemeDB.fallback_font, p + Vector2(-4, -22), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.YELLOW)
 		S.THREAT:
@@ -373,6 +387,11 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 		if b.reason != "":
 			text += ": " + b.reason
 		draw_string(ThemeDB.fallback_font, p + Vector2(-30, 30), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(1, 1, 1, 0.85))
+
+
+func _draw_status(p: Vector2, text: String, color: Color) -> void:
+	draw_string(ThemeDB.fallback_font, p + Vector2(-16, -26), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0, 0, 0, 0.8))
+	draw_string(ThemeDB.fallback_font, p + Vector2(-17, -27), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, color)
 
 
 func _draw_dropped(a: NpcDirector.Agent) -> void:
@@ -466,7 +485,7 @@ func _update_hud() -> void:
 	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
 	lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 3D 전환 / F6 소리 끄기 / Esc 나가기"))
+	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 3D 전환 / F6 소리 끄기 / F7 소리 시험 / Esc 나가기"))
 	lines.append(tr("%s  %d / 예비 탄창 %d개 (%s) %s") % [WEAPON_NAMES[kind], w.current, w.spares.size(), spare, tr("[재장전 중]") if w.reloading else ""])
 	lines.append(tr("도구: %s   손전등 %s   레이저 %s") % [", ".join(tools), tr("켬") if me.flash else tr("끔"), tr("켬") if me.laser else tr("끔")])
 	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수 %d   RTT %s") % [

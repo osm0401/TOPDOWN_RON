@@ -5,6 +5,15 @@
   "muffle_hz": 700.0,
   "own_footstep_db": -9.0,
   "min_loudness": 0.03,
+  "_files": "assets/audio/<소리>_<번호>.wav 가 있으면 같은 이름의 합성음 대신 쓴다(번호 0~15, 없으면 합성음). <소리>_far 는 멀리서 작게 들릴 때 쓰는 별도 세트. 녹음 대사는 voice_<명령>_<줄>_<테이크>.wav. assets/audio는 git 제외(라이선스 확인 전).",
+  "px_per_m": 50.0,
+  "dull": {"mid_below": 0.65, "far_below": 0.3, "mid_hz": 7000.0, "far_hz": 3000.0},
+  "reverb": {
+    "outdoor": {"room_size": 0.1, "wet": 0.04, "damping": 0.7},
+    "indoor": {"size_per_m": 0.025, "min": 0.2, "max": 0.8, "wet": 0.2, "damping": 0.45},
+    "ease_per_s": 2.0
+  },
+  "ear": {"trigger_loud": 0.85, "duration_s": 3.5, "cutoff_hz": 1100.0, "duck_db": -9.0, "ring_db": -24.0, "min_gap_s": 2.0},
   "kind_db": {
     "footstep": -10.0, "gunshot": 0.0, "door": -4.0, "kick": 0.0, "voice": -6.0,
     "scream": -3.0, "taser": -4.0, "door_ajar": -14.0, "siren": -6.0
@@ -12,6 +21,9 @@
   "extra": {
     "reload": {"radius": 250.0, "db": -8.0},
     "hit": {"radius": 350.0, "db": -3.0},
-    "hurt_db": -2.0
+    "hurt_db": -2.0,
+    "voice_db": -2.0,
+    "radio_db": -10.0,
+    "heart_db": -12.0
   }
 }

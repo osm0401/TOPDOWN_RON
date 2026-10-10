@@ -90,6 +90,34 @@ static func _thump(seconds: float, f_lo: float, f_hi: float, sweep_tau: float, t
 	return o
 
 
+## Schroeder reverb (4 combs + 2 allpasses): a denser, more natural tail than filtered noise.
+## `decay_s` is the time the tail takes to fall by 60 dB.
+static func _reverb(b: PackedFloat32Array, wet: float, decay_s: float) -> PackedFloat32Array:
+	var n := b.size()
+	var acc := PackedFloat32Array()
+	acc.resize(n)
+	for d_ms in [29.7, 37.1, 41.1, 43.7]:
+		var d := int(float(d_ms) * 0.001 * RATE)
+		var g := pow(0.001, float(d_ms) * 0.001 / decay_s)
+		var y := PackedFloat32Array()
+		y.resize(n)
+		for i in n:
+			y[i] = b[i] + (g * y[i - d] if i >= d else 0.0)
+			acc[i] += y[i] * 0.25
+	for ap_ms in [5.0, 1.7]:
+		var d := int(float(ap_ms) * 0.001 * RATE)
+		var o := PackedFloat32Array()
+		o.resize(n)
+		for i in n:
+			o[i] = -0.7 * acc[i] + (acc[i - d] + 0.7 * o[i - d] if i >= d else 0.0)
+		acc = o
+	var out := PackedFloat32Array()
+	out.resize(n)
+	for i in n:
+		out[i] = b[i] + acc[i] * wet
+	return out
+
+
 ## Soft-clips, normalizes to `peak` and wraps the samples in an AudioStreamWAV.
 static func _stream(b: PackedFloat32Array, drive := 1.0, peak := 0.9, loop := false) -> AudioStreamWAV:
 	var n := b.size()
@@ -116,19 +144,28 @@ static func _stream(b: PackedFloat32Array, drive := 1.0, peak := 0.9, loop := fa
 
 # ---- sounds -------------------------------------------------------------------
 
+## Layers: supersonic-style crack, muzzle body, low thump, a little noise tail, then the bang
+## bouncing off nearby walls (early reflections), the action of a rifle and a dense reverb tail.
 static func gunshot(seed_: int, rifle: bool) -> AudioStreamWAV:
-	var len_s := 1.0 if rifle else 0.6
+	var len_s := 1.4 if rifle else 0.9
 	var crack := _white(len_s, seed_)
 	_decay(crack, 0.010 if rifle else 0.007)
 	var body := _lowpass(_white(len_s, seed_ + 101), 2200.0 if rifle else 3000.0)
 	_decay(body, 0.045 if rifle else 0.03)
-	var tail := _lowpass(_white(len_s, seed_ + 202), 600.0)  # room reverb stand-in
-	_decay(tail, 0.28 if rifle else 0.16)
+	var tail := _lowpass(_white(len_s, seed_ + 202), 600.0)
+	_decay(tail, 0.2 if rifle else 0.12)
 	var thump := _thump(len_s, 50.0, 200.0 if rifle else 270.0, 0.04, 0.09)
 	var out := _buf(len_s)
 	for i in out.size():
-		out[i] = crack[i] * 0.8 + body[i] * 1.6 + tail[i] * 1.2 + thump[i]
-	return _stream(out, 1.8, 0.95)
+		out[i] = crack[i] * 0.8 + body[i] * 1.6 + tail[i] * 0.6 + thump[i]
+	var dull := _lowpass(out, 2500.0)
+	for tap in [[0.011, 0.45], [0.023, 0.35], [0.038, 0.27], [0.057, 0.2], [0.083, 0.14]]:
+		_mix(out, dull, tap[0], tap[1])
+	if rifle:  # bolt / ejection rattle just after the shot
+		var action := _resonate(_highpass(_white(0.06, seed_ + 303), 1500.0), 2400.0, 300.0)
+		_decay(action, 0.012)
+		_mix(out, action, 0.11, 2.0)
+	return _stream(_reverb(out, 0.35, 0.7 if rifle else 0.45), 1.8, 0.95)
 
 
 static func footstep(seed_: int) -> AudioStreamWAV:
@@ -169,7 +206,18 @@ static func kick(seed_: int) -> AudioStreamWAV:
 	for i in out.size():
 		out[i] += crack[i] * 0.9
 	_mix(out, rattle, 0.03, 0.5)
-	return _stream(out, 2.2, 0.95)
+	return _stream(_reverb(out, 0.3, 0.5), 2.2, 0.95)
+
+
+## Ear ringing after a loud bang: a few thin high tones that slowly fade.
+static func ringing() -> AudioStreamWAV:
+	var out := _buf(3.5)
+	for i in out.size():
+		var t := float(i) / RATE
+		var wobble := 1.0 + 0.08 * sin(TAU * 0.7 * t)
+		out[i] = (sin(TAU * 3150.0 * t) * 0.6 + sin(TAU * 5230.0 * t) * 0.3 + sin(TAU * 7010.0 * t) * 0.1) \
+				* exp(-t / 1.4) * minf(t / 0.05, 1.0) * wobble
+	return _stream(out, 1.0, 0.5)
 
 
 static func taser(seed_: int) -> AudioStreamWAV:
@@ -253,6 +301,32 @@ static func hurt(seed_: int) -> AudioStreamWAV:
 		grunt[i] = float(g.decode_s16(i * 2)) / 32768.0
 	_mix(out, grunt, 0.02, 0.5)
 	return _stream(out, 1.4, 0.9)
+
+
+## Radio squelch: key-up click, a burst of band-limited static and two short beeps.
+static func radio(seed_: int) -> AudioStreamWAV:
+	var out := _buf(0.8)
+	var click := _highpass(_white(0.02, seed_), 1200.0)
+	_decay(click, 0.004)
+	_mix(out, click, 0.0, 1.0)
+	var hiss := _highpass(_lowpass(_white(0.45, seed_ + 1), 3500.0), 900.0)
+	for i in hiss.size():
+		hiss[i] *= minf(float(i) / (0.03 * RATE), 1.0) * clampf((0.45 - float(i) / RATE) / 0.12, 0.0, 1.0)
+	_mix(out, hiss, 0.02, 0.5)
+	for beep_at in [0.32, 0.46]:
+		var beep := _buf(0.08)
+		for i in beep.size():
+			beep[i] = sin(TAU * 1250.0 * float(i) / RATE) * sin(PI * float(i) / beep.size())
+		_mix(out, beep, beep_at, 0.35)
+	return _stream(_highpass(_lowpass(out, 3800.0), 500.0), 1.4, 0.7)
+
+
+## One heartbeat: a soft low "lub" followed by a lighter "dub".
+static func heart() -> AudioStreamWAV:
+	var out := _buf(0.7)
+	_mix(out, _thump(0.25, 45.0, 75.0, 0.03, 0.07), 0.0, 1.0)
+	_mix(out, _thump(0.2, 50.0, 85.0, 0.03, 0.05), 0.22, 0.7)
+	return _stream(out, 1.2, 0.8)
 
 
 ## Low room tone: mains hum plus rumble. Loops seamlessly (whole cycles + crossfaded noise).

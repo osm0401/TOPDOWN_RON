@@ -28,7 +28,8 @@ func _test_sfx() -> void:
 		"rifle": SfxSynth.gunshot(1, true), "pistol": SfxSynth.gunshot(4, false), "footstep": SfxSynth.footstep(10),
 		"door": SfxSynth.door(21, 0.6, 0.6), "kick": SfxSynth.kick(41), "taser": SfxSynth.taser(71),
 		"shout": SfxSynth.shout(51, 100.0, 0.7, 0.5), "scream": SfxSynth.shout(61, 380.0, 0.9, 2.0),
-		"siren": SfxSynth.siren(), "reload": SfxSynth.reload_sound(81), "hit": SfxSynth.hit(91), "hurt": SfxSynth.hurt(95)}
+		"siren": SfxSynth.siren(), "reload": SfxSynth.reload_sound(81), "hit": SfxSynth.hit(91), "hurt": SfxSynth.hurt(95),
+		"ringing": SfxSynth.ringing(), "radio": SfxSynth.radio(97), "heart": SfxSynth.heart()}
 	print("sfx synth: %d sounds in %d ms" % [streams.size(), Time.get_ticks_msec() - t0])
 	for k in streams:
 		var s: AudioStreamWAV = streams[k]
@@ -38,6 +39,11 @@ func _test_sfx() -> void:
 			peak = maxi(peak, absi(s.data.decode_s16(i * 2)))
 		_check(n > 1000 and peak > 8000 and peak <= 32767, "sfx %s has audible, unclipped samples" % k)
 	_check((streams["rifle"] as AudioStreamWAV).data.size() > (streams["pistol"] as AudioStreamWAV).data.size(), "rifle shot rings longer than a pistol shot")
+	var rifle: AudioStreamWAV = streams["rifle"]
+	var tail := 0
+	for i in range(int(0.3 * SfxSynth.RATE), int(0.6 * SfxSynth.RATE)):
+		tail = maxi(tail, absi(rifle.data.decode_s16(i * 2)))
+	_check(tail > 150, "rifle shot keeps a reverb tail 0.3-0.6 s after the bang")
 	_check(SfxSynth.gunshot(1, true).data == SfxSynth.gunshot(1, true).data, "same seed gives identical samples")
 	_check(SfxSynth.gunshot(1, true).data != SfxSynth.gunshot(2, true).data, "different seed gives a different shot")
 	var hum := SfxSynth.hum()

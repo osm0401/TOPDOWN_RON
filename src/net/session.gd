@@ -17,7 +17,7 @@ var room_code := ""      ## "" while the address is still being resolved
 var route := ""          ## "vpn" | "upnp" | "local" (valid once room_code is set)
 var host_note := ""      ## status / warning text for the host HUD
 var solo := false         ## single player: no network peer, the second officer is absent
-var solo_loadout := {"primary": "rifle_nonlethal", "tools": ["lockpick", "taser"]}
+var solo_loadout := {"primary": "rifle_lethal", "tools": ["lockpick", "taser"]}
 var difficulty := "normal"  ## preset key in data/difficulty.json (only the host's value matters)
 
 var _log: FileAccess

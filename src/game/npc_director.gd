@@ -230,8 +230,8 @@ func _tick_agent(i: int, delta: float, sounds: Array[Dictionary], alerts: Array[
 		_see_laser(a)
 	var out := b.tick(delta)
 	if out["scream"]:
+		speech.emit("꺄악!", a.pos)  # the words first: a recorded scream replaces the synthesized one
 		_emit(SoundProp.Kind.SCREAM, a.pos, i)
-		speech.emit("꺄악!", a.pos)
 	var alert_at: Variant = out["alert_nearby"]
 	if alert_at != null:
 		alerts.append({"from": i, "pos": alert_at})

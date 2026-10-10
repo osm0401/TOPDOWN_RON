@@ -4,3 +4,14 @@
 export_presets.cfg
 export/
 *.tmp
+
+# AI-generated / third-party audio: license not cleared for the public repo yet (see assets/audio/README.md)
+assets/audio/*.wav
+assets/audio/*.wav.import
+assets/audio/*.ogg
+assets/audio/*.ogg.import
+assets/audio/manifest.json
+assets/audio/_raw/
+assets/audio/_shortlist/
+assets/audio/_pick/
+assets/audio/_voice_raw/

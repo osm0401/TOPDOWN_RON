@@ -644,15 +644,30 @@ func _update_npcs(delta: float) -> void:
 		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED
 		(n["dropped"] as Node3D).visible = b.had_weapon and not b.armed
 		var marker := ""
+		var marker_color := Color(1.0, 0.45, 0.1)
 		match st:
 			S.SPOTTED:
 				marker = "?"
+				marker_color = Color.YELLOW
 			S.THREAT:
 				marker = "!"
 			S.ATTACK:
 				marker = "!!"
+			S.DOWN:  # alive: a stunned enemy gets up again
+				marker = tr("엎드림")
+				marker_color = Color(0.6, 0.8, 1.0)
+			S.SURRENDER:
+				marker = tr("항복")
+				marker_color = Color.WHITE
+			S.RESTRAINED:
+				marker = tr("구속")
+				marker_color = Color(0.5, 1.0, 0.5)
+			S.DEAD:
+				marker = tr("사망")
+				marker_color = Color(0.75, 0.75, 0.75)
 		(n["marker"] as Label3D).text = marker
-		(n["marker"] as Label3D).modulate = Color.YELLOW if st == S.SPOTTED else Color(1.0, 0.45, 0.1)
+		(n["marker"] as Label3D).modulate = marker_color
+		(n["marker"] as Label3D).pixel_size = 0.012 if marker in ["?", "!", "!!"] else 0.007  # symbols big, words smaller
 		var text: String = NpcBrain.STATE_NAMES[st]
 		if b.feigning:
 			text += " (가장)"

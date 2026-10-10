@@ -1,18 +1,27 @@
 extends Node
-## Autoload "Session": connection setup only (ENet host/join, disconnect, net log).
+## Autoload "Session": connection setup only (ENet host/join, address discovery, net log).
 ## Game state sync lives in NetWorld, so this file is the only thing to swap for Relay/Steam.
+##
+## Host address priority: VPN address (Tailscale) > UPnP public address > local only.
 
 signal hosted(code: String)
 signal client_connected
 signal join_failed(reason: String)
 signal connection_lost(reason: String)
 
+const UPNP_LEASE_S := 3600
+
 var cfg: Dictionary = {}
 var is_hosting := false
-var local_only := false
-var room_code := ""
+var room_code := ""      ## "" while the address is still being resolved
+var route := ""          ## "vpn" | "upnp" | "local" (valid once room_code is set)
+var host_note := ""      ## status / warning text for the host HUD
 
 var _log: FileAccess
+var _thread: Thread
+var _upnp_gen := 0
+var _upnp: UPNP
+var _mapped_port := 0
 
 
 func _ready() -> void:
@@ -23,27 +32,36 @@ func _ready() -> void:
 	multiplayer.peer_disconnected.connect(_on_peer_gone)
 
 
-## Opens a room (1 client max). Returns the room code, or "" on failure.
-func host(force_local: bool = false) -> String:
+func _exit_tree() -> void:
+	leave()
+
+
+## Opens a room (1 client max). Returns false if the server could not start.
+## The room code may arrive later (UPnP): watch `hosted` / `room_code`.
+func host(force_local: bool = false) -> bool:
 	leave()
 	var port := int(cfg.get("port", 0))
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(port, 1)
+	_open_log("host")
 	if err != OK:
-		_open_log("host")
 		log_line("host failed port=%d: %s" % [port, error_string(err)])
-		return ""
+		return false
 	multiplayer.multiplayer_peer = peer
 	is_hosting = true
-	var ip := "" if force_local else RoomCode.pick_vlan_ip(IP.get_local_addresses())
-	local_only = ip == ""
-	if local_only:
-		ip = "127.0.0.1"
-	room_code = RoomCode.encode(ip, port)
-	_open_log("host")
-	log_line("hosting %s:%d code=%s local_only=%s" % [ip, port, room_code, local_only])
-	hosted.emit(room_code)
-	return room_code
+	if force_local:
+		_finish_host("127.0.0.1", "local", "")
+		return true
+	var vpn_ip := RoomCode.pick_vlan_ip(IP.get_local_addresses())
+	if vpn_ip != "":
+		_finish_host(vpn_ip, "vpn", tr("VPN 주소 사용: %s") % RoomCode.vlan_kind(vpn_ip))
+		return true
+	host_note = tr("공유기에 포트를 여는 중...")
+	log_line("no VPN address, trying UPnP")
+	_upnp_gen += 1
+	_thread = Thread.new()
+	_thread.start(_upnp_worker.bind(_upnp_gen, port))
+	return true
 
 
 func join(code: String) -> bool:
@@ -65,13 +83,19 @@ func join(code: String) -> bool:
 
 
 func leave() -> void:
+	if _thread != null:
+		_thread.wait_to_finish()
+		_thread = null
+	_upnp_gen += 1
+	_close_mapping()
 	if multiplayer.multiplayer_peer != null:
 		log_line("leave")
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
 	is_hosting = false
-	local_only = false
 	room_code = ""
+	route = ""
+	host_note = ""
 
 
 func log_line(msg: String) -> void:
@@ -80,6 +104,57 @@ func log_line(msg: String) -> void:
 	if _log != null:
 		_log.store_line(line)
 		_log.flush()
+
+
+func _finish_host(ip: String, new_route: String, note: String) -> void:
+	room_code = RoomCode.encode(ip, int(cfg.get("port", 0)))
+	route = new_route
+	host_note = note
+	log_line("hosting route=%s port=%d code=%s" % [route, int(cfg.get("port", 0)), room_code])
+	hosted.emit(room_code)
+
+
+func _upnp_worker(gen: int, port: int) -> void:
+	var result := UpnpHelper.open_port(port, UPNP_LEASE_S)
+	_on_upnp_done.call_deferred(gen, port, result)
+
+
+func _on_upnp_done(gen: int, port: int, result: Dictionary) -> void:
+	if _thread != null:
+		_thread.wait_to_finish()
+		_thread = null
+	if gen != _upnp_gen or not is_hosting:
+		if result.ok:
+			UpnpHelper.close_port(result.upnp, port)
+		return
+	if result.ok:
+		_upnp = result.upnp
+		_mapped_port = port
+		_finish_host(result.ip, "upnp", tr("공인 IP가 방 코드에 포함됩니다. 친구에게만 보내세요."))
+		return
+	log_line("upnp failed: %s code=%d" % [result.error, result.code])
+	_finish_host("127.0.0.1", "local", _upnp_error_text(result.error) + "\n" + tr("(이 PC 안에서만 접속 가능)"))
+
+
+func _upnp_error_text(key: String) -> String:
+	match key:
+		"no_gateway":
+			return tr("공유기가 UPnP에 응답하지 않습니다 (공유기에서 UPnP를 켜 보세요)")
+		"cgnat":
+			return tr("통신사 공용 IP(CGNAT)라 외부에서 접속할 수 없습니다")
+		"private":
+			return tr("공유기가 이중으로 연결되어 있어 외부에서 접속할 수 없습니다")
+		"map_failed":
+			return tr("공유기가 포트 열기를 거부했습니다")
+	return tr("공인 IP를 확인하지 못했습니다")
+
+
+func _close_mapping() -> void:
+	if _upnp != null and _mapped_port > 0:
+		UpnpHelper.close_port(_upnp, _mapped_port)
+		log_line("upnp mapping closed port=%d" % _mapped_port)
+	_upnp = null
+	_mapped_port = 0
 
 
 func _open_log(role: String) -> void:

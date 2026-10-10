@@ -77,12 +77,30 @@ static func decode(code: String) -> Dictionary:
 	}
 
 
-## First address in the Tailscale CGNAT range 100.64.0.0/10, or "" if none.
+const VLAN_PRIORITY: Array[String] = ["tailscale", "radmin", "hamachi"]
+
+
+## Which virtual-LAN product owns this address: "tailscale" (100.64/10),
+## "radmin" (26/8), "hamachi" (25/8), or "" if none.
+static func vlan_kind(ip: String) -> String:
+	var p := ip.split(".")
+	if p.size() != 4 or not p[0].is_valid_int() or not p[1].is_valid_int():
+		return ""
+	var a := int(p[0])
+	var b := int(p[1])
+	if a == 100 and b >= 64 and b <= 127:
+		return "tailscale"
+	if a == 26:
+		return "radmin"
+	if a == 25:
+		return "hamachi"
+	return ""
+
+
+## Best virtual-LAN address by VLAN_PRIORITY, or "" if none.
 static func pick_vlan_ip(addresses: PackedStringArray) -> String:
-	for a in addresses:
-		var p := a.split(".")
-		if p.size() == 4 and p[0] == "100" and p[1].is_valid_int():
-			var second := int(p[1])
-			if second >= 64 and second <= 127:
+	for kind in VLAN_PRIORITY:
+		for a in addresses:
+			if vlan_kind(a) == kind:
 				return a
 	return ""

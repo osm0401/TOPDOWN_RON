@@ -53,7 +53,7 @@ func _build_lobby() -> void:
 
 
 func _on_host_pressed() -> void:
-	if Session.host() == "":
+	if not Session.host():
 		_show_status(tr("방을 만들 수 없습니다 (포트가 이미 사용 중일 수 있음)"))
 		return
 	_enter_world()
@@ -93,11 +93,14 @@ func _run_auto() -> void:
 	var args := OS.get_cmdline_user_args()
 	if "--auto-host" in args:
 		_auto_role = "host"
-		if Session.host(true) == "":
+		if not Session.host("--vpn" not in args):
 			get_tree().quit(1)
 			return
 		_enter_world()
 	elif "--auto-join" in args:
 		_auto_role = "client"
-		var port := int(Session.cfg.get("port", 0))
-		Session.join(RoomCode.encode("127.0.0.1", port))
+		var code := RoomCode.encode("127.0.0.1", int(Session.cfg.get("port", 0)))
+		for a in args:
+			if a.begins_with("--code="):
+				code = a.substr(7)
+		Session.join(code)

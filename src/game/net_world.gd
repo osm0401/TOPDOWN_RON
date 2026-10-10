@@ -261,8 +261,10 @@ func rpc_snapshot(p0: Vector2, p1: Vector2, a0: float, a1: float) -> void:
 
 func _update_hud() -> void:
 	if _is_host and not _running:
-		var note := tr("\n(Tailscale 주소 없음: 이 PC 안에서만 접속 가능)") if Session.local_only else ""
-		_hud.text = tr("방 코드: %s\n상대 플레이어 대기 중...") % Session.room_code + note
+		if Session.room_code == "":
+			_hud.text = Session.host_note
+		else:
+			_hud.text = tr("방 코드: %s\n상대 플레이어 대기 중...") % Session.room_code + "\n" + Session.host_note
 		return
 	var rtt := tr("호스트") if _is_host else "%d ms" % _rtt_ms
 	_hud.text = tr("이동 WASD / 조준 마우스 / E 문 / F 점수(샘플) / Esc 나가기\n문: %s   적(샘플): %s   점수(샘플): %d   RTT: %s") % [

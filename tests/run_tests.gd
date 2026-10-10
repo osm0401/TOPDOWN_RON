@@ -7,6 +7,7 @@ var _failed := 0
 
 func _init() -> void:
 	_test_room_code()
+	_test_classify_ip()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	quit(1 if _failed > 0 else 0)
 
@@ -17,6 +18,18 @@ func _check(cond: bool, label: String) -> void:
 	else:
 		print("FAIL ", label)
 		_failed += 1
+
+
+func _test_classify_ip() -> void:
+	var expect := {
+		"203.0.113.5": "public", "8.8.8.8": "public", "100.63.0.1": "public", "100.128.0.1": "public",
+		"192.168.0.1": "private", "10.1.2.3": "private", "172.16.0.1": "private", "172.31.9.9": "private",
+		"172.32.0.1": "public", "127.0.0.1": "private", "169.254.1.1": "private",
+		"100.64.0.1": "cgnat", "100.127.255.255": "cgnat",
+		"": "invalid", "1.2.3": "invalid", "300.1.1.1": "invalid", "a.b.c.d": "invalid",
+	}
+	for ip in expect:
+		_check(UpnpHelper.classify_ip(ip) == expect[ip], "classify_ip '%s' -> %s" % [ip, expect[ip]])
 
 
 func _test_room_code() -> void:
@@ -54,3 +67,8 @@ func _test_room_code() -> void:
 	var addrs := PackedStringArray(["192.168.0.5", "fe80::1", "100.63.1.1", "100.100.5.9", "100.128.0.1"])
 	_check(RoomCode.pick_vlan_ip(addrs) == "100.100.5.9", "pick_vlan_ip picks 100.64/10 only")
 	_check(RoomCode.pick_vlan_ip(PackedStringArray(["10.0.0.2"])) == "", "pick_vlan_ip empty when none")
+	_check(RoomCode.pick_vlan_ip(PackedStringArray(["192.168.45.79", "26.215.124.50"])) == "26.215.124.50", "pick_vlan_ip finds Radmin 26.x")
+	_check(RoomCode.pick_vlan_ip(PackedStringArray(["25.1.2.3"])) == "25.1.2.3", "pick_vlan_ip finds Hamachi 25.x")
+	_check(RoomCode.pick_vlan_ip(PackedStringArray(["26.1.1.1", "100.100.5.9", "25.1.1.1"])) == "100.100.5.9", "Tailscale preferred over Radmin/Hamachi")
+	_check(RoomCode.pick_vlan_ip(PackedStringArray(["25.1.1.1", "26.1.1.1"])) == "26.1.1.1", "Radmin preferred over Hamachi")
+	_check(RoomCode.vlan_kind("27.0.0.1") == "" and RoomCode.vlan_kind("x.y") == "", "vlan_kind ignores other ranges")

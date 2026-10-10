@@ -7,6 +7,7 @@ var _status: Label
 var _code_edit: LineEdit
 var _world: NetWorld
 var _auto_role := ""
+var _shot_path := ""
 
 
 func _ready() -> void:
@@ -74,6 +75,7 @@ func _enter_world() -> void:
 	_world = NetWorld.new()
 	_world.name = "World"
 	_world.auto_role = _auto_role
+	_world.shot_path = _shot_path
 	_world.leave_requested.connect(_leave_to_lobby.bind(""))
 	add_child(_world)
 	_lobby.hide()
@@ -91,6 +93,9 @@ func _leave_to_lobby(msg: String) -> void:
 
 func _run_auto() -> void:
 	var args := OS.get_cmdline_user_args()
+	for a in args:
+		if a.begins_with("--shot="):
+			_shot_path = a.substr(7)
 	if "--auto-host" in args:
 		_auto_role = "host"
 		if not Session.host("--vpn" not in args):

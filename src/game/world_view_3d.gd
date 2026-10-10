@@ -10,6 +10,7 @@ const FOG := Color(0.02, 0.02, 0.03)
 const FAR := 5000.0
 const BEAM_Y := 1.2
 const LYING_Y := 0.28
+const SURFACE := preload("res://src/game/surface.gdshader")
 
 var world: NetWorld
 var view: WorldView
@@ -95,6 +96,21 @@ func _add(mesh: Mesh, mat: Material, parent: Node3D = null) -> MeshInstance3D:
 
 func _col(a: Array) -> Color:
 	return Color(float(a[0]), float(a[1]), float(a[2]))
+
+
+## Procedural PBR surface from data/view3d.json "surfaces" (ground, floor, wall, door).
+func _surface_mat(key: String) -> ShaderMaterial:
+	var s: Dictionary = _cfg["surfaces"][key]
+	var m := ShaderMaterial.new()
+	m.shader = SURFACE
+	m.set_shader_parameter("mode", int(s["mode"]))
+	for k in ["color_a", "color_b", "grout"]:
+		if s.has(k):
+			m.set_shader_parameter(k, _col(s[k]))
+	for k in ["scale", "tile_m", "rough_min", "rough_max", "bump", "grime_m"]:
+		if s.has(k):
+			m.set_shader_parameter(k, float(s[k]))
+	return m
 
 
 func _box(size: Vector3) -> BoxMesh:
@@ -217,8 +233,8 @@ func _build_environment() -> void:
 
 func _build_level() -> void:
 	var lv := world.level
-	_floor(lv.bounds, 0.0, _mat(Color(0.12, 0.12, 0.13)))
-	_floor(lv.building, 0.005, _mat(Color(0.24, 0.24, 0.26)))
+	_floor(lv.bounds, 0.0, _surface_mat("ground"))
+	_floor(lv.building, 0.005, _surface_mat("floor"))
 	for rm in lv.rooms:
 		if rm["dark"]:  # darkness itself comes from the missing ceiling light
 			var sign_label := _label(0.02, Color(0.75, 0.82, 1.0, 0.45))  # flat on the floor, under the fog
@@ -231,7 +247,7 @@ func _build_level() -> void:
 	_sil_ring.scale = Vector3.ONE * (float(world.tuning["light"]["silhouette_radius"]) * _k)
 	_sil_ring.visible = false
 	_floor(lv.exit_zone, 0.015, _mat(Color(0.1, 0.5, 0.2, 0.5), true))
-	var wall_mat := _mat(Color(0.5, 0.5, 0.54))
+	var wall_mat := _surface_mat("wall")
 	var caster_h := float(_cfg["lighting"]["shadow_caster_h"])
 	for r in lv.wall_rects:
 		var mi := _add(_box(Vector3(r.size.x * _k, _wall_h, r.size.y * _k)), wall_mat)
@@ -243,7 +259,7 @@ func _build_level() -> void:
 		sh.position = _p3(r.get_center(), caster_h * 0.5)
 		sh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY  # light must not pass over low walls
 	for i in lv.door_rects.size():
-		var leaf_mat := _mat(WorldView.DOOR_COLORS[0])
+		var leaf_mat := _surface_mat("door")
 		var mark_mat := _mat(Color(1, 1, 1, 0.0), true)
 		var leaf := _add(_box(Vector3.ONE), leaf_mat)
 		leaf.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
@@ -518,7 +534,8 @@ func _update_level(delta: float) -> void:
 			var h: float = _wall_h * 0.9 * d["cut"]
 			(leaf.mesh as BoxMesh).size = Vector3(r.size.x * _k, h, r.size.y * _k)
 			leaf.position = _p3(r.get_center(), h * 0.5)
-			(d["leaf_mat"] as StandardMaterial3D).albedo_color = col
+			# whoever touched the door last tints the wood (blue = host, orange = client)
+			(d["leaf_mat"] as ShaderMaterial).set_shader_parameter("tint", Color.WHITE if lv.door_actor[i] == 0 else Color.WHITE.lerp(col, 0.6))
 		var shade: MeshInstance3D = d["shade"]  # full-height shadow caster, independent of fog visibility
 		var cr := lv.door_collider_rect(i)
 		shade.visible = st != Level.DoorState.OPEN

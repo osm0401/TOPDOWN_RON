@@ -8,6 +8,13 @@
   "actor_h": 1.7,
   "aim_height_m": 1.1,
   "fog_y": 0.03,
+  "surfaces": {
+    "_note": "PROTOTYPE/TUNING: 코드로 만든 임시 PBR 재질. mode 0=노이즈(회반죽/아스팔트), 1=타일, 2=나무 판자. 색은 RGB 0~1.",
+    "ground": {"mode": 0, "color_a": [0.07, 0.07, 0.075], "color_b": [0.16, 0.155, 0.15], "scale": 0.9, "rough_min": 0.85, "rough_max": 1.0, "bump": 0.04},
+    "floor": {"mode": 1, "color_a": [0.46, 0.45, 0.42], "color_b": [0.33, 0.33, 0.31], "grout": [0.1, 0.1, 0.1], "tile_m": 0.6, "scale": 0.6, "rough_min": 0.3, "rough_max": 0.8, "bump": 0.015},
+    "wall": {"mode": 0, "color_a": [0.62, 0.6, 0.55], "color_b": [0.46, 0.45, 0.41], "scale": 1.1, "rough_min": 0.75, "rough_max": 1.0, "bump": 0.03, "grime_m": 0.6},
+    "door": {"mode": 2, "color_a": [0.42, 0.28, 0.16], "color_b": [0.3, 0.19, 0.1], "grout": [0.08, 0.05, 0.03], "tile_m": 0.18, "rough_min": 0.55, "rough_max": 0.9, "bump": 0.03}
+  },
   "lighting": {
     "_note": "PROTOTYPE/TUNING: 임시값. 색은 RGB 0~1. 밝은 방마다 천장등, 어두운 방은 조명 없음.",
     "ambient": {"color": [0.12, 0.14, 0.2], "energy": 0.55},

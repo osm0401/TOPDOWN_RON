@@ -9,6 +9,7 @@ var _world: NetWorld
 var _auto_role := ""
 var _shot_path := ""
 var _scenario := ""
+var _generation := 0  ## incremented on every retry so a fresh world can tell it is a restart
 
 
 func _ready() -> void:
@@ -125,9 +126,30 @@ func _enter_world() -> void:
 	_world.auto_role = _auto_role
 	_world.shot_path = _shot_path
 	_world.scenario = _scenario
+	_world.generation = _generation
 	_world.leave_requested.connect(_leave_to_lobby.bind(""))
+	_world.restart_requested.connect(_restart_world, CONNECT_DEFERRED)
+	_world.lobby_requested.connect(_on_lobby_requested)
 	add_child(_world)
 	_lobby.hide()
+
+
+## Vote chose "retry": rebuild the world on both sides; the connection stays open.
+func _restart_world() -> void:
+	if _world == null:
+		return
+	remove_child(_world)
+	_world.queue_free()
+	_world = null
+	_generation += 1
+	_enter_world()
+
+
+## Vote chose "lobby": let the other player's message arrive first, then leave.
+func _on_lobby_requested() -> void:
+	if not Session.solo:
+		await get_tree().create_timer(0.4).timeout
+	_leave_to_lobby("")
 
 
 func _leave_to_lobby(msg: String) -> void:

@@ -1,6 +1,6 @@
 class_name NetWorld
 extends Node2D
-## Online gray-box world (stage 4). Host-authoritative: the client sends input and action
+## Online gray-box world (stage 5). Host-authoritative: the client sends input and action
 ## requests, the host simulates players, doors, NPCs and the mission, then replicates.
 ## Rendering lives in WorldView / MissionPanel. Auto test mode (auto_role + scenario)
 ## replays a fixed script and prints FINAL.
@@ -11,8 +11,10 @@ signal shot_fired(shooter: int, from: Vector2, to: Vector2, hit_npc: bool)  ## s
 signal speech_emitted(text: String, pos: Vector2, from_npc: bool)
 signal notice_emitted(text: String)
 signal damaged(slot: int)
+signal restart_requested  ## the vote chose a retry: Main rebuilds the world
+signal lobby_requested    ## the vote chose the main lobby
 
-enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY }
+enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY, VOTE_RETRY, VOTE_LOBBY }
 
 const SLOT_HOST := 0
 const SLOT_CLIENT := 1
@@ -39,10 +41,23 @@ const SCENARIOS := {
 		"events": {"host": [[0.1, "ready", 0], [2.0, "kill_suspect", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 3.5, "final": 5.0,
 	},
+	"reinforce": {
+		"events": {"host": [[0.1, "ready", 0], [0.2, "clock_soon", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 10.0, "final": 12.0,
+	},
+	# vote: host and client disagree in round 1, agree on a retry in round 2 -> both worlds restart
+	"vote": {
+		"events": {
+			"host": [[0.1, "ready", 0], [1.0, "kill_suspect", 0], [2.5, "vote_retry", 0], [4.5, "vote_retry", 0]],
+			"client": [[0.1, "ready", 0], [2.5, "vote_lobby", 0], [4.5, "vote_retry", 0]],
+		},
+		"shot": 3.0, "final": 8.0,
+	},
 }
 
 var auto_role := ""
 var scenario := ""
+var generation := 0  ## how many times the mission was restarted by a vote
 var shot_path := ""
 
 var tuning: Dictionary = {}
@@ -52,6 +67,8 @@ var players: Array[PlayerState] = []
 var shown: Array[Vector2] = []
 var director: NpcDirector
 var mission := MissionState.new()
+var clock: ReinforcementClock
+var vote: VoteState
 var is_host := false
 var solo := false
 var my_slot := 0
@@ -63,6 +80,7 @@ var _door_range := 0.0
 var _stride_px := 60.0
 var _acts: Dictionary = {}
 var _lines: Dictionary = {}
+var _rcfg: Dictionary = {}
 var _snap_interval := 0.05
 var _ping_interval := 1.0
 var _bodies: Array[CharacterBody2D] = []
@@ -114,6 +132,9 @@ func _ready() -> void:
 	var presets: Dictionary = JsonData.load_dict("res://data/difficulty.json")["presets"]
 	var diff: Dictionary = presets.get(Session.difficulty, presets["normal"])
 	director = NpcDirector.new(level, tuning, diff, players, 1234)
+	_rcfg = tuning["reinforcement"]
+	clock = ReinforcementClock.new(float(diff["reinforce_s"]), float(_rcfg["min_warning_s"]), float(_rcfg["min_lead_after_noise_s"]))
+	vote = VoteState.new(float(tuning["vote"]["round_s"]), int(tuning["vote"]["max_rounds"]))
 	if is_host:
 		for s in 2:
 			_bodies.append(_make_body(players[s].pos))
@@ -222,7 +243,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_R:
 			_request_reload()
 		KEY_1, KEY_2, KEY_3, KEY_4:
-			_send(Act.COMMAND, event.physical_keycode - KEY_1)
+			var n: int = event.physical_keycode - KEY_1
+			if mission.phase == MissionState.Phase.RESULT:
+				if n == 0:
+					_send(Act.VOTE_RETRY, 0)
+				elif n == 1:
+					_send(Act.VOTE_LOBBY, 0)
+			else:
+				_send(Act.COMMAND, n)
 		KEY_ESCAPE:
 			leave_requested.emit()
 
@@ -290,6 +318,8 @@ func _physics_process(delta: float) -> void:
 func _process(delta: float) -> void:
 	for s in 2:
 		shown[s] = shown[s].lerp(players[s].pos, minf(delta * 15.0, 1.0))
+	if not is_host and mission.phase == MissionState.Phase.RESULT and vote.outcome == VoteState.Outcome.PENDING:
+		vote.time_left = maxf(vote.time_left - delta, 0.0)  # display only, the host decides
 
 
 # ---- host simulation --------------------------------------------------------
@@ -318,7 +348,10 @@ func _step_host(delta: float, host_move: Vector2) -> void:
 					_push_weapons()
 		_step_actions(delta)
 		director.tick(delta)
+		_update_reinforcements(delta)
 		_update_mission()
+	elif mission.phase == MissionState.Phase.RESULT:
+		_update_vote(delta)
 	_snap_accum += delta
 	if _online() and _snap_accum >= _snap_interval:
 		_snap_accum = 0.0
@@ -334,6 +367,8 @@ func _update_mission() -> void:
 		"enemies_pending": 0, "players_alive": 0, "players_in_exit": 0,
 	}
 	for a in director.agents:
+		if a.dormant:
+			continue  # reinforcements that have not arrived are no threat yet
 		var st := a.brain.state
 		var settled := st == NpcBrain.State.DEAD or st == NpcBrain.State.RESTRAINED
 		if a.suspect:
@@ -354,6 +389,56 @@ func _update_mission() -> void:
 			Session.log_line("MISSION %s reason=%s score=%d grade=%s" % [
 				"success" if mission.status == MissionState.Status.SUCCESS else "failed", mission.reason_key(),
 				current_score(), ScoreRules.grade(current_score(), score_rules)])
+			var present: Array[bool] = [true, not solo]
+			vote.start(present, not solo)
+			_push_vote()
+
+
+## Reinforcement clock: warning (radio + siren) first, arrival later. Loud noise and enemies
+## that have noticed the players speed it up (noise is added in _emit_sound).
+func _update_reinforcements(delta: float) -> void:
+	var mult := 1.0
+	for a in director.agents:
+		if not a.dormant and a.brain.role == NpcBrain.Role.ENEMY and a.brain.is_alert():
+			mult = float(_rcfg["alarm_mult"])
+			break
+	var event := clock.tick(delta * mult)
+	if event == "warning":
+		mission.reinforce = ReinforcementClock.Phase.WARNED
+		_push_mission()
+		_notice_all(tr("무전: 외부에서 지원 병력이 접근 중이다!"))
+		_emit_sound(SoundProp.Kind.SIREN, _vec2(_rcfg["siren_at"]))
+		Session.log_line("reinforcement warning")
+	elif event == "arrive":
+		mission.reinforce = ReinforcementClock.Phase.ARRIVED
+		director.activate_reinforcements(_vec2(_rcfg["target"]))
+		_push_mission()
+		_notice_all(tr("증원이 도착했다! 입구 쪽을 조심하라"))
+		Session.log_line("reinforcement arrived")
+
+
+func _update_vote(delta: float) -> void:
+	if vote.outcome == VoteState.Outcome.PENDING and vote.tick(delta):
+		_push_vote()
+		_check_vote_outcome()
+
+
+func _check_vote_outcome() -> void:
+	match vote.outcome:
+		VoteState.Outcome.RETRY:
+			Session.log_line("vote: retry")
+			if _online():
+				rpc_restart.rpc()
+			restart_requested.emit()
+		VoteState.Outcome.LOBBY:
+			Session.log_line("vote: lobby")
+			if _online():
+				rpc_to_lobby.rpc()
+			lobby_requested.emit()
+
+
+static func _vec2(a: Array) -> Vector2:
+	return Vector2(float(a[0]), float(a[1]))
 
 
 func _step_actions(delta: float) -> void:
@@ -389,6 +474,12 @@ func _do_act(slot: int, act: int, arg: int) -> void:
 	if act == Act.READY:
 		if mission.mark_ready(slot):
 			_push_mission()
+		return
+	if act == Act.VOTE_RETRY or act == Act.VOTE_LOBBY:
+		var choice := VoteState.Choice.RETRY if act == Act.VOTE_RETRY else VoteState.Choice.LOBBY
+		if mission.phase == MissionState.Phase.RESULT and vote.cast(slot, choice):
+			_push_vote()
+			_check_vote_outcome()
 		return
 	if ps.dead() or not _active():
 		return
@@ -592,12 +683,21 @@ func _notice(slot: int, text: String) -> void:
 		rpc_notice.rpc_id(_client_id, text)
 
 
+func _notice_all(text: String) -> void:
+	notice_emitted.emit(text)
+	if _online():
+		rpc_notice.rpc(text)
+
+
 func _emit_sound(kind: int, at: Vector2, from_npc: bool = false) -> void:
 	sound_emitted.emit(kind, at)
 	if _online():
 		rpc_sound.rpc(kind, at)
-	if not from_npc and is_host:
-		director.on_sound(kind, at, -1)
+	if is_host and kind != SoundProp.Kind.SIREN:
+		if not from_npc:
+			director.on_sound(kind, at, -1)
+		if _active():
+			clock.add_noise(float(_rcfg["noise_s"].get(SoundProp.NAMES[kind], 0.0)))
 
 
 func _push_state() -> void:
@@ -608,6 +708,11 @@ func _push_state() -> void:
 func _push_mission() -> void:
 	if _online():
 		rpc_mission.rpc(mission.pack())
+
+
+func _push_vote() -> void:
+	if _online():
+		rpc_vote.rpc(vote.pack())
 
 
 func _push_weapons() -> void:
@@ -641,6 +746,7 @@ func rpc_client_ready() -> void:
 	rpc_state.rpc_id(_client_id, level.pack_doors())
 	rpc_weapons.rpc_id(_client_id, _pack_weapons())
 	rpc_mission.rpc_id(_client_id, mission.pack())
+	rpc_vote.rpc_id(_client_id, vote.pack())
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -653,7 +759,7 @@ func rpc_input(move: Vector2, angle: float) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func rpc_act(act: int, arg: int) -> void:
-	if _from_client() and act >= 0 and act <= Act.READY and arg >= 0 and arg <= 3:
+	if _from_client() and act >= 0 and act <= Act.VOTE_LOBBY and arg >= 0 and arg <= 3:
 		_do_act(SLOT_CLIENT, act, arg)
 
 
@@ -696,6 +802,21 @@ func rpc_state(doors: PackedInt32Array) -> void:
 @rpc("authority", "call_remote", "reliable")
 func rpc_mission(data: PackedInt32Array) -> void:
 	mission.unpack(data)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_vote(data: PackedInt32Array) -> void:
+	vote.unpack(data)
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_restart() -> void:
+	restart_requested.emit()
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_to_lobby() -> void:
+	lobby_requested.emit()
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -761,23 +882,24 @@ func _auto_tick() -> void:
 	if auto_role == "":
 		return
 	var scn: Dictionary = SCENARIOS[scenario]
-	var events: Array = scn["events"][auto_role]
+	var events: Array = scn["events"][auto_role] if generation == 0 else []
+	var final_t := float(scn["final"]) if generation == 0 else 1.0
 	for i in events.size():
 		if _t >= events[i][0] and not _auto_done.has(i):
 			_auto_done[i] = true
 			_auto_do(str(events[i][1]), int(events[i][2]))
-	if shot_path != "" and _t >= float(scn["shot"]) and not _auto_done.has("shot"):
+	if shot_path != "" and generation == 0 and _t >= float(scn["shot"]) and not _auto_done.has("shot"):
 		_auto_done["shot"] = true
 		_capture(shot_path)
-	if _t >= float(scn["final"]) and not _auto_done.has("final"):
+	if _t >= final_t and not _auto_done.has("final"):
 		_auto_done["final"] = true
 		var npcs := PackedStringArray()
 		for a in director.agents:
 			npcs.append("%d/%d/%.0f,%.0f" % [a.brain.state, a.brain.hp, a.pos.x, a.pos.y])
-		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s ps0=%s ps1=%s w=%s npcs=%s mission=%s score=%d" % [
+		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s ps0=%s ps1=%s w=%s npcs=%s mission=%s score=%d gen=%d" % [
 			players[0].pos.x, players[0].pos.y, players[1].pos.x, players[1].pos.y, level.pack_doors(),
-			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs), mission.pack(), current_score()])
-	if _t >= float(scn["final"]) + 0.5:
+			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs), mission.pack(), current_score(), generation])
+	if _t >= final_t + 0.5:
 		get_tree().quit()
 
 
@@ -810,6 +932,12 @@ func _auto_do(name: String, arg: int) -> void:
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)
 			players[0].aim = 0.0
+		"vote_retry":
+			_send(Act.VOTE_RETRY, 0)
+		"vote_lobby":
+			_send(Act.VOTE_LOBBY, 0)
+		"clock_soon":  # test aid: reinforcements in ~10 s instead of minutes
+			clock.remaining = 9.5
 		"kill_suspect":
 			for a in director.agents:
 				if a.suspect:

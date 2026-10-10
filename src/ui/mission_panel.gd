@@ -170,5 +170,27 @@ func _draw_result() -> void:
 		var alive := not world.players[s].dead()
 		_text(Vector2(x, y + 20.0), tr("경찰관 %d: %s") % [s + 1, tr("생존") if alive else tr("사망")], 16, GOOD if alive else BAD)
 		y += 24.0
-	_text(Vector2(x, panel.end.y - 54.0), tr("점수 규칙은 임시값입니다 (시작 점수, 감점, A~F 경계 미확정)"), 13, DIM)
-	_text(Vector2(x, panel.end.y - 26.0), tr("Esc: 로비로 돌아가기 (재시도 투표는 다음 단계)"), 15, TEXT)
+	_text(Vector2(x, panel.end.y - 120.0), tr("점수 규칙은 임시값입니다 (시작 점수, 감점, A~F 경계 미확정)"), 13, DIM)
+	_draw_vote(panel, x)
+
+
+func _draw_vote(panel: Rect2, x: float) -> void:
+	var v := world.vote
+	var y := panel.end.y - 92.0
+	draw_line(Vector2(x, y), Vector2(panel.end.x - 32.0, y), Color(1, 1, 1, 0.18), 1.0)
+	if v.outcome == VoteState.Outcome.RETRY:
+		_text(Vector2(x, y + 34.0), tr("같은 임무를 다시 시작합니다..."), 22, GOOD)
+		return
+	if v.outcome == VoteState.Outcome.LOBBY:
+		_text(Vector2(x, y + 34.0), tr("메인 로비로 돌아갑니다..."), 22, BAD)
+		return
+	_text(Vector2(x, y + 28.0), tr("1: 같은 임무 재시도        2: 메인 로비로"), 22)
+	var names: Array[String] = [tr("선택 중"), tr("재시도"), tr("로비")]
+	var me := world.my_slot
+	var line := tr("나: %s") % names[v.votes[me]]
+	if not world.solo:
+		line += tr("      상대: %s") % names[v.votes[1 - me]]
+		line += tr("      라운드 %d/%d      남은 시간 %d초") % [v.round_no, v.max_rounds, ceili(v.time_left)]
+	_text(Vector2(x, y + 56.0), line, 16, DIM)
+	if v.round_no > 1:
+		_text(Vector2(x, y + 78.0), tr("의견이 달라 재투표 중입니다. 다시 일치하지 않으면 메인 로비로 돌아갑니다"), 14, Color(1.0, 0.85, 0.4))

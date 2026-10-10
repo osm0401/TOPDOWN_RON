@@ -13,7 +13,7 @@ const SPEECH_S := 2.4
 const NOTICE_S := 3.0
 const SOUND_COLORS: Array[Color] = [
 	Color(0.9, 0.9, 0.9), Color(1.0, 0.55, 0.1), Color(1.0, 0.9, 0.3), Color(1.0, 0.3, 0.2),
-	Color(0.5, 0.8, 1.0), Color(1.0, 0.5, 0.9), Color(0.4, 0.6, 1.0), Color(0.7, 0.7, 0.5)]
+	Color(0.5, 0.8, 1.0), Color(1.0, 0.5, 0.9), Color(0.4, 0.6, 1.0), Color(0.7, 0.7, 0.5), Color(1.0, 0.25, 0.25)]
 const PLAYER_COLORS: Array[Color] = [Color(0.3, 0.6, 1.0), Color(1.0, 0.6, 0.2)]
 const DOOR_COLORS: Array[Color] = [Color(0.62, 0.5, 0.32), Color(0.3, 0.6, 1.0), Color(1.0, 0.6, 0.2)]
 const ENEMY_COLOR := Color(0.8, 0.15, 0.15)
@@ -273,6 +273,8 @@ func _draw_npcs() -> void:
 		if seen == LightModel.Seen.NONE:
 			continue
 		var a: NpcDirector.Agent = agents[i]
+		if a.dormant:
+			continue  # reinforcements are not in the building yet
 		if seen == LightModel.Seen.SILHOUETTE:
 			draw_circle(a.pos, 14.0, Color(0.35, 0.35, 0.4, 0.8))
 			continue
@@ -434,4 +436,8 @@ func _update_hud() -> void:
 		d.count_state(C, S.RESTRAINED), d.count_state(C, S.DEAD), world.current_score(), rtt])
 	if me.cam_door >= 0:
 		lines.append(tr("문틈 카메라 사용 중 (C로 종료)"))
+	if world.mission.reinforce == ReinforcementClock.Phase.WARNED:
+		lines.append(tr("무전 경고: 지원 병력이 접근 중이다"))
+	elif world.mission.reinforce == ReinforcementClock.Phase.ARRIVED:
+		lines.append(tr("증원이 도착했다: 건물 안의 적을 모두 처리해야 한다"))
 	_hud.text = "\n".join(lines)

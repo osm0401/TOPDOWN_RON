@@ -51,6 +51,7 @@ func load_map(path: String) -> bool:
 			"facing": float(n.get("facing", 0.0)),
 			"feigns": bool(n.get("feigns", false)),
 			"suspect": bool(n.get("suspect", false)),
+			"reinforcement": bool(n.get("reinforcement", false)),
 			"clues": n.get("clues", []),
 		})
 	for w in d["walls"]:

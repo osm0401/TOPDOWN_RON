@@ -4,9 +4,9 @@ extends RefCounted
 ##   distance + penalties(walls, closed doors, ajar doors) <= radius * hearing multiplier.
 ## A closed door costs more than a wall (decided rule), an ajar door much less.
 
-enum Kind { FOOTSTEP, GUNSHOT, DOOR, KICK, VOICE, SCREAM, TASER, DOOR_AJAR }
+enum Kind { FOOTSTEP, GUNSHOT, DOOR, KICK, VOICE, SCREAM, TASER, DOOR_AJAR, SIREN }
 
-const NAMES: Array[String] = ["footstep", "gunshot", "door", "kick", "voice", "scream", "taser", "door_ajar"]
+const NAMES: Array[String] = ["footstep", "gunshot", "door", "kick", "voice", "scream", "taser", "door_ajar", "siren"]
 
 
 static func effective_distance(dist: float, blockers: Dictionary, penalty: Dictionary) -> float:

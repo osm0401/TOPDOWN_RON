@@ -26,6 +26,7 @@ class Agent extends RefCounted:
 	var path_goal := Vector2.INF
 	var target_slot := -1
 	var suspect := false          ## the designated suspect (must be taken alive)
+	var dormant := false          ## reinforcement not arrived yet: not simulated, seen, heard or shot
 	var clues: Array[String] = []  ## visible identifying marks: "cap", "band"
 
 
@@ -63,6 +64,7 @@ func _init(lv: Level, tuning: Dictionary, diff: Dictionary, player_list: Array[P
 		a.brain.pos = a.pos
 		a.brain.facing = float(def["facing"])
 		a.suspect = bool(def["suspect"])
+		a.dormant = bool(def["reinforcement"])
 		a.clues.assign(def["clues"])
 		agents.append(a)
 
@@ -97,7 +99,7 @@ func resolve_player_shot(slot: int, from: Vector2, to: Vector2, damage: int, stu
 	var radius := float(_np["threat_shot_radius"])
 	for i in agents.size():
 		var a: Agent = agents[i]
-		if i == hit or not a.brain.alive():
+		if i == hit or a.dormant or not a.brain.alive():
 			continue
 		var closest := Geometry2D.get_closest_point_to_segment(a.pos, from, end)
 		if closest.distance_to(a.pos) <= radius and level.has_los(from, a.pos):
@@ -127,7 +129,7 @@ func command(slot: int, cmd: int) -> Dictionary:
 	var best_d := INF
 	for i in agents.size():
 		var a: Agent = agents[i]
-		if not a.brain.alive() or a.brain.state == NpcBrain.State.RESTRAINED:
+		if a.dormant or not a.brain.alive() or a.brain.state == NpcBrain.State.RESTRAINED:
 			continue
 		if not Geom2D.cone_contains(pl.pos, pl.aim, float(cfg["cone_deg"]), float(cfg["range"]), a.pos):
 			continue
@@ -164,6 +166,15 @@ func restrain(i: int) -> bool:
 	return i >= 0 and i < agents.size() and agents[i].brain.restrain()
 
 
+## The reinforcement wave arrives: every dormant agent starts heading for `target`.
+func activate_reinforcements(target: Vector2) -> void:
+	for a in agents:
+		if a.dormant:
+			a.dormant = false
+			a.home = target
+			a.brain.alert(target)
+
+
 func count_state(role: int, state: int) -> int:
 	var n := 0
 	for a in agents:
@@ -183,7 +194,7 @@ func pack() -> Array:
 		ps.append(a.pos)
 		face.append(b.facing)
 		data.append(b.state | (16 if b.armed else 0) | (32 if b.feigning else 0) | (64 if b.had_weapon else 0) \
-			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8))
+			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0))
 	return [ps, data, face]
 
 
@@ -198,7 +209,8 @@ func unpack(ps: PackedVector2Array, data: PackedInt32Array, face: PackedFloat32A
 		b.state = d & 15
 		b.armed = (d & 16) != 0
 		b.feigning = (d & 32) != 0
-		b.hp = d >> 8
+		b.hp = (d >> 8) & 255
+		a.dormant = (d & 65536) != 0
 
 
 # ---- per-agent tick ------------------------------------------------------------
@@ -206,7 +218,7 @@ func unpack(ps: PackedVector2Array, data: PackedInt32Array, face: PackedFloat32A
 func _tick_agent(i: int, delta: float, sounds: Array[Dictionary], alerts: Array[Dictionary]) -> void:
 	var a: Agent = agents[i]
 	var b := a.brain
-	if not b.alive() or b.state == NpcBrain.State.RESTRAINED:
+	if a.dormant or not b.alive() or b.state == NpcBrain.State.RESTRAINED:
 		return
 	b.pos = a.pos
 	if b.needs_flee_target:
@@ -353,7 +365,7 @@ func _nearest_on_segment(from: Vector2, to: Vector2) -> int:
 	var radius := float(_np["hit_radius"])
 	for i in agents.size():
 		var a: Agent = agents[i]
-		if not a.brain.alive():
+		if a.dormant or not a.brain.alive():
 			continue
 		var c := Geometry2D.get_closest_point_to_segment(a.pos, from, to)
 		if c.distance_to(a.pos) <= radius and from.distance_to(c) < best_t:
@@ -370,7 +382,7 @@ func _share_alert(from: int, at: Vector2) -> void:
 			continue
 		var o: Agent = agents[j]
 		var st := o.brain.state
-		if o.brain.role != NpcBrain.Role.ENEMY:
+		if o.dormant or o.brain.role != NpcBrain.Role.ENEMY:
 			continue
 		if st != NpcBrain.State.IDLE and st != NpcBrain.State.INVESTIGATE and st != NpcBrain.State.HIDE:
 			continue

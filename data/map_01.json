@@ -17,7 +17,9 @@
     {"role": "enemy", "pos": [1100, 700], "facing": 3.14, "feigns": true},
     {"role": "civilian", "pos": [400, 300]},
     {"role": "civilian", "pos": [500, 700], "clues": ["band"]},
-    {"role": "enemy", "pos": [1200, 300], "facing": 3.14, "suspect": true, "clues": ["cap", "band"]}
+    {"role": "enemy", "pos": [1200, 300], "facing": 3.14, "suspect": true, "clues": ["cap", "band"]},
+    {"role": "enemy", "pos": [90, 280], "facing": 0.0, "reinforcement": true},
+    {"role": "enemy", "pos": [90, 720], "facing": 0.0, "reinforcement": true}
   ],
   "walls": [
     [200, 150, 1200, 20],

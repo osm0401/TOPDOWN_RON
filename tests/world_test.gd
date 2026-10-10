@@ -15,6 +15,7 @@ func _ready() -> void:
 	await _run()
 	await _mission_tests()
 	await _solo_tests()
+	await _stage5_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	Session.leave()
@@ -329,3 +330,163 @@ func _solo_tests() -> void:
 
 	Session.leave()
 	_check(not Session.solo and not Session.is_hosting, "leaving resets solo mode")
+
+
+func _settle_npcs(except_reinforcements: bool = true) -> void:
+	# put every non-reinforcement NPC into a finished state so only the return remains
+	for a in _w.director.agents:
+		if a.dormant:
+			continue
+		if a.suspect or a.brain.role == NpcBrain.Role.CIVILIAN:
+			a.brain.state = NpcBrain.State.RESTRAINED
+		else:
+			a.brain.state = NpcBrain.State.DEAD
+
+
+func _stage5_tests() -> void:
+	var S := NpcBrain.State
+	var Act := NetWorld.Act
+	Session.host(true)  # the solo tests left the session; the host-side worlds below need it
+
+	# --- noise pulls the reinforcement earlier, but only while the mission is running
+	await _boot(false)
+	_w.clock.remaining = 100.0
+	_w._emit_sound(SoundProp.Kind.KICK, Vector2(500, 500))
+	_check(is_equal_approx(_w.clock.remaining, 100.0), "briefing: noise does not move the clock")
+	_w._do_act(0, Act.READY, 0)
+	_w._do_act(1, Act.READY, 0)
+	_w._emit_sound(SoundProp.Kind.KICK, Vector2(500, 500))
+	_check(is_equal_approx(_w.clock.remaining, 92.0), "a kick makes the reinforcement 8 s sooner")
+	_w._emit_sound(SoundProp.Kind.GUNSHOT, Vector2(500, 500))
+	_check(is_equal_approx(_w.clock.remaining, 88.0), "a gunshot makes it 4 s sooner")
+	_w._emit_sound(SoundProp.Kind.FOOTSTEP, Vector2(500, 500))
+	_w._emit_sound(SoundProp.Kind.SIREN, Vector2(30, 500))
+	_check(is_equal_approx(_w.clock.remaining, 88.0), "footsteps and the siren itself add nothing")
+
+	# --- an enemy that noticed the players runs the clock faster (alarm)
+	_w.clock.remaining = 100.0
+	for a in _w.director.agents:
+		a.home = a.pos
+	_place(0, Vector2(60, 480))
+	_place(1, Vector2(60, 520))
+	_w.director.agents[0].brain.state = S.ATTACK
+	var before := _w.clock.remaining
+	await _seconds(1.0)
+	_check(before - _w.clock.remaining >= 1.6, "alarm: the clock runs about twice as fast (%.2f s used)" % (before - _w.clock.remaining))
+
+	# --- warning first (radio + siren), then arrival; reinforcements become real threats
+	await _boot(true)
+	_settle_npcs()
+	var notices := []
+	var sirens := []
+	_w.notice_emitted.connect(func(t: String) -> void: notices.append(t))
+	_w.sound_emitted.connect(func(kind: int, _at: Vector2) -> void:
+		if kind == SoundProp.Kind.SIREN:
+			sirens.append(kind))
+	_place(0, Vector2(600, 500))
+	_place(1, Vector2(620, 500))
+	_w.clock.remaining = 9.5
+	await _seconds(2.0)
+	_check(_w.mission.reinforce == ReinforcementClock.Phase.WARNED and notices.size() == 1 and sirens.size() == 1, "radio warning + siren come first")
+	var dormant_left := 0
+	for a in _w.director.agents:
+		if a.dormant:
+			dormant_left += 1
+	_check(dormant_left == 2, "nobody has arrived yet when the warning sounds")
+	await _seconds(9.0)
+	_check(_w.mission.reinforce == ReinforcementClock.Phase.ARRIVED and notices.size() == 2, "the wave arrives after the warning")
+	dormant_left = 0
+	for a in _w.director.agents:
+		if a.dormant:
+			dormant_left += 1
+	_check(dormant_left == 0, "both reinforcements are in the map")
+
+	# --- they must be dealt with before the return counts
+	_place(0, Vector2(60, 480))
+	_place(1, Vector2(60, 520))
+	await _frames(6)
+	_check(_w.mission.phase == MissionState.Phase.ACTIVE and not _w.mission.objectives[2], "arrived enemies block the mission: threats remain")
+	for a in _w.director.agents:
+		if a.brain.role == NpcBrain.Role.ENEMY and a.brain.state != S.RESTRAINED:
+			a.brain.state = S.DEAD
+	await _frames(6)
+	_check(_w.mission.status == MissionState.Status.SUCCESS, "after handling them, the return completes the mission")
+
+	# --- escaping before the wave arrives is a plain success
+	await _boot(true)
+	_settle_npcs()
+	_w.clock.remaining = 200.0
+	_place(0, Vector2(60, 480))
+	_place(1, Vector2(60, 520))
+	await _frames(6)
+	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.mission.reinforce == ReinforcementClock.Phase.WAITING, "escape before the wave: success, no reinforcements")
+
+	# --- result vote: disagree, revote, retry
+	await _boot(true)
+	var restarts := []
+	var lobbies := []
+	_w.restart_requested.connect(func() -> void: restarts.append(1))
+	_w.lobby_requested.connect(func() -> void: lobbies.append(1))
+	_w._do_act(0, Act.VOTE_RETRY, 0)
+	_check(_w.vote.votes[0] == 0, "no voting before the result screen")
+	var suspect: NpcDirector.Agent
+	for a in _w.director.agents:
+		if a.suspect:
+			suspect = a
+	_w.director.resolve_player_shot(0, suspect.pos + Vector2(-60, 0), suspect.pos + Vector2(60, 0), 99, false)
+	await _frames(4)
+	_check(_w.mission.phase == MissionState.Phase.RESULT and _w.vote.outcome == VoteState.Outcome.PENDING and _w.vote.timed, "result screen starts a timed vote")
+	_w._do_act(0, Act.VOTE_RETRY, 0)
+	_w._do_act(1, Act.VOTE_LOBBY, 0)
+	_check(_w.vote.round_no == 2 and restarts.is_empty() and lobbies.is_empty(), "disagreement -> second round, nothing happens yet")
+	_w._do_act(0, Act.VOTE_RETRY, 0)
+	_w._do_act(1, Act.VOTE_RETRY, 0)
+	_check(restarts.size() == 1 and lobbies.is_empty(), "both retry in round 2 -> restart requested once")
+
+	# --- still different after the second round: lobby
+	await _boot(true)
+	restarts.clear()
+	lobbies.clear()
+	_w.restart_requested.connect(func() -> void: restarts.append(1))
+	_w.lobby_requested.connect(func() -> void: lobbies.append(1))
+	_w.director.resolve_player_shot(0, suspect.pos + Vector2(-60, 0), suspect.pos + Vector2(60, 0), 99, false)
+	for a in _w.director.agents:
+		if a.suspect:
+			_w.director.resolve_player_shot(0, a.pos + Vector2(-60, 0), a.pos + Vector2(60, 0), 99, false)
+	await _frames(4)
+	_w._do_act(0, Act.VOTE_RETRY, 0)
+	_w._do_act(1, Act.VOTE_LOBBY, 0)
+	_w._do_act(0, Act.VOTE_LOBBY, 0)
+	_w._do_act(1, Act.VOTE_RETRY, 0)
+	_check(lobbies.size() == 1 and restarts.is_empty(), "no agreement after the extra round -> back to the lobby")
+
+	# --- the round timer: nobody votes twice in a row -> lobby
+	await _boot(true)
+	lobbies.clear()
+	_w.lobby_requested.connect(func() -> void: lobbies.append(1))
+	for a in _w.director.agents:
+		if a.suspect:
+			_w.director.resolve_player_shot(0, a.pos + Vector2(-60, 0), a.pos + Vector2(60, 0), 99, false)
+	await _frames(4)
+	_w.vote.time_left = 0.05
+	await _frames(4)
+	_check(_w.vote.round_no == 2 and lobbies.is_empty(), "timeout in round 1 -> round 2")
+	_w.vote.time_left = 0.05
+	await _frames(4)
+	_check(lobbies.size() == 1, "timeout again -> lobby")
+
+	# --- solo: one vote decides at once, no timer
+	Session.start_solo()
+	await _boot(false)
+	_w._do_act(0, Act.READY, 0)
+	restarts.clear()
+	_w.restart_requested.connect(func() -> void: restarts.append(1))
+	for a in _w.director.agents:
+		if a.suspect:
+			_w.director.resolve_player_shot(0, a.pos + Vector2(-60, 0), a.pos + Vector2(60, 0), 99, false)
+	await _frames(4)
+	_check(not _w.vote.timed and _w.vote.outcome == VoteState.Outcome.PENDING, "solo vote waits without a timer")
+	await _seconds(1.0)
+	_w._do_act(0, Act.VOTE_RETRY, 0)
+	_check(restarts.size() == 1, "solo: one vote restarts the mission")
+	Session.leave()

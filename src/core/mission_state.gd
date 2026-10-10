@@ -18,6 +18,7 @@ var reason := 0
 var civ_killed := 0
 var suspect_killed := 0
 var enemy_killed := 0
+var reinforce := 0  ## 0 waiting, 1 radio warning given, 2 arrived (ReinforcementClock.Phase)
 var objectives: Array[bool] = [false, false, false, false]
 var ready: Array[bool] = [false, false]
 
@@ -63,18 +64,18 @@ func _finish(new_status: int, why: int) -> void:
 	phase = Phase.RESULT
 
 
-## [phase, status, reason, civ_killed, suspect_killed, enemy_killed, objective bits, ready bits]
+## [phase, status, reason, civ_killed, suspect_killed, enemy_killed, objective bits, ready bits, reinforce]
 func pack() -> PackedInt32Array:
 	var obj := 0
 	for i in objectives.size():
 		if objectives[i]:
 			obj |= 1 << i
 	return PackedInt32Array([phase, status, reason, civ_killed, suspect_killed, enemy_killed,
-			obj, (1 if ready[0] else 0) | (2 if ready[1] else 0)])
+			obj, (1 if ready[0] else 0) | (2 if ready[1] else 0), reinforce])
 
 
 func unpack(a: PackedInt32Array) -> void:
-	if a.size() < 8:
+	if a.size() < 9:
 		return
 	phase = a[0]
 	status = a[1]
@@ -86,3 +87,4 @@ func unpack(a: PackedInt32Array) -> void:
 		objectives[i] = (a[6] & (1 << i)) != 0
 	ready[0] = (a[7] & 1) != 0
 	ready[1] = (a[7] & 2) != 0
+	reinforce = a[8]

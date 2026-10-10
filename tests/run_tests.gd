@@ -13,6 +13,7 @@ func _initialize() -> void:
 	_test_geom_sound_light()
 	_test_brain()
 	_test_mission()
+	_test_clock_and_vote()
 	await _test_level()
 	await _test_level_doors()
 	await _test_director()
@@ -142,6 +143,104 @@ func _test_mission() -> void:
 		_check(ScoreRules.grade(k, rules) == edges[k], "grade boundary %d -> %s" % [k, edges[k]])
 	var lines := ScoreRules.breakdown({"suspect_killed": 0, "civilian_killed": 1, "enemy_killed": 3, "player_dead": 0}, rules)
 	_check(lines.size() == 2 and lines[0].contains("-30") and lines[1].contains("감점 없음"), "breakdown lists events, free ones marked")
+
+
+func _tick_clock(c: ReinforcementClock, seconds: float, step: float = 0.1) -> Array:
+	var events := []
+	var t := 0.0
+	while t < seconds:
+		var e := c.tick(step)
+		if e != "":
+			events.append(e)
+		t += step
+	return events
+
+
+func _test_clock_and_vote() -> void:
+	var C := ReinforcementClock
+	var c := C.new(30.0, 8.0, 2.0)
+	_check(c.phase == C.Phase.WAITING and _tick_clock(c, 20.0).is_empty(), "no events while the delay runs")
+	var ev := _tick_clock(c, 3.0)
+	_check(ev == ["warning"] and c.phase == C.Phase.WARNED, "the warning comes first")
+	_check(c.remaining >= 7.0 and c.remaining <= 8.0, "arrival is about min_warning seconds after the warning (%.1f)" % c.remaining)
+	ev = _tick_clock(c, 9.0)
+	_check(ev == ["arrive"] and c.phase == C.Phase.ARRIVED, "then the wave arrives, exactly once")
+	_check(_tick_clock(c, 20.0).is_empty(), "no second wave")
+
+	c = C.new(100.0, 8.0, 2.0)
+	c.add_noise(8.0)
+	_check(is_equal_approx(c.remaining, 92.0), "a loud noise pulls the arrival earlier")
+	c.add_noise(1000.0)
+	_check(c.remaining == 0.0, "noise cannot go below zero")
+	ev = _tick_clock(c, 0.1)
+	_check(ev == ["warning"] and is_equal_approx(c.remaining, 8.0), "even a huge noise still gives the warning first, with its full lead")
+	c.add_noise(100.0)
+	_check(c.remaining >= 2.0 - 0.001, "after the warning, noise never cuts the lead below the minimum (%.1f)" % c.remaining)
+	var c2 := C.new(100.0, 8.0, 2.0)
+	_tick_clock(c2, 93.0)
+	c2.add_noise(-5.0)
+	c2.add_noise(0.0)
+	_check(c2.phase == C.Phase.WARNED, "zero or negative noise changes nothing")
+
+	var V := VoteState
+	var v := V.new(15.0, 2)
+	var both: Array[bool] = [true, true]
+	v.start(both, true)
+	_check(v.outcome == V.Outcome.PENDING and v.round_no == 1, "vote starts pending")
+	_check(v.cast(0, V.Choice.RETRY) and v.outcome == V.Outcome.PENDING, "one vote: still waiting")
+	_check(not v.cast(0, V.Choice.LOBBY), "a vote cannot be changed")
+	_check(v.cast(1, V.Choice.RETRY) and v.outcome == V.Outcome.RETRY, "both retry: retry")
+	_check(not v.cast(1, V.Choice.RETRY), "no votes after the outcome")
+
+	v.start(both, true)
+	v.cast(0, V.Choice.LOBBY)
+	v.cast(1, V.Choice.LOBBY)
+	_check(v.outcome == V.Outcome.LOBBY, "both lobby: lobby")
+
+	v.start(both, true)
+	v.cast(0, V.Choice.RETRY)
+	v.cast(1, V.Choice.LOBBY)
+	_check(v.outcome == V.Outcome.PENDING and v.round_no == 2 and v.votes == [0, 0] and v.time_left == 15.0, "disagreement: one more round with fresh votes and a fresh timer")
+	v.cast(0, V.Choice.RETRY)
+	v.cast(1, V.Choice.RETRY)
+	_check(v.outcome == V.Outcome.RETRY, "agree in the second round: retry")
+
+	v.start(both, true)
+	v.cast(0, V.Choice.RETRY)
+	v.cast(1, V.Choice.LOBBY)
+	v.cast(0, V.Choice.LOBBY)
+	v.cast(1, V.Choice.RETRY)
+	_check(v.outcome == V.Outcome.LOBBY, "still different after the extra round: lobby")
+
+	v.start(both, true)
+	_check(not v.tick(14.0) and v.round_no == 1, "timer running")
+	_check(v.tick(1.5) and v.round_no == 2 and v.outcome == V.Outcome.PENDING, "timeout with no votes: second round")
+	v.cast(0, V.Choice.RETRY)
+	_check(v.tick(16.0) and v.outcome == V.Outcome.LOBBY, "timeout again (only one voted): lobby")
+
+	v.start(both, true)
+	v.cast(0, V.Choice.RETRY)
+	v.cast(1, V.Choice.RETRY)
+	_check(not v.tick(30.0), "a finished vote ignores the timer")
+
+	var solo_players: Array[bool] = [true, false]
+	v.start(solo_players, false)
+	_check(not v.cast(1, V.Choice.RETRY), "an absent player cannot vote")
+	_check(not v.tick(100.0) and v.outcome == V.Outcome.PENDING, "solo vote has no timer")
+	_check(v.cast(0, V.Choice.LOBBY) and v.outcome == V.Outcome.LOBBY, "solo: one vote decides")
+
+	v.start(both, true)
+	v.cast(0, V.Choice.RETRY)
+	v.tick(3.0)
+	var copy := V.new()
+	copy.unpack(v.pack())
+	_check(copy.pack() == v.pack() and copy.votes[0] == V.Choice.RETRY, "vote state pack/unpack roundtrip")
+
+	var m := MissionState.new()
+	m.reinforce = 2
+	var mc := MissionState.new()
+	mc.unpack(m.pack())
+	_check(mc.reinforce == 2, "mission state carries the reinforcement phase")
 
 
 func _test_level() -> void:
@@ -656,6 +755,43 @@ func _test_director() -> void:
 	_check(kills.size() == 1, "shooting a corpse reports nothing more")
 	d.resolve_player_shot(1, Vector2(400, 400), Vector2(400, 200), 0, true)
 	_check(kills.size() == 1, "a non-lethal round never reports a kill")
+	_free_world(w)
+
+	# reinforcements stay out of play until they arrive
+	w = await _make_world()
+	d = w["dir"]
+	players = w["players"]
+	var dormant := []
+	for i in d.agents.size():
+		if d.agents[i].dormant:
+			dormant.append(i)
+	_check(dormant == [5, 6], "two reinforcement agents wait outside, dormant")
+	var start_pos: Vector2 = d.agents[5].pos
+	d.on_sound(SoundProp.Kind.KICK, Vector2(120, 300), -1)
+	players[0].pos = Vector2(120, 300)
+	for i in 5:
+		d.tick(0.1)
+		await physics_frame
+	_check(d.agents[5].pos == start_pos and d.agents[5].brain.state == S.IDLE, "a dormant agent neither hears nor moves")
+	var shot_res := d.resolve_player_shot(0, Vector2(30, 280), Vector2(200, 280), 99, false)
+	_check(int(shot_res["npc"]) == -1 and d.agents[5].brain.state == S.IDLE, "a dormant agent cannot be shot")
+	players[0].aim = 0.0
+	players[0].pos = Vector2(30, 280)
+	_check(int(d.command(0, NpcBrain.Cmd.WEAPON_DROP)["target"]) == -1, "a dormant agent cannot be commanded")
+	var packed := d.pack()
+	var mirror: NpcDirector = NpcDirector.new(w["level"], _tuning(), _diff(), players, 5)
+	mirror.unpack(packed[0], packed[1], packed[2])
+	_check(mirror.agents[5].dormant and mirror.agents[6].dormant and not mirror.agents[0].dormant, "the dormant flag survives packing")
+	players[0].pos = Vector2(900, 500)  # nobody near the arrival point: the order alone sends them
+	players[1].pos = Vector2(900, 540)
+	d.activate_reinforcements(Vector2(110, 500))
+	_check(not d.agents[5].dormant and not d.agents[6].dormant and d.agents[5].home == Vector2(110, 500), "arrival wakes both and sets their post")
+	d.tick(0.1)
+	_check(d.agents[5].brain.state == S.INVESTIGATE, "arrived reinforcements head for the entrance")
+	for i in 40:
+		d.tick(0.1)
+		await physics_frame
+	_check(d.agents[5].pos.distance_to(start_pos) > 20.0, "and they actually move (%s)" % str(d.agents[5].pos))
 	_free_world(w)
 
 	# alert sharing respects distance and walls

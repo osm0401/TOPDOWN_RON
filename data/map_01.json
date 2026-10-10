@@ -1,10 +1,23 @@
 {
-  "_note": "PROTOTYPE: 회색 상자 테스트 맵 1 (방 5개 + 복도 + 외부 탈출 구역). rect=[x,y,w,h] px.",
+  "_note": "PROTOTYPE: 회색 상자 테스트 맵 1 (방 5개 + 복도 + 외부 탈출 구역). rect=[x,y,w,h] px. facing은 라디안(0=동, 1.57=남).",
   "bounds": [0, 0, 1500, 1000],
   "building": [200, 150, 1200, 700],
   "exit_zone": [20, 400, 160, 200],
   "spawns": [[150, 480], [150, 520]],
-  "npc": [1300, 480],
+  "rooms": [
+    {"name": "A", "rect": [220, 170, 380, 260], "dark": false},
+    {"name": "B", "rect": [620, 170, 380, 260], "dark": true},
+    {"name": "C", "rect": [1020, 170, 360, 260], "dark": false},
+    {"name": "D", "rect": [220, 570, 580, 260], "dark": true},
+    {"name": "E", "rect": [820, 570, 560, 260], "dark": false},
+    {"name": "복도", "rect": [220, 450, 1160, 100], "dark": false}
+  ],
+  "npcs": [
+    {"role": "enemy", "pos": [800, 300], "facing": 1.57, "feigns": false},
+    {"role": "enemy", "pos": [1100, 700], "facing": 3.14, "feigns": true},
+    {"role": "civilian", "pos": [400, 300]},
+    {"role": "civilian", "pos": [500, 700]}
+  ],
   "walls": [
     [200, 150, 1200, 20],
     [200, 830, 1200, 20],
@@ -25,8 +38,8 @@
   "doors": [
     {"rect": [380, 430, 80, 20]},
     {"rect": [780, 430, 80, 20]},
-    {"rect": [1180, 430, 80, 20]},
-    {"rect": [480, 550, 80, 20]},
+    {"rect": [1180, 430, 80, 20], "locked": true},
+    {"rect": [480, 550, 80, 20], "locked": true},
     {"rect": [1080, 550, 80, 20]},
     {"rect": [200, 450, 20, 100]}
   ]

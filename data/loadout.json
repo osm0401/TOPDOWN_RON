@@ -1,0 +1,5 @@
+{
+  "_note": "PROTOTYPE: 장비 선택 UI 전까지의 고정 장비. 주무기=rifle_lethal|rifle_nonlethal, 도구 2칸(camera|lockpick|taser, 중복 가능). 보조무기는 항상 pistol.",
+  "host": {"primary": "rifle_lethal", "tools": ["camera", "taser"]},
+  "client": {"primary": "rifle_nonlethal", "tools": ["lockpick", "camera"]}
+}

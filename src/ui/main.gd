@@ -33,6 +33,14 @@ func _build_lobby() -> void:
 	title.text = tr("2인 협동 CQB 프로토타입 (단계 1: 온라인 연결 시험)")
 	box.add_child(title)
 
+	var diff_box := OptionButton.new()
+	for key in ["easy", "normal", "hard"]:
+		diff_box.add_item({"easy": tr("난이도: 쉬움"), "normal": tr("난이도: 보통"), "hard": tr("난이도: 어려움")}[key])
+		diff_box.set_item_metadata(diff_box.item_count - 1, key)
+	diff_box.select(1)
+	diff_box.item_selected.connect(func(i: int) -> void: Session.difficulty = str(diff_box.get_item_metadata(i)))
+	box.add_child(diff_box)
+
 	var host_btn := Button.new()
 	host_btn.text = tr("방 만들기")
 	host_btn.pressed.connect(_on_host_pressed)
@@ -96,6 +104,8 @@ func _run_auto() -> void:
 	for a in args:
 		if a.begins_with("--shot="):
 			_shot_path = a.substr(7)
+		elif a.begins_with("--difficulty="):
+			Session.difficulty = a.substr(13)
 	if "--auto-host" in args:
 		_auto_role = "host"
 		if not Session.host("--vpn" not in args):

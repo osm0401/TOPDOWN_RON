@@ -16,6 +16,7 @@ var is_hosting := false
 var room_code := ""      ## "" while the address is still being resolved
 var route := ""          ## "vpn" | "upnp" | "local" (valid once room_code is set)
 var host_note := ""      ## status / warning text for the host HUD
+var difficulty := "normal"  ## preset key in data/difficulty.json (only the host's value matters)
 
 var _log: FileAccess
 var _thread: Thread

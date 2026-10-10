@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_weapon()
 	_test_geom_sound_light()
 	_test_brain()
+	_test_mission()
 	await _test_level()
 	await _test_level_doors()
 	await _test_director()
@@ -45,6 +46,102 @@ func _test_weapon() -> void:
 	empty.try_fire()
 	empty.update(0.0)
 	_check(not empty.start_reload(), "no reload when spares are not fuller")
+
+
+func _test_mission() -> void:
+	var M := MissionState
+	var m := M.new()
+	var base := {"suspect_restrained": false, "suspect_dead": false, "civ_unrestrained_alive": 2,
+			"enemies_pending": 2, "players_alive": 2, "players_in_exit": 0}
+	_check(m.phase == M.Phase.BRIEFING, "mission starts in the briefing")
+	_check(not m.evaluate(base), "briefing: nothing is evaluated")
+	_check(m.mark_ready(0) and m.phase == M.Phase.BRIEFING, "one player ready: still briefing")
+	_check(not m.mark_ready(0), "ready twice changes nothing")
+	_check(m.mark_ready(1) and m.phase == M.Phase.ACTIVE, "both ready: mission active")
+	_check(not m.evaluate(base), "nothing done yet: no change")
+
+	var snap := base.duplicate()
+	snap["civ_unrestrained_alive"] = 0
+	_check(m.evaluate(snap) and m.objectives[1] and not m.objectives[0], "all civilians restrained completes that objective")
+	snap["civ_unrestrained_alive"] = 1
+	m.evaluate(snap)
+	_check(not m.objectives[1], "objectives can become incomplete again (a civilian is loose)")
+	snap = {"suspect_restrained": true, "suspect_dead": false, "civ_unrestrained_alive": 0,
+			"enemies_pending": 0, "players_alive": 2, "players_in_exit": 1}
+	m.evaluate(snap)
+	_check(m.objectives[0] and m.objectives[1] and m.objectives[2] and not m.objectives[3] and m.status == M.Status.ACTIVE, "return objective needs everyone alive in the exit zone")
+	snap["players_in_exit"] = 2
+	_check(m.evaluate(snap) and m.status == M.Status.SUCCESS and m.phase == M.Phase.RESULT, "all objectives + both in exit zone: success")
+	snap["suspect_dead"] = true
+	_check(not m.evaluate(snap) and m.status == M.Status.SUCCESS, "a finished mission no longer changes")
+
+	m = M.new()
+	m.mark_ready(0)
+	m.mark_ready(1)
+	snap = {"suspect_restrained": true, "suspect_dead": false, "civ_unrestrained_alive": 0,
+			"enemies_pending": 0, "players_alive": 1, "players_in_exit": 1}
+	m.evaluate(snap)
+	_check(m.status == M.Status.SUCCESS, "a lone survivor in the exit zone completes the mission")
+
+	m = M.new()
+	m.mark_ready(0)
+	m.mark_ready(1)
+	snap = base.duplicate()
+	snap["suspect_dead"] = true
+	m.evaluate(snap)
+	_check(m.status == M.Status.FAILED and m.reason_key() == "suspect_killed", "suspect killed: failure with its reason")
+
+	m = M.new()
+	m.mark_ready(0)
+	m.mark_ready(1)
+	snap = base.duplicate()
+	snap["players_alive"] = 0
+	m.evaluate(snap)
+	_check(m.status == M.Status.FAILED and m.reason_key() == "all_dead", "both players dead: failure")
+	m = M.new()
+	m.mark_ready(0)
+	m.mark_ready(1)
+	snap["suspect_dead"] = true
+	m.evaluate(snap)
+	_check(m.reason_key() == "suspect_killed", "when both apply, the suspect's death is the reported cause")
+
+	m = M.new()
+	m.mark_ready(0)
+	m.mark_ready(1)
+	m.civ_killed = 1
+	snap = base.duplicate()
+	snap["civ_unrestrained_alive"] = 1
+	m.evaluate(snap)
+	_check(m.status == M.Status.ACTIVE, "a civilian death alone never fails the mission")
+
+	m.civ_killed = 2
+	m.suspect_killed = 1
+	m.enemy_killed = 3
+	m.reason = 1
+	var copy := M.new()
+	copy.unpack(m.pack())
+	_check(copy.pack() == m.pack() and copy.civ_killed == 2 and copy.enemy_killed == 3, "mission state pack/unpack roundtrip")
+
+	var rules: Dictionary = JsonData.load_dict("res://data/score.json")
+	var none := {"suspect_killed": 0, "civilian_killed": 0, "enemy_killed": 0, "player_dead": 0}
+	_check(ScoreRules.compute(none, rules) == 100 and ScoreRules.grade(100, rules) == "A", "clean run: full score, grade A")
+	var civ := none.duplicate()
+	civ["civilian_killed"] = 1
+	_check(ScoreRules.compute(civ, rules) == 70 and ScoreRules.grade(70, rules) == "C", "one civilian killed costs score")
+	var susp := none.duplicate()
+	susp["suspect_killed"] = 1
+	_check(ScoreRules.compute(susp, rules) == 40, "killing the suspect costs more than a civilian")
+	var free := none.duplicate()
+	free["enemy_killed"] = 6
+	free["player_dead"] = 2
+	_check(ScoreRules.compute(free, rules) == 100, "enemy kills and player deaths cost nothing (open, 0)")
+	civ["civilian_killed"] = 10
+	_check(ScoreRules.compute(civ, rules) == 0 and ScoreRules.grade(0, rules) == "F", "score never goes below zero")
+	var edges := {90: "A", 89: "B", 75: "B", 74: "C", 60: "C", 59: "D", 45: "D", 44: "E", 30: "E", 29: "F", 0: "F"}
+	for k in edges:
+		_check(ScoreRules.grade(k, rules) == edges[k], "grade boundary %d -> %s" % [k, edges[k]])
+	var lines := ScoreRules.breakdown({"suspect_killed": 0, "civilian_killed": 1, "enemy_killed": 3, "player_dead": 0}, rules)
+	_check(lines.size() == 2 and lines[0].contains("-30") and lines[1].contains("감점 없음"), "breakdown lists events, free ones marked")
 
 
 func _test_level() -> void:
@@ -539,6 +636,26 @@ func _test_director() -> void:
 	d = w["dir"]
 	d.resolve_player_shot(0, Vector2(300, 330), Vector2(500, 330), 1, false)
 	_check(d.agents[2].brain.state == S.HIDE, "warning shot: civilian hides")
+	_free_world(w)
+
+	# the suspect: both clues, decoys carry only one
+	w = await _make_world()
+	d = w["dir"]
+	var suspects := 0
+	for a in d.agents:
+		if a.suspect:
+			suspects += 1
+	_check(suspects == 1 and d.agents[4].suspect, "exactly one designated suspect")
+	_check(d.agents[4].clues.has("cap") and d.agents[4].clues.has("band"), "the suspect shows both clues")
+	_check(d.agents[0].clues.size() == 1 and d.agents[3].clues.size() == 1 and d.agents[0].clues != d.agents[3].clues, "decoys each show a single, different clue")
+	var kills := []
+	d.npc_killed.connect(func(n: int, s: int) -> void: kills.append([n, s]))
+	d.resolve_player_shot(0, Vector2(1100, 300), Vector2(1300, 300), 99, false)
+	_check(kills.size() == 1 and kills[0][0] == 4, "killing the suspect is reported")
+	d.resolve_player_shot(0, Vector2(1100, 300), Vector2(1300, 300), 99, false)
+	_check(kills.size() == 1, "shooting a corpse reports nothing more")
+	d.resolve_player_shot(1, Vector2(400, 400), Vector2(400, 200), 0, true)
+	_check(kills.size() == 1, "a non-lethal round never reports a kill")
 	_free_world(w)
 
 	# alert sharing respects distance and walls

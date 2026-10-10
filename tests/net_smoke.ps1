@@ -5,6 +5,7 @@ param(
     [string]$Godot = "D:\Godot\Godot_v4.7.2-stable_win64_console.exe",
     [string]$Project = "D:\TOPDOWNRON",
     [int]$Runs = 1,
+    [string]$Scenario = "",   # "" (full play script), "briefing" or "result"
     [switch]$Vpn   # host opens the room on the VPN address; client joins with the printed code
 )
 
@@ -16,6 +17,7 @@ for ($i = 1; $i -le $Runs; $i++) {
     $hostOut = "$out\host_$i.txt"; $clientOut = "$out\client_$i.txt"
     $hostArgs = @("--headless", "--path", $Project, "--", "--auto-host")
     $clientArgs = @("--headless", "--path", $Project, "--", "--auto-join")
+    if ($Scenario) { $hostArgs += "--scenario=$Scenario"; $clientArgs += "--scenario=$Scenario" }
     if ($Vpn) { $hostArgs += "--vpn" }
     $h = Start-Process $Godot -ArgumentList $hostArgs `
         -RedirectStandardOutput $hostOut -RedirectStandardError "$out\host_$i.err" -PassThru -WindowStyle Hidden

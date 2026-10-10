@@ -64,6 +64,12 @@ func _ready() -> void:
 	_hud = Label.new()
 	_hud.position = Vector2(16, 8)
 	layer.add_child(_hud)
+	var panel_layer := CanvasLayer.new()
+	panel_layer.layer = 10
+	add_child(panel_layer)
+	var panel := MissionPanel.new()
+	panel.world = world
+	panel_layer.add_child(panel)
 	_notice = Label.new()
 	_notice.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
 	_notice.position = Vector2(-300, -80)
@@ -303,6 +309,11 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 			draw_circle(p, 9.0, base.darkened(0.2))
 		_:
 			draw_circle(p, 14.0, base)
+	if a.clues.has("cap"):
+		draw_arc(p, 12.0, PI, TAU, 10, Color(0.0, 0.0, 0.0), 8.0)
+		draw_arc(p, 12.0, PI, TAU, 10, Color(1.0, 0.1, 0.1), 4.0)
+	if a.clues.has("band"):
+		draw_line(p + Vector2(15, -7), p + Vector2(15, 7), Color(1.0, 0.9, 0.2), 4.0)
 	var gun_up := b.armed and b.state != S.DOWN and b.state != S.HIDE
 	if gun_up:
 		draw_line(p, p + Vector2.from_angle(b.facing) * 26.0, Color.WHITE, 3.0)
@@ -391,6 +402,7 @@ func _draw_bubbles() -> void:
 # ---- HUD ---------------------------------------------------------------------
 
 func _update_hud() -> void:
+	_hud.visible = (world.is_host and not world.running) or world.mission.phase == MissionState.Phase.ACTIVE
 	if world.is_host and not world.running:
 		if Session.room_code == "":
 			_hud.text = Session.host_note
@@ -414,10 +426,10 @@ func _update_hud() -> void:
 	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / Esc 나가기"))
 	lines.append(tr("%s  %d / 예비 탄창 %d개 (%s) %s") % [WEAPON_NAMES[kind], w.current, w.spares.size(), spare, tr("[재장전 중]") if w.reloading else ""])
 	lines.append(tr("도구: %s   손전등 %s   레이저 %s") % [", ".join(tools), tr("켬") if me.flash else tr("끔"), tr("켬") if me.laser else tr("끔")])
-	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수(샘플) %d   RTT %s") % [
+	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수 %d   RTT %s") % [
 		me.hp, me.max_hp, tr(" (사망)") if me.dead() else "",
 		d.count_state(E, S.RESTRAINED), d.count_state(E, S.DEAD),
-		d.count_state(C, S.RESTRAINED), d.count_state(C, S.DEAD), world.score, rtt])
+		d.count_state(C, S.RESTRAINED), d.count_state(C, S.DEAD), world.current_score(), rtt])
 	if me.cam_door >= 0:
 		lines.append(tr("문틈 카메라 사용 중 (C로 종료)"))
 	_hud.text = "\n".join(lines)

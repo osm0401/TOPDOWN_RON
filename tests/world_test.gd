@@ -11,16 +11,28 @@ var _w: NetWorld
 func _ready() -> void:
 	Engine.time_scale = 2.0
 	Session.host(true)
+	await _boot(true)
+	await _run()
+	await _mission_tests()
+	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
+	Engine.time_scale = 1.0
+	Session.leave()
+	get_tree().quit(1 if _failed > 0 else 0)
+
+
+## Fresh host-side world; `ready_up` skips the briefing.
+func _boot(ready_up: bool) -> void:
+	if _w != null:
+		remove_child(_w)
+		_w.free()
 	_w = NetWorld.new()
 	_w.name = "World"
 	add_child(_w)
 	await _frames(4)
 	_w.running = true
-	await _run()
-	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
-	Engine.time_scale = 1.0
-	Session.leave()
-	get_tree().quit(1 if _failed > 0 else 0)
+	if ready_up:
+		_w.mission.mark_ready(0)
+		_w.mission.mark_ready(1)
 
 
 func _check(cond: bool, label: String) -> void:
@@ -186,3 +198,88 @@ func _run() -> void:
 	_w._emit_sound(SoundProp.Kind.KICK, Vector2(1100, 600))
 	await _frames(3)
 	_check(enemy2.brain.state == S.INVESTIGATE, "a kick next door sends the enemy to investigate")
+
+
+func _mission_tests() -> void:
+	var S := NpcBrain.State
+	var Act := NetWorld.Act
+
+	# briefing blocks actions until both players are ready
+	await _boot(false)
+	_check(_w.mission.phase == MissionState.Phase.BRIEFING, "world starts in the briefing")
+	var rifle := _w.players[0].weapons[0]
+	_w._request_fire()
+	_w._do_act(0, Act.FLASH, 0)
+	_check(rifle.current == 30 and not _w.players[0].flash, "briefing: no shooting, no actions")
+	_w._do_act(0, Act.READY, 0)
+	_check(_w.mission.phase == MissionState.Phase.BRIEFING, "one ready: still briefing")
+	_w._do_act(1, Act.READY, 0)
+	_check(_w.mission.phase == MissionState.Phase.ACTIVE, "both ready: mission starts")
+	_w._do_act(0, Act.FLASH, 0)
+	_check(_w.players[0].flash, "actions work once active")
+
+	# success: everything settled, then everyone back in the exit zone
+	await _boot(true)
+	for a in _w.director.agents:
+		if a.suspect or a.brain.role == NpcBrain.Role.CIVILIAN:
+			a.brain.state = S.RESTRAINED
+		else:
+			a.brain.state = S.DEAD
+	_place(0, Vector2(600, 500))
+	_place(1, Vector2(620, 500))
+	await _frames(4)
+	_check(_w.mission.objectives[0] and _w.mission.objectives[1] and _w.mission.objectives[2], "first three objectives complete")
+	_check(not _w.mission.objectives[3] and _w.mission.phase == MissionState.Phase.ACTIVE, "not done until they return")
+	_place(0, Vector2(60, 480))
+	await _frames(4)
+	_check(_w.mission.phase == MissionState.Phase.ACTIVE, "one player outside is not enough")
+	_place(1, Vector2(60, 520))
+	await _frames(4)
+	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.mission.phase == MissionState.Phase.RESULT, "both back at the exit: success")
+	_check(_w.current_score() == 100 and ScoreRules.grade(_w.current_score(), _w.score_rules) == "A", "clean success scores 100 / A")
+	var spent := _w.players[0].weapons[0].current
+	_w._request_fire()
+	_check(_w.players[0].weapons[0].current == spent, "no shooting after the result")
+
+	# failure: the suspect is shot dead
+	await _boot(true)
+	var suspect: NpcDirector.Agent
+	for a in _w.director.agents:
+		if a.suspect:
+			suspect = a
+	_place(0, Vector2(1100, 300))
+	await _frames(2)
+	_w.director.resolve_player_shot(0, Vector2(1100, 300), Vector2(1300, 300), 99, false)
+	await _frames(4)
+	_check(suspect.brain.state == S.DEAD and _w.mission.suspect_killed == 1, "suspect shot dead and counted")
+	_check(_w.mission.status == MissionState.Status.FAILED and _w.mission.reason_key() == "suspect_killed", "mission failed: suspect killed")
+	_check(_w.current_score() == 40 and ScoreRules.grade(40, _w.score_rules) == "E", "failure keeps its own score and grade (40 / E)")
+
+	# failure: both players dead
+	await _boot(true)
+	for i in 5:
+		_w._on_player_hit(0, 0)
+		_w._on_player_hit(1, 0)
+	await _frames(4)
+	_check(_w.mission.status == MissionState.Status.FAILED and _w.mission.reason_key() == "all_dead", "mission failed: both players dead")
+	_check(_w.current_score() == 100, "player deaths do not cost score (open value 0)")
+
+	# a civilian killed: score only
+	await _boot(true)
+	var civ: NpcDirector.Agent = _w.director.agents[2]
+	_place(0, Vector2(400, 400))
+	await _frames(2)
+	_w.director.resolve_player_shot(0, Vector2(400, 400), Vector2(400, 200), 2, false)
+	await _frames(4)
+	_check(civ.brain.state == S.DEAD and _w.mission.civ_killed == 1, "civilian killed and counted")
+	_check(_w.mission.status == MissionState.Status.ACTIVE and _w.current_score() == 70, "civilian death: score only, mission continues")
+	for a in _w.director.agents:
+		if a.suspect:
+			a.brain.state = S.RESTRAINED
+		elif a.brain.role == NpcBrain.Role.ENEMY:
+			a.brain.state = S.DEAD
+	_w.director.agents[3].brain.state = S.RESTRAINED
+	_place(0, Vector2(60, 480))
+	_place(1, Vector2(60, 520))
+	await _frames(4)
+	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.current_score() == 70, "dead civilians do not block the objective: success with 70 points")

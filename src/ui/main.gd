@@ -8,6 +8,7 @@ var _code_edit: LineEdit
 var _world: NetWorld
 var _auto_role := ""
 var _shot_path := ""
+var _scenario := ""
 
 
 func _ready() -> void:
@@ -84,6 +85,7 @@ func _enter_world() -> void:
 	_world.name = "World"
 	_world.auto_role = _auto_role
 	_world.shot_path = _shot_path
+	_world.scenario = _scenario
 	_world.leave_requested.connect(_leave_to_lobby.bind(""))
 	add_child(_world)
 	_lobby.hide()
@@ -106,6 +108,8 @@ func _run_auto() -> void:
 			_shot_path = a.substr(7)
 		elif a.begins_with("--difficulty="):
 			Session.difficulty = a.substr(13)
+		elif a.begins_with("--scenario="):
+			_scenario = a.substr(11)
 	if "--auto-host" in args:
 		_auto_role = "host"
 		if not Session.host("--vpn" not in args):

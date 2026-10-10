@@ -10,6 +10,7 @@ signal shot(npc: int, from: Vector2, to: Vector2)
 signal player_hit(slot: int, npc: int)
 signal speech(text: String, pos: Vector2)
 signal doors_changed
+signal npc_killed(npc: int, slot: int)
 
 const ARRIVE_DIST := 16.0
 const DOOR_TOUCH := 18.0
@@ -24,6 +25,8 @@ class Agent extends RefCounted:
 	var path_i := 0
 	var path_goal := Vector2.INF
 	var target_slot := -1
+	var suspect := false          ## the designated suspect (must be taken alive)
+	var clues: Array[String] = []  ## visible identifying marks: "cap", "band"
 
 
 var level: Level
@@ -59,6 +62,8 @@ func _init(lv: Level, tuning: Dictionary, diff: Dictionary, player_list: Array[P
 		a.home = a.pos
 		a.brain.pos = a.pos
 		a.brain.facing = float(def["facing"])
+		a.suspect = bool(def["suspect"])
+		a.clues.assign(def["clues"])
 		agents.append(a)
 
 
@@ -85,7 +90,10 @@ func resolve_player_shot(slot: int, from: Vector2, to: Vector2, damage: int, stu
 	var end := to
 	if hit >= 0:
 		end = Geometry2D.get_closest_point_to_segment(agents[hit].pos, from, to)
+		var was_alive: bool = agents[hit].brain.alive()
 		agents[hit].brain.on_hit(damage, stun, players[slot].pos)
+		if was_alive and not agents[hit].brain.alive():
+			npc_killed.emit(hit, slot)
 	var radius := float(_np["threat_shot_radius"])
 	for i in agents.size():
 		var a: Agent = agents[i]

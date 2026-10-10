@@ -13,10 +13,11 @@
     {"name": "복도", "rect": [220, 450, 1160, 100], "dark": false}
   ],
   "npcs": [
-    {"role": "enemy", "pos": [800, 300], "facing": 1.57, "feigns": false},
+    {"role": "enemy", "pos": [800, 300], "facing": 1.57, "feigns": false, "clues": ["cap"]},
     {"role": "enemy", "pos": [1100, 700], "facing": 3.14, "feigns": true},
     {"role": "civilian", "pos": [400, 300]},
-    {"role": "civilian", "pos": [500, 700]}
+    {"role": "civilian", "pos": [500, 700], "clues": ["band"]},
+    {"role": "enemy", "pos": [1200, 300], "facing": 3.14, "suspect": true, "clues": ["cap", "band"]}
   ],
   "walls": [
     [200, 150, 1200, 20],

@@ -1,8 +1,9 @@
 class_name NetWorld
 extends Node2D
-## Online gray-box world (stage 3). Host-authoritative: the client sends input and action
-## requests, the host simulates players, doors, NPCs and replicates. Rendering lives in
-## WorldView. Auto test mode (auto_role) replays a fixed script and prints FINAL.
+## Online gray-box world (stage 4). Host-authoritative: the client sends input and action
+## requests, the host simulates players, doors, NPCs and the mission, then replicates.
+## Rendering lives in WorldView / MissionPanel. Auto test mode (auto_role + scenario)
+## replays a fixed script and prints FINAL.
 
 signal leave_requested
 signal sound_emitted(kind: int, pos: Vector2)
@@ -11,26 +12,46 @@ signal speech_emitted(text: String, pos: Vector2, from_npc: bool)
 signal notice_emitted(text: String)
 signal damaged(slot: int)
 
-enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, SCORE }
+enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY }
 
 const SLOT_HOST := 0
 const SLOT_CLIENT := 1
 const PLAYER_RADIUS := 14.0
-const AUTO_EVENTS := {
-	"host": [[0.3, "interact", 0], [3.7, "peek", 0], [5.0, "flash", 0], [5.8, "kick", 0], [6.5, "command", 0],
-			[7.0, "fire", 0], [7.5, "swap", 0], [8.0, "reload", 0]],
-	"client": [[3.5, "camera", 0], [5.5, "camera", 0], [5.6, "laser", 0], [6.8, "fire", 0], [7.2, "command", 1]],
+const SCENARIOS := {
+	"": {
+		"events": {
+			"host": [[0.1, "ready", 0], [0.3, "interact", 0], [3.7, "peek", 0], [5.0, "flash", 0], [5.8, "kick", 0],
+					[6.5, "command", 0], [7.0, "fire", 0], [7.5, "swap", 0], [8.0, "reload", 0]],
+			"client": [[0.1, "ready", 0], [3.5, "camera", 0], [5.5, "camera", 0], [5.6, "laser", 0], [6.8, "fire", 0],
+					[7.2, "command", 1]],
+		},
+		"shot": 6.2, "final": 10.0,
+	},
+	"briefing": {
+		"events": {"host": [[4.0, "ready", 0]], "client": [[4.0, "ready", 0]]},
+		"shot": 2.0, "final": 5.0,
+	},
+	"clues": {
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 0.6, "final": 3.0,
+	},
+	"result": {
+		"events": {"host": [[0.1, "ready", 0], [2.0, "kill_suspect", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 3.5, "final": 5.0,
+	},
 }
 
 var auto_role := ""
+var scenario := ""
 var shot_path := ""
 
 var tuning: Dictionary = {}
+var score_rules: Dictionary = {}
 var level: Level
 var players: Array[PlayerState] = []
 var shown: Array[Vector2] = []
 var director: NpcDirector
-var score := 0
+var mission := MissionState.new()
 var is_host := false
 var my_slot := 0
 var running := false
@@ -58,6 +79,7 @@ var _voice := RandomNumberGenerator.new()
 
 func _ready() -> void:
 	tuning = JsonData.load_dict("res://data/tuning.json")
+	score_rules = JsonData.load_dict("res://data/score.json")
 	_speed = float(tuning["move_speed"])
 	_door_range = float(tuning["door_range"])
 	_stride_px = float(tuning["footstep_stride_px"])
@@ -90,6 +112,7 @@ func _ready() -> void:
 		director.player_hit.connect(_on_player_hit)
 		director.speech.connect(func(text: String, at: Vector2) -> void: _say(text, at, true))
 		director.doors_changed.connect(_push_state)
+		director.npc_killed.connect(_on_npc_killed)
 
 	var view := WorldView.new()
 	view.name = "View"
@@ -121,6 +144,22 @@ func display_pos(slot: int) -> Vector2:
 	return players[slot].pos if is_host else shown[slot]
 
 
+func score_counts() -> Dictionary:
+	var dead := 0
+	for ps in players:
+		if ps.dead():
+			dead += 1
+	return ScoreRules.counts(mission, dead)
+
+
+func current_score() -> int:
+	return ScoreRules.compute(score_counts(), score_rules)
+
+
+func _active() -> bool:
+	return mission.phase == MissionState.Phase.ACTIVE
+
+
 func _make_body(at: Vector2) -> CharacterBody2D:
 	var b := CharacterBody2D.new()
 	b.collision_layer = 2
@@ -149,6 +188,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not event.pressed:
 		return
 	match event.physical_keycode:
+		KEY_ENTER, KEY_KP_ENTER:
+			_send(Act.READY, 0)
 		KEY_E:
 			_send(Act.PEEK if event.shift_pressed else Act.INTERACT_DOWN, 0)
 		KEY_X:
@@ -165,8 +206,6 @@ func _unhandled_input(event: InputEvent) -> void:
 			_send(Act.SWAP, 0)
 		KEY_R:
 			_request_reload()
-		KEY_F9:
-			_send(Act.SCORE, 0)
 		KEY_1, KEY_2, KEY_3, KEY_4:
 			_send(Act.COMMAND, event.physical_keycode - KEY_1)
 		KEY_ESCAPE:
@@ -241,11 +280,11 @@ func _process(delta: float) -> void:
 # ---- host simulation --------------------------------------------------------
 
 func _frozen() -> bool:
-	return auto_role != "" and _t >= 9.0
+	return auto_role != "" and _t >= float(SCENARIOS[scenario]["final"]) - 1.0
 
 
 func _step_host(delta: float, host_move: Vector2) -> void:
-	if not _frozen():
+	if _active() and not _frozen():
 		var moves: Array[Vector2] = [host_move, _client_move]
 		for s in 2:
 			var ps := players[s]
@@ -262,12 +301,42 @@ func _step_host(delta: float, host_move: Vector2) -> void:
 					_push_weapons()
 		_step_actions(delta)
 		director.tick(delta)
+		_update_mission()
 	_snap_accum += delta
 	if _snap_accum >= _snap_interval:
 		_snap_accum = 0.0
 		var pk := director.pack()
 		rpc_snapshot.rpc(players[0].pos, players[1].pos, players[0].aim, players[1].aim,
 				players[0].pack(), players[1].pack(), pk[0], pk[1], pk[2])
+
+
+## Objective and failure bookkeeping, evaluated by the pure MissionState rules.
+func _update_mission() -> void:
+	var snap := {
+		"suspect_restrained": false, "suspect_dead": false, "civ_unrestrained_alive": 0,
+		"enemies_pending": 0, "players_alive": 0, "players_in_exit": 0,
+	}
+	for a in director.agents:
+		var st := a.brain.state
+		var settled := st == NpcBrain.State.DEAD or st == NpcBrain.State.RESTRAINED
+		if a.suspect:
+			snap["suspect_restrained"] = st == NpcBrain.State.RESTRAINED
+			snap["suspect_dead"] = st == NpcBrain.State.DEAD
+		elif a.brain.role == NpcBrain.Role.CIVILIAN:
+			snap["civ_unrestrained_alive"] += 0 if settled else 1
+		else:
+			snap["enemies_pending"] += 0 if settled else 1
+	for ps in players:
+		if not ps.dead():
+			snap["players_alive"] += 1
+			if level.exit_zone.has_point(ps.pos):
+				snap["players_in_exit"] += 1
+	if mission.evaluate(snap):
+		_push_mission()
+		if mission.phase == MissionState.Phase.RESULT:
+			Session.log_line("MISSION %s reason=%s score=%d grade=%s" % [
+				"success" if mission.status == MissionState.Status.SUCCESS else "failed", mission.reason_key(),
+				current_score(), ScoreRules.grade(current_score(), score_rules)])
 
 
 func _step_actions(delta: float) -> void:
@@ -300,7 +369,11 @@ func _step_actions(delta: float) -> void:
 
 func _do_act(slot: int, act: int, arg: int) -> void:
 	var ps := players[slot]
-	if ps.dead():
+	if act == Act.READY:
+		if mission.mark_ready(slot):
+			_push_mission()
+		return
+	if ps.dead() or not _active():
 		return
 	match act:
 		Act.INTERACT_DOWN:
@@ -326,9 +399,6 @@ func _do_act(slot: int, act: int, arg: int) -> void:
 			if not ps.busy():
 				ps.active = 1 - ps.active
 				_push_weapons()
-		Act.SCORE:
-			score += 10
-			_push_state()
 
 
 func _interact(slot: int) -> void:
@@ -426,7 +496,7 @@ func _command(slot: int, cmd: int) -> void:
 
 func _host_fire(slot: int, angle: float) -> void:
 	var ps := players[slot]
-	if ps.dead() or ps.busy() or not is_finite(angle):
+	if ps.dead() or ps.busy() or not _active() or not is_finite(angle):
 		return
 	if not ps.weapons[ps.active].try_fire():
 		return
@@ -448,7 +518,7 @@ func _host_fire(slot: int, angle: float) -> void:
 
 func _host_reload(slot: int) -> void:
 	var ps := players[slot]
-	if not ps.dead() and not ps.busy() and ps.weapons[ps.active].start_reload():
+	if not ps.dead() and not ps.busy() and _active() and ps.weapons[ps.active].start_reload():
 		_push_weapons()
 
 
@@ -465,6 +535,18 @@ func _on_player_hit(slot: int, _npc: int) -> void:
 	damaged.emit(slot)
 	rpc_hit.rpc(slot)
 	Session.log_line("player %d hit, hp=%d" % [slot, ps.hp])
+
+
+func _on_npc_killed(npc: int, _slot: int) -> void:
+	var a: NpcDirector.Agent = director.agents[npc]
+	if a.suspect:
+		mission.suspect_killed += 1
+	elif a.brain.role == NpcBrain.Role.CIVILIAN:
+		mission.civ_killed += 1
+	else:
+		mission.enemy_killed += 1
+	Session.log_line("npc %d killed (suspect=%s role=%d)" % [npc, a.suspect, a.brain.role])
+	_push_mission()
 
 
 func _on_npc_shot(npc: int, from: Vector2, to: Vector2) -> void:
@@ -499,7 +581,12 @@ func _emit_sound(kind: int, at: Vector2, from_npc: bool = false) -> void:
 
 func _push_state() -> void:
 	if running:
-		rpc_state.rpc(level.pack_doors(), score)
+		rpc_state.rpc(level.pack_doors())
+
+
+func _push_mission() -> void:
+	if running:
+		rpc_mission.rpc(mission.pack())
 
 
 func _push_weapons() -> void:
@@ -530,8 +617,9 @@ func rpc_client_ready() -> void:
 	_t = 0.0
 	Session.log_line("client ready id=%d" % _client_id)
 	rpc_loadout.rpc_id(_client_id, JsonData.load_dict("res://data/loadout.json"))
-	rpc_state.rpc_id(_client_id, level.pack_doors(), score)
+	rpc_state.rpc_id(_client_id, level.pack_doors())
 	rpc_weapons.rpc_id(_client_id, _pack_weapons())
+	rpc_mission.rpc_id(_client_id, mission.pack())
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -544,7 +632,7 @@ func rpc_input(move: Vector2, angle: float) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func rpc_act(act: int, arg: int) -> void:
-	if _from_client() and act >= 0 and act <= Act.SCORE and arg >= 0 and arg <= 3:
+	if _from_client() and act >= 0 and act <= Act.READY and arg >= 0 and arg <= 3:
 		_do_act(SLOT_CLIENT, act, arg)
 
 
@@ -579,10 +667,14 @@ func rpc_loadout(lo: Dictionary) -> void:
 
 
 @rpc("authority", "call_remote", "reliable")
-func rpc_state(doors: PackedInt32Array, score_value: int) -> void:
+func rpc_state(doors: PackedInt32Array) -> void:
 	level.unpack_doors(doors)
-	score = score_value
 	running = true
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_mission(data: PackedInt32Array) -> void:
+	mission.unpack(data)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -639,34 +731,39 @@ func rpc_snapshot(p0: Vector2, p1: Vector2, a0: float, a1: float, ps0: PackedInt
 # ---- auto test -------------------------------------------------------------
 
 func _auto_move() -> Vector2:
+	if scenario != "":
+		return Vector2.ZERO
 	return Vector2.RIGHT if _t >= 0.5 and _t < 3.4 else Vector2.ZERO
 
 
 func _auto_tick() -> void:
 	if auto_role == "":
 		return
-	var events: Array = AUTO_EVENTS[auto_role]
+	var scn: Dictionary = SCENARIOS[scenario]
+	var events: Array = scn["events"][auto_role]
 	for i in events.size():
 		if _t >= events[i][0] and not _auto_done.has(i):
 			_auto_done[i] = true
 			_auto_do(str(events[i][1]), int(events[i][2]))
-	if shot_path != "" and _t >= 6.2 and not _auto_done.has("shot"):
+	if shot_path != "" and _t >= float(scn["shot"]) and not _auto_done.has("shot"):
 		_auto_done["shot"] = true
 		_capture(shot_path)
-	if _t >= 10.0 and not _auto_done.has("final"):
+	if _t >= float(scn["final"]) and not _auto_done.has("final"):
 		_auto_done["final"] = true
 		var npcs := PackedStringArray()
 		for a in director.agents:
 			npcs.append("%d/%d/%.0f,%.0f" % [a.brain.state, a.brain.hp, a.pos.x, a.pos.y])
-		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s score=%d ps0=%s ps1=%s w=%s npcs=%s" % [
-			players[0].pos.x, players[0].pos.y, players[1].pos.x, players[1].pos.y, level.pack_doors(), score,
-			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs)])
-	if _t >= 10.5:
+		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s ps0=%s ps1=%s w=%s npcs=%s mission=%s score=%d" % [
+			players[0].pos.x, players[0].pos.y, players[1].pos.x, players[1].pos.y, level.pack_doors(),
+			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs), mission.pack(), current_score()])
+	if _t >= float(scn["final"]) + 0.5:
 		get_tree().quit()
 
 
 func _auto_do(name: String, arg: int) -> void:
 	match name:
+		"ready":
+			_send(Act.READY, 0)
 		"interact":
 			_send(Act.INTERACT_DOWN, 0)
 			_send(Act.INTERACT_UP, 0)
@@ -688,6 +785,14 @@ func _auto_do(name: String, arg: int) -> void:
 			_request_fire()
 		"reload":
 			_request_reload()
+		"teleport_c":  # test aid: put the host inside room C to look at the suspect and the decoys
+			_bodies[0].position = Vector2(1100, 340)
+			players[0].pos = Vector2(1100, 340)
+			players[0].aim = 0.0
+		"kill_suspect":
+			for a in director.agents:
+				if a.suspect:
+					director.resolve_player_shot(0, a.pos + Vector2(-60, 0), a.pos + Vector2(60, 0), 99, false)
 
 
 func _capture(path: String) -> void:

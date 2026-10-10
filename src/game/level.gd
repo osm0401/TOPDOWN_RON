@@ -50,6 +50,8 @@ func load_map(path: String) -> bool:
 			"pos": _vec(n["pos"]),
 			"facing": float(n.get("facing", 0.0)),
 			"feigns": bool(n.get("feigns", false)),
+			"suspect": bool(n.get("suspect", false)),
+			"clues": n.get("clues", []),
 		})
 	for w in d["walls"]:
 		var r := _rect(w)

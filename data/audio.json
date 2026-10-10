@@ -1,0 +1,17 @@
+{
+  "_note": "PROTOTYPE/TUNING: 임시값. 코드로 합성한 임시 효과음의 음량(dB)과 거리 설정. 소리가 닿는 거리는 tuning.json의 sound_radius를 그대로 쓴다.",
+  "sfx_db": 0.0,
+  "ambient_db": -30.0,
+  "muffle_hz": 700.0,
+  "own_footstep_db": -9.0,
+  "min_loudness": 0.03,
+  "kind_db": {
+    "footstep": -10.0, "gunshot": 0.0, "door": -4.0, "kick": 0.0, "voice": -6.0,
+    "scream": -3.0, "taser": -4.0, "door_ajar": -14.0, "siren": -6.0
+  },
+  "extra": {
+    "reload": {"radius": 250.0, "db": -8.0},
+    "hit": {"radius": 350.0, "db": -3.0},
+    "hurt_db": -2.0
+  }
+}

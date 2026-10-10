@@ -17,6 +17,7 @@ func _ready() -> void:
 	await _solo_tests()
 	await _stage5_tests()
 	await _view3d_tests()
+	await _audio_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	Session.leave()
@@ -573,3 +574,26 @@ func _view3d_tests() -> void:
 	_w.remove_child(v3)
 	v3.free()
 	_check(not _w.mouse_world.is_valid(), "removing the 3D view releases the aim hook")
+
+
+## Sound hearing for the local officer: same SoundProp rules as NPC hearing, muffled behind solids.
+func _audio_tests() -> void:
+	Session.host(true)
+	await _boot(true)
+	var au := GameAudio.new()
+	au.world = _w
+	_w.add_child(au)
+	await _frames(2)
+	_check(AudioServer.get_bus_index(GameAudio.BUS_SFX) >= 0 and AudioServer.get_bus_index(GameAudio.BUS_MUFFLED) >= 0, "sound buses exist")
+	var near := au.hearing(Vector2(300, 500), Vector2(260, 500), 120.0)
+	_check(float(near["loud"]) > 0.6 and not near["muffled"], "a footstep 40 px away is loud and clear")
+	_check(float(au.hearing(Vector2(900, 500), Vector2(260, 500), 120.0)["loud"]) == 0.0, "a footstep beyond its radius is silent")
+	var clear := au.hearing(Vector2(500, 500), Vector2(300, 500), 600.0)  # 200 px along the open corridor
+	var walled := au.hearing(Vector2(300, 300), Vector2(300, 500), 600.0)  # 200 px but through a wall into room A
+	_check(not clear["muffled"] and walled["muffled"], "a wall in the way muffles the sound")
+	_check(float(walled["loud"]) < float(clear["loud"]), "the wall also makes it quieter")
+	_check(_w.level.get_door_state(1) == Level.DoorState.CLOSED, "test door starts closed")
+	var door := au.hearing(Vector2(820, 300), Vector2(820, 500), 600.0)  # through the closed door of room B
+	_check(door["muffled"] and float(door["loud"]) < float(clear["loud"]), "a closed door muffles and quiets the sound")
+	_w.remove_child(au)
+	au.free()

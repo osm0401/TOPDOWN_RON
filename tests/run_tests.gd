@@ -14,11 +14,37 @@ func _initialize() -> void:
 	_test_brain()
 	_test_mission()
 	_test_clock_and_vote()
+	_test_sfx()
 	await _test_level()
 	await _test_level_doors()
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	quit(1 if _failed > 0 else 0)
+
+
+func _test_sfx() -> void:
+	var t0 := Time.get_ticks_msec()
+	var streams := {
+		"rifle": SfxSynth.gunshot(1, true), "pistol": SfxSynth.gunshot(4, false), "footstep": SfxSynth.footstep(10),
+		"door": SfxSynth.door(21, 0.6, 0.6), "kick": SfxSynth.kick(41), "taser": SfxSynth.taser(71),
+		"shout": SfxSynth.shout(51, 100.0, 0.7, 0.5), "scream": SfxSynth.shout(61, 380.0, 0.9, 2.0),
+		"siren": SfxSynth.siren(), "reload": SfxSynth.reload_sound(81), "hit": SfxSynth.hit(91), "hurt": SfxSynth.hurt(95)}
+	print("sfx synth: %d sounds in %d ms" % [streams.size(), Time.get_ticks_msec() - t0])
+	for k in streams:
+		var s: AudioStreamWAV = streams[k]
+		var n := s.data.size() / 2
+		var peak := 0
+		for i in n:
+			peak = maxi(peak, absi(s.data.decode_s16(i * 2)))
+		_check(n > 1000 and peak > 8000 and peak <= 32767, "sfx %s has audible, unclipped samples" % k)
+	_check((streams["rifle"] as AudioStreamWAV).data.size() > (streams["pistol"] as AudioStreamWAV).data.size(), "rifle shot rings longer than a pistol shot")
+	_check(SfxSynth.gunshot(1, true).data == SfxSynth.gunshot(1, true).data, "same seed gives identical samples")
+	_check(SfxSynth.gunshot(1, true).data != SfxSynth.gunshot(2, true).data, "different seed gives a different shot")
+	var hum := SfxSynth.hum()
+	var count := hum.data.size() / 2
+	_check(hum.loop_mode == AudioStreamWAV.LOOP_FORWARD and hum.loop_end == count, "hum loops over its whole length")
+	var seam := absf(float(hum.data.decode_s16(0)) - float(hum.data.decode_s16((count - 1) * 2))) / 32768.0
+	_check(seam < 0.1, "hum loop seam is continuous")
 
 
 func _test_weapon() -> void:

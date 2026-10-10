@@ -81,6 +81,9 @@ func _ready() -> void:
 	_notice.size = Vector2(600, 40)
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer.add_child(_notice)
+	var audio := GameAudio.new()
+	audio.world = world
+	add_child(audio)
 	_set_3d(use_3d)
 
 
@@ -463,7 +466,7 @@ func _update_hud() -> void:
 	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
 	lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 3D 전환 / Esc 나가기"))
+	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 3D 전환 / F6 소리 끄기 / Esc 나가기"))
 	lines.append(tr("%s  %d / 예비 탄창 %d개 (%s) %s") % [WEAPON_NAMES[kind], w.current, w.spares.size(), spare, tr("[재장전 중]") if w.reloading else ""])
 	lines.append(tr("도구: %s   손전등 %s   레이저 %s") % [", ".join(tools), tr("켬") if me.flash else tr("끔"), tr("켬") if me.laser else tr("끔")])
 	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수 %d   RTT %s") % [

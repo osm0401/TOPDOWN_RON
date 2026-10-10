@@ -1,0 +1,7 @@
+{
+  "_note": "PROTOTYPE/TUNING: 임시값. port는 확정값이 아님.",
+  "port": 24565,
+  "tick_hz": 20,
+  "ping_interval_s": 1.0,
+  "connect_timeout_s": 5.0
+}

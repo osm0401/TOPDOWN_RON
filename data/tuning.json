@@ -1,0 +1,6 @@
+{
+  "_note": "PROTOTYPE/TUNING: 임시값. 플레이테스트로 조정.",
+  "move_speed": 220.0,
+  "door_range": 120.0,
+  "npc_alert_range": 200.0
+}

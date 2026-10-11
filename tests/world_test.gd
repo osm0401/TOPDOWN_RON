@@ -690,12 +690,48 @@ func _walk_rig_tests(dir: String) -> void:
 	_check(sk.get_bone_pose_position(B.HIPS).y < sk.get_bone_rest(B.HIPS).origin.y - 0.01, "legs apart: the hips dip")
 	var hand_l := sk.get_bone_global_pose(B.ARM_L).basis * Vector3.DOWN  # after foot.call: updated
 	_check(hand_l.z < -0.1, "the left arm swings back as the left leg goes forward")
+	var swing := sk.get_bone_pose_rotation(B.ARM_L).get_angle()
+	sk.set_meta("fused_hand", true)  # as _rig marks a model with a hand generated touching the thigh
+	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.BACK, gait)
+	_check(absf(sk.get_bone_pose_rotation(B.ARM_L).get_angle() - swing * float(gait["fused_arm"])) < 0.001,
+			"a hand joined to the thigh: the arms swing fused_arm as far")
+	sk.set_meta("fused_hand", false)
+	_fused_hand_tests()
 	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.RIGHT, gait)
 	_check(foot.call(B.SHIN_L).x > rest_l.x + 0.1 and absf(foot.call(B.SHIN_L).z - rest_l.z) < 0.02, "sideways: the legs step sideways, not forward")
 	CharacterModels.pose_walk(m, PI * 0.5, 0.0, 1.8, Vector3.BACK, gait)
 	_check(foot.call(B.SHIN_L).is_equal_approx(rest_l) and sk.get_bone_pose_rotation(B.ARM_L).is_equal_approx(Quaternion.IDENTITY), "amount 0: back to the rest pose")
 	(m["node"] as Node).free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + "walker.glb"))
+
+
+## A hand generated touching the thigh, as a strip of points from the hand (flooded) across the
+## join to the thigh, plus one point of the arm above the cut-off height: the weight eases from 1
+## to 0 across the join instead of jumping, and only the join below the cut-off counts as fused.
+func _fused_hand_tests() -> void:
+	var pos := PackedVector3Array()
+	var adj: Array[Array] = []
+	for k in 9:  # 2 cm apart, x 0.2 (hand) .. 0.04 (thigh); points 0..3 are the hand
+		pos.append(Vector3(0.2 - 0.02 * k, 0.7, 0.0))
+		adj.append([])
+	pos.append(Vector3(0.2, 1.0, 0.0))  # the arm above the cut-off, joined to the hand's first point
+	adj.append([])
+	var link := func(a: int, b: int) -> void:
+		adj[a].append(b)
+		adj[b].append(a)
+	for k in 8:
+		link.call(k, k + 1)
+	link.call(0, 9)
+	var inside := PackedByteArray([1, 1, 1, 1, 0, 0, 0, 0, 0, 0])
+	var g := {"pos": pos, "adj": adj}
+	var w := CharacterModels._soften(g, inside, 0.9, 0.05)
+	var eases := w[0] == 1.0 and w[8] == 0.0 and w[9] == 0.0 and w[3] > 0.5 and w[4] < 0.5
+	for k in 8:
+		eases = eases and w[k] >= w[k + 1] and w[k] - w[k + 1] < 0.45
+	_check(eases, "a hand joined to the thigh: arm weight eases off across the join (%s)" % w)
+	_check(CharacterModels._joined(g, inside, 0.9) == 1 and CharacterModels._joined(g, inside, 0.6) == 0,
+			"only the join below the elbow counts as a hand touching the thigh")
+
 
 
 func _view3d_tests() -> void:

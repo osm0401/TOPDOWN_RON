@@ -16,7 +16,7 @@
     "yaw_deg": 90.0,
     "player_tint": 0.12,
     "walk": {
-      "_note": "PROTOTYPE/TUNING: 걷기. 모델은 불러올 때 뼈대를 자동으로 붙이고(다리, 무릎, 팔), 화면에서 움직인 거리로 걸음을 맞춘다. 보폭(m) = stride_m + stride_per_mps × 속도(m/s). 각도 [걷기, 달리기]는 속도가 walk_mps에서 run_mps로 갈수록 오른쪽 값으로. start_mps보다 느리면 서 있고 full_mps에서 걸음이 다 나온다. hip_drop: 다리를 벌릴 때 엉덩이가 내려가는 정도(0~1).",
+      "_note": "PROTOTYPE/TUNING: 걷기. 모델은 불러올 때 뼈대를 자동으로 붙이고(다리, 무릎, 팔), 화면에서 움직인 거리로 걸음을 맞춘다. 보폭(m) = stride_m + stride_per_mps × 속도(m/s). 각도 [걷기, 달리기]는 속도가 walk_mps에서 run_mps로 갈수록 오른쪽 값으로. start_mps보다 느리면 서 있고 full_mps에서 걸음이 다 나온다. hip_drop: 다리를 벌릴 때 엉덩이가 내려가는 정도(0~1). fused_arm: 손이 허벅지에 붙어 생성된 모델의 팔 흔들기 비율(0~1, 1이면 그대로). 붙은 곳이 늘어나 보여서 줄인다.",
       "stride_m": 1.25,
       "stride_per_mps": 0.3,
       "walk_mps": 1.5,
@@ -28,6 +28,7 @@
       "knee_deg": [40.0, 75.0],
       "stance_knee_deg": 5.0,
       "arm_deg": [16.0, 28.0],
+      "fused_arm": 0.3,
       "lean_deg": [2.0, 9.0],
       "twist_deg": [4.0, 7.0],
       "hip_drop": 0.6

@@ -17,6 +17,8 @@ enum Bone { HIPS, SPINE, THIGH_L, SHIN_L, THIGH_R, SHIN_R, ARM_L, ARM_R }
 const BONE_NAMES: Array[String] = ["hips", "spine", "thigh_l", "shin_l", "thigh_r", "shin_r", "arm_l", "arm_r"]
 const BONE_PARENTS: Array[int] = [-1, Bone.HIPS, Bone.HIPS, Bone.THIGH_L, Bone.HIPS, Bone.THIGH_R, Bone.SPINE, Bone.SPINE]
 const FLOOD_LOW := 0.36  ## share of the height no hand reaches down to: a flood from the wrist below it ran into a leg
+const FUSE_BLEND := 0.03  ## share of the height a hand joined to the thigh blends over, along the surface
+const FUSED_EDGES := 8  ## edges joining a hand to the thigh before the arms swing less (characters.walk.fused_arm)
 
 static var folder := DIR  ## where make() looks (tests point it elsewhere)
 static var _templates: Dictionary = {}  ## file path -> normalized model as a PackedScene, or null when missing / unreadable
@@ -83,6 +85,8 @@ static func pose_walk(model: Dictionary, phase: float, amount: float, speed: flo
 	var lean := _gait(gait, "lean_deg", run) * amount
 	sk.set_bone_pose_rotation(Bone.SPINE, Quaternion(Vector3.UP, _gait(gait, "twist_deg", run) * fwd) * Quaternion(swing, -lean))
 	var arm := _gait(gait, "arm_deg", run) * fwd
+	if sk.get_meta("fused_hand", false):  # a hand joined to the thigh stretches the join as it swings
+		arm *= float(gait.get("fused_arm", 1.0))
 	sk.set_bone_pose_rotation(Bone.ARM_L, Quaternion(Vector3.RIGHT, arm))
 	sk.set_bone_pose_rotation(Bone.ARM_R, Quaternion(Vector3.RIGHT, -arm))
 
@@ -262,6 +266,11 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 		skin.add_bind(b, Transform3D(Basis(), -at[b]))
 	sk.reset_bone_poses()
 	sk.set_meta("leg_len", at[Bone.HIPS].y)
+	var fused := false
+	if arms:
+		for key in ["arm_l", "arm_r"]:
+			fused = fused or bool((j[key]["flood"] as Dictionary).get("fused", false))
+	sk.set_meta("fused_hand", fused)
 	var base := 0
 	var smooth: PackedVector3Array = g["nrm"]
 	var weld: PackedInt32Array = g["weld"]
@@ -504,7 +513,7 @@ static func _arm_weight(p: Vector3, wid: int, a: Dictionary, side: int, gx: floa
 	var f: Dictionary = a["flood"]
 	if f.is_empty() or p.y >= float(f["elbow"]):
 		return edge
-	var reached := float((f["inside"] as PackedByteArray)[wid])
+	var reached: float = (f["inside"] as PackedFloat32Array)[wid]
 	return lerpf(reached, edge, smoothstep(float(f["elbow"]) - 0.04 * h, float(f["elbow"]), p.y))
 
 
@@ -544,8 +553,9 @@ static func _graph(pts: PackedVector3Array, tris: PackedInt32Array) -> Dictionar
 ## below the elbow. A hand generated touching the thigh is joined to it: then the flood only crosses
 ## points out past a cut-off (or a little inside it facing the body: the palm against the thigh),
 ## starting at the leg's outer edge below the hand (thigh) and moving out until the flood stays
-## off the leg (nothing below FLOOD_LOW). {"inside": welded id -> 1, "hand": its lowest point,
-## "elbow": height}, or {} when no cut-off frees the arm.
+## off the leg (nothing below FLOOD_LOW). {"inside": welded id -> arm weight (1 flooded, eased
+## across a join to the thigh, see _soften), "hand": its lowest point, "elbow": height, "fused":
+## the hand is joined to the thigh}, or {} when no cut-off frees the arm.
 static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float) -> Dictionary:
 	var pos: PackedVector3Array = g["pos"]
 	var nrm: PackedVector3Array = g["nrm"]
@@ -575,6 +585,62 @@ static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float
 					low = minf(low, q.y)
 					stack.append(v)
 		if low >= FLOOD_LOW * h:
-			return {"inside": inside, "hand": low, "elbow": elbow}
+			var top := elbow - 0.04 * h
+			return {"inside": _soften(g, inside, top, FUSE_BLEND * h), "hand": low, "elbow": elbow,
+					"fused": _joined(g, inside, top) >= FUSED_EDGES}
 		cut = maxf(cut + 0.005 * h, thigh + 0.005 * h)
 	return {}
+
+
+## Edges joining the flood to the rest of the mesh below `top`: none for a hand hanging free.
+static func _joined(g: Dictionary, inside: PackedByteArray, top: float) -> int:
+	var pos: PackedVector3Array = g["pos"]
+	var adj: Array[Array] = g["adj"]
+	var n := 0
+	for i in inside.size():
+		if inside[i] == 1 and pos[i].y < top:
+			for v: int in adj[i]:
+				if inside[v] == 0 and pos[v].y < top:
+					n += 1
+	return n
+
+
+## Arm weight per welded id from the flood: 1 inside, 0 outside, except where the mesh joins the
+## forearm or hand to something else below `top` (a hand generated touching the thigh). There the
+## weight runs 1 -> 0 over `r` along the surface, half on each side of the cut, so the join
+## stretches over a few centimetres instead of tearing into long spikes at one row of triangles.
+static func _soften(g: Dictionary, inside: PackedByteArray, top: float, r: float) -> PackedFloat32Array:
+	var pos: PackedVector3Array = g["pos"]
+	var adj: Array[Array] = g["adj"]
+	var w := PackedFloat32Array()
+	w.resize(inside.size())
+	for i in inside.size():
+		w[i] = float(inside[i])
+	for from_inside: int in [1, 0]:
+		var dist := PackedFloat32Array()  # along the surface from the cut, on the other side
+		dist.resize(inside.size())
+		dist.fill(INF)
+		var front: Array[int] = []
+		for i in inside.size():
+			if inside[i] == from_inside and pos[i].y < top:
+				for v: int in adj[i]:
+					if inside[v] != from_inside and pos[v].y < top:
+						dist[i] = 0.0
+						front.append(i)
+						break
+		while not front.is_empty():  # a few hundred points: plain relaxation is enough
+			var next: Array[int] = []
+			for u in front:
+				for v: int in adj[u]:
+					if inside[v] == from_inside or pos[v].y >= top:
+						continue
+					var d := dist[u] + pos[u].distance_to(pos[v])
+					if d < dist[v] and d < r:
+						dist[v] = d
+						next.append(v)
+			front = next
+		for i in inside.size():
+			if inside[i] != from_inside and dist[i] < r:
+				var t := 0.5 * smoothstep(0.0, r, dist[i])
+				w[i] = 0.5 - t if from_inside == 1 else 0.5 + t
+	return w

@@ -588,6 +588,7 @@ func _character_model_tests() -> void:
 
 
 func _view3d_tests() -> void:
+	_check(WorldView._start_3d() == bool(JsonData.load_dict("res://data/view3d.json")["start_3d"]), "the start view follows data/view3d.json start_3d (no --view2d / --view3d)")
 	Session.host(true)
 	await _boot(true)
 	var at := Vector2(800, 480)

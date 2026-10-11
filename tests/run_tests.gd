@@ -15,11 +15,46 @@ func _initialize() -> void:
 	_test_mission()
 	_test_clock_and_vote()
 	_test_sfx()
+	_test_audition_model()
 	await _test_level()
 	await _test_level_doors()
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	quit(1 if _failed > 0 else 0)
+
+
+## The take-picking tool's data: takes ordered by score, decisions kept, _pick copies in step.
+func _test_audition_model() -> void:
+	var root := ProjectSettings.globalize_path("user://audition_test")
+	DirAccess.make_dir_recursive_absolute(root.path_join("_raw/rifle"))
+	DirAccess.make_dir_recursive_absolute(root.path_join("_raw/door"))
+	for f in ["rifle_s1.wav", "rifle_s2.wav", "rifle_s3.wav"]:
+		var w := FileAccess.open(root.path_join("_raw/rifle").path_join(f), FileAccess.WRITE)
+		w.store_string("fake " + f)
+	FileAccess.open(root.path_join("_raw/door/door_s1.wav"), FileAccess.WRITE).store_string("fake door")
+	FileAccess.open(root.path_join("_raw/rifle/ranking.json"), FileAccess.WRITE).store_string(JSON.stringify([
+		{"file": "rifle_s2.wav", "score": 0.99, "onset_s": 0.07, "events": 1, "centroid_hz": 2900},
+		{"file": "rifle_s1.wav", "score": 0.5, "onset_s": 0.4, "events": 1, "centroid_hz": 4000}]))
+	var m := AuditionModel.new(root)
+	m.load_all(["rifle", "missing", "door"])
+	_check(m.keys == ["rifle", "door"], "audition: sounds follow the catalog order, missing ones are left out")
+	var files: Array = m.takes["rifle"].map(func(t: Dictionary) -> String: return t["file"])
+	_check(files == ["rifle_s2.wav", "rifle_s1.wav", "rifle_s3.wav"], "audition: takes are ordered best score first, unranked last")
+	_check(m.counts("rifle") == {"use": 0, "skip": 0, "open": 3}, "audition: everything starts undecided")
+	m.set_decision("rifle", "rifle_s2.wav", AuditionModel.USE)
+	m.set_decision("rifle", "rifle_s1.wav", AuditionModel.SKIP)
+	_check(FileAccess.file_exists(root.path_join("_pick/rifle/rifle_s2.wav")) and not FileAccess.file_exists(root.path_join("_pick/rifle/rifle_s1.wav")), "audition: a take marked use is copied to _pick, a skipped one is not")
+	_check(m.counts("rifle") == {"use": 1, "skip": 1, "open": 1} and m.counts() == {"use": 1, "skip": 1, "open": 2}, "audition: counts per sound and overall")
+	var again := AuditionModel.new(root)
+	again.load_all(["rifle", "door"])
+	_check(again.decision("rifle", "rifle_s2.wav") == AuditionModel.USE and again.decision("rifle", "rifle_s1.wav") == AuditionModel.SKIP, "audition: decisions survive a restart")
+	again.set_decision("rifle", "rifle_s2.wav", "")
+	_check(not FileAccess.file_exists(root.path_join("_pick/rifle/rifle_s2.wav")) and again.counts("rifle")["open"] == 2, "audition: clearing a decision removes the copy")
+	for dir in ["_pick/rifle", "_pick", "_raw/rifle", "_raw/door", "_raw"]:
+		for f in DirAccess.get_files_at(root.path_join(dir)):
+			DirAccess.remove_absolute(root.path_join(dir).path_join(f))
+		DirAccess.remove_absolute(root.path_join(dir))
+	DirAccess.remove_absolute(root)
 
 
 func _test_sfx() -> void:

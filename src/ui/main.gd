@@ -3,6 +3,7 @@ extends Node
 ## Test flags (after "--"): --auto-host, --auto-join  (localhost room code, scripted play).
 
 const CharacterModels := preload("res://src/game/character_models.gd")
+const GearModels := preload("res://src/game/gear_models.gd")
 
 var _lobby: Control
 var _status: Label
@@ -26,6 +27,7 @@ func _ready() -> void:
 func _exit_tree() -> void:
 	GameAudio.wait_prepared()  # never leave the worker task running at quit
 	CharacterModels.release()
+	GearModels.release()
 
 
 func _build_lobby() -> void:

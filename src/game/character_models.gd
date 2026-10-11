@@ -4,29 +4,39 @@ extends RefCounted
 ## floor at the origin and turned to face +X (the rig's aim; data/view3d.json "characters" yaw_deg
 ## fixes a model that faces elsewhere). No file: WorldView3D keeps its primitive figure.
 ## Loaded once per process; every figure gets its own copy (meshes are shared).
-## Walking: the models come without bones, so each one is rigged when it loads (_rig guesses hips,
-## knees and shoulders from the shape and skins the mesh to them) and pose_walk() swings the legs
-## and arms. A model that already has a skeleton is shown as it is, without walking.
+## The models come without bones, so each one is rigged when it loads (_rig guesses the joints from
+## the shape and skins the mesh to them) and CharacterAnim poses the result. A model that already
+## has a skeleton is shown as it is, unposed.
 ## No class_name on purpose: users preload this file. A new global class name is only known after
 ## the editor has rescanned the project, so a game started straight after git pull (no editor)
 ## failed to compile every script that named it.
 
 const DIR := "res://assets/characters/"
 ## Bones of the auto-rig, in Skeleton3D order. The model faces +Z, so its left side is +X.
-enum Bone { HIPS, SPINE, THIGH_L, SHIN_L, THIGH_R, SHIN_R, ARM_L, ARM_R }
-const BONE_NAMES: Array[String] = ["hips", "spine", "thigh_l", "shin_l", "thigh_r", "shin_r", "arm_l", "arm_r"]
-const BONE_PARENTS: Array[int] = [-1, Bone.HIPS, Bone.HIPS, Bone.THIGH_L, Bone.HIPS, Bone.THIGH_R, Bone.SPINE, Bone.SPINE]
+enum Bone { HIPS, SPINE, CHEST, HEAD, THIGH_L, SHIN_L, FOOT_L, THIGH_R, SHIN_R, FOOT_R, UPPER_ARM_L, FOREARM_L, UPPER_ARM_R, FOREARM_R }
+const BONE_NAMES: Array[String] = ["hips", "spine", "chest", "head", "thigh_l", "shin_l", "foot_l", "thigh_r", "shin_r", "foot_r",
+		"upper_arm_l", "forearm_l", "upper_arm_r", "forearm_r"]
+const BONE_PARENTS: Array[int] = [-1, Bone.HIPS, Bone.SPINE, Bone.CHEST, Bone.HIPS, Bone.THIGH_L, Bone.SHIN_L, Bone.HIPS, Bone.THIGH_R,
+		Bone.SHIN_R, Bone.CHEST, Bone.UPPER_ARM_L, Bone.CHEST, Bone.UPPER_ARM_R]
+## Joint heights as shares of the standing height (adult proportions; hips come from the shape).
+const KNEE_Y := 0.27
+const ANKLE_Y := 0.05
+const CHEST_Y := 0.71
+const NECK_Y := 0.86
+const SHOULDER_Y := 0.815
+const ELBOW_Y := 0.62
+const FLOOD_TOP := 0.58  ## the wrist flood stays below this share (under the elbow)
 const FLOOD_LOW := 0.36  ## share of the height no hand reaches down to: a flood from the wrist below it ran into a leg
 
 static var folder := DIR  ## where make() looks (tests point it elsewhere)
 static var _templates: Dictionary = {}  ## file path -> normalized model as a PackedScene, or null when missing / unreadable
 
 
-## A fresh copy of model `name`: {"node": Node3D, "overlay": StandardMaterial3D, "lie_y": float,
-## "skeleton": Skeleton3D or null} (overlay tints every surface; lie_y lifts the figure when it lies on
-## its back; skeleton is the auto-rig pose_walk() moves). {} without a file.
+## A fresh copy of model `name`: {"node": Node3D, "overlay": StandardMaterial3D, "lie_y" / "lie_front":
+## float, "skeleton": Skeleton3D or null} (overlay tints every surface; lie_y / lie_front lift the
+## figure lying on its back / front; skeleton is the auto-rig CharacterAnim poses). {} without a file.
 ## A hands-up model (<kind>_up) is fitted to up_height_m, fingertips included, so the body keeps the
-## size of the standing model; only its legs are rigged.
+## size of the standing model; its raised arms stay part of the chest.
 static func make(name: String, cfg: Dictionary, dir := "") -> Dictionary:
 	var path := (dir if dir != "" else folder) + name + ".glb"
 	if not _templates.has(path):
@@ -45,52 +55,7 @@ static func make(name: String, cfg: Dictionary, dir := "") -> Dictionary:
 	for mi in meshes(node):
 		mi.material_overlay = overlay
 	return {"node": node, "overlay": overlay, "lie_y": float(node.get_meta("lie_y", 0.15)),
-			"skeleton": node.get_node_or_null("skeleton") as Skeleton3D}
-
-
-## Poses a rigged model mid-stride. phase: radians along the stride (one cycle = two steps);
-## amount: 0 standing .. 1 full stride; speed: m/s (faster = longer, more bent strides, more lean);
-## dir: unit walking direction in the model's own space (+Z its front), so strafing and backing up
-## step the right way. gait: data/view3d.json characters.walk. No skeleton: nothing happens.
-static func pose_walk(model: Dictionary, phase: float, amount: float, speed: float, dir: Vector3, gait: Dictionary) -> void:
-	var sk := model.get("skeleton") as Skeleton3D
-	if sk == null:
-		return
-	if amount <= 0.001:
-		if model.get("posed", false):
-			sk.reset_bone_poses()
-			model["posed"] = false
-		return
-	model["posed"] = true
-	if dir.length_squared() < 0.5:
-		dir = Vector3.BACK
-	var run := clampf(inverse_lerp(float(gait["walk_mps"]), float(gait["run_mps"]), speed), 0.0, 1.0)
-	var thigh := _gait(gait, "thigh_deg", run) * amount * sin(phase)
-	var knee := _gait(gait, "knee_deg", run) * amount
-	var stance := deg_to_rad(float(gait["stance_knee_deg"])) * amount
-	var c := cos(phase)
-	var swing := Vector3(-dir.z, 0.0, dir.x)  # turning about this axis moves a hanging limb toward dir
-	sk.set_bone_pose_rotation(Bone.THIGH_L, Quaternion(swing, thigh))
-	sk.set_bone_pose_rotation(Bone.THIGH_R, Quaternion(swing, -thigh))
-	# the knee bends most while that leg swings through (about +X a hanging shin goes back)
-	sk.set_bone_pose_rotation(Bone.SHIN_L, Quaternion(Vector3.RIGHT, stance + knee * maxf(c, 0.0)))
-	sk.set_bone_pose_rotation(Bone.SHIN_R, Quaternion(Vector3.RIGHT, stance + knee * maxf(-c, 0.0)))
-	# hips drop as the legs spread, so the planted foot stays on the floor
-	var drop := float(sk.get_meta("leg_len", 0.9)) * (1.0 - cos(thigh)) * float(gait["hip_drop"])
-	sk.set_bone_pose_position(Bone.HIPS, sk.get_bone_rest(Bone.HIPS).origin - Vector3(0.0, drop, 0.0))
-	# arms and shoulders swing against the legs, only for the forward/backward part of the step
-	var fwd := dir.z * amount * sin(phase)
-	var lean := _gait(gait, "lean_deg", run) * amount
-	sk.set_bone_pose_rotation(Bone.SPINE, Quaternion(Vector3.UP, _gait(gait, "twist_deg", run) * fwd) * Quaternion(swing, -lean))
-	var arm := _gait(gait, "arm_deg", run) * fwd
-	sk.set_bone_pose_rotation(Bone.ARM_L, Quaternion(Vector3.RIGHT, arm))
-	sk.set_bone_pose_rotation(Bone.ARM_R, Quaternion(Vector3.RIGHT, -arm))
-
-
-## Angle (radians) for gait[key] = [walking, running] degrees at run 0..1.
-static func _gait(gait: Dictionary, key: String, run: float) -> float:
-	var a: Array = gait[key]
-	return deg_to_rad(lerpf(float(a[0]), float(a[1]), run))
+			"lie_front": float(node.get_meta("lie_front", 0.15)), "skeleton": node.get_node_or_null("skeleton") as Skeleton3D}
 
 
 ## Drops the loaded models. Called when the game quits: a cached model still holding meshes when
@@ -176,8 +141,9 @@ static func _load_normalized(path: String, height: float, yaw_deg: float, body_h
 		model.free()
 		holder.add_child(sk)
 	holder.rotation_degrees.y = yaw_deg
-	var turned := bounds(holder)  # lying on its back the figure's back (min x) touches the floor
+	var turned := bounds(holder)  # lying on its back the figure's back (min x) touches the floor, on its front the front
 	holder.set_meta("lie_y", -turned.position.x)
+	holder.set_meta("lie_front", turned.end.x)
 	_own(holder, holder)
 	var packed := PackedScene.new()
 	var err := packed.pack(holder)
@@ -211,13 +177,16 @@ static func _own(node: Node, owner: Node) -> void:
 
 ## Skins the model to a skeleton guessed from its shape and returns it (meshes baked into the
 ## holder's space), or null when the model has its own skeleton or no mesh. h: standing height.
-## Legs split at the gap between them, hips and knees at human proportions; upper arms run from
-## the shoulders down the outer edge of the body, forearms and hands are what the mesh joins to
-## the wrist. Weights blend over a few centimetres at every joint so the surface bends, not tears.
+## Legs split at the gap between them; hips, knees, ankles, chest, neck and elbows sit at human
+## proportions; upper arms run from the shoulders down the outer edge of the body, forearms and
+## hands are what the mesh joins to the wrist. Weights blend over a few centimetres at every joint
+## so the surface bends instead of tearing. The skeleton's metadata tells CharacterAnim where the
+## hands are ("hand_l" / "hand_r"), the leg length ("leg_len"), the height ("h") and whether the arms
+## are rigged ("arms").
 static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 	if not model.find_children("*", "Skeleton3D", true, false).is_empty():
 		return null
-	var parts: Array = []  # [source mesh, [surface arrays], [materials]]
+	var parts: Array = []  # [source mesh, [surface arrays], [materials], [primitive types]]
 	var pts := PackedVector3Array()
 	var tris := PackedInt32Array()  # into pts
 	for entry in _mesh_transforms(model, model.transform):
@@ -228,6 +197,7 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 			continue
 		var surfaces: Array = []
 		var mats: Array = []
+		var prims: Array = []
 		for i in mi.mesh.get_surface_count():
 			var arr := _bake(mi.mesh.surface_get_arrays(i), entry[1])
 			var base := pts.size()
@@ -239,7 +209,8 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 					tris.append(base + k)
 			surfaces.append(arr)
 			mats.append(mi.get_active_material(i))
-		parts.append([mi.mesh, surfaces, mats])
+			prims.append(prim)
+		parts.append([mi.mesh, surfaces, mats, prims])
 	if pts.is_empty():
 		return null
 	var j := _joints(pts, h, arms)
@@ -249,10 +220,10 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 		for side: int in [1, -1]:
 			var arm: Dictionary = j["arm_l" if side > 0 else "arm_r"]
 			arm["flood"] = _forearm(g, j["gx"], side, h, arm["thigh"])
+	var at: Array[Vector3] = j["at"]
 	var sk := Skeleton3D.new()
 	sk.name = "skeleton"
 	var skin := Skin.new()
-	var at: Array[Vector3] = j["at"]
 	for b in BONE_NAMES.size():
 		sk.add_bone(BONE_NAMES[b])
 		var parent := BONE_PARENTS[b]
@@ -262,11 +233,13 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 		skin.add_bind(b, Transform3D(Basis(), -at[b]))
 	sk.reset_bone_poses()
 	sk.set_meta("leg_len", at[Bone.HIPS].y)
+	sk.set_meta("h", h)
+	sk.set_meta("arms", arms)
 	var base := 0
 	var smooth: PackedVector3Array = g["nrm"]
 	var weld: PackedInt32Array = g["weld"]
+	var hands := [Vector3.ZERO, Vector3.ZERO, 0.0, 0.0]  # sums of hand points left / right, and their counts
 	for part in parts:
-		var src: Mesh = part[0]
 		var am := ArrayMesh.new()
 		for i in (part[1] as Array).size():
 			var arr: Array = part[1][i]
@@ -277,15 +250,21 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 				for k in nrm.size():
 					nrm[k] = smooth[weld[base + k]].normalized()
 				arr[Mesh.ARRAY_NORMAL] = nrm
+			if arms:
+				_hand_points(arr, j, hands)
+				if part[3][i] == Mesh.PRIMITIVE_TRIANGLES:
+					_unbridge(arr, j)
 			base += (arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
-			var prim := (src as ArrayMesh).surface_get_primitive_type(i) if src is ArrayMesh else Mesh.PRIMITIVE_TRIANGLES
-			am.add_surface_from_arrays(prim, arr)
+			am.add_surface_from_arrays(part[3][i], arr)
 			am.surface_set_material(i, part[2][i])
 		var mi := MeshInstance3D.new()
 		mi.mesh = am
 		mi.skin = skin
 		sk.add_child(mi)
 		mi.skeleton = NodePath("..")
+	for side in 2:
+		var fallback := at[Bone.FOREARM_L if side == 0 else Bone.FOREARM_R] - Vector3(0.0, 0.17 * h, 0.0)
+		sk.set_meta("hand_l" if side == 0 else "hand_r", hands[side] / hands[side + 2] if hands[side + 2] > 0.0 else fallback)
 	return sk
 
 
@@ -314,8 +293,8 @@ static func _bake(arr: Array, xf: Transform3D) -> Array:
 
 ## Joints read off the vertices, cut into rows 2 % of the height tall; heights are kept within human
 ## proportions of h. Returns "at" (bone positions, in Bone order) and what _skin_weights needs: the
-## leg gap x, crotch, hip and knee heights, and per side the arm's inner edge for every row, the
-## bottom of the hand and the shoulder height.
+## leg gap x, crotch, hip, knee and ankle heights, and per side the arm's inner edge for every row,
+## the bottom of the hand and the shoulder height.
 static func _joints(pts: PackedVector3Array, h: float, arms: bool) -> Dictionary:
 	var band := 0.02 * h
 	var top := 0.0
@@ -344,37 +323,48 @@ static func _joints(pts: PackedVector3Array, h: float, arms: bool) -> Dictionary
 			break
 	crotch = clampf(crotch, 0.4 * h, 0.46 * h)  # baggy trousers close the gap early, gear between the legs late
 	var hip_y := clampf(crotch + 0.07 * h, 0.49 * h, 0.53 * h)
-	var knee_y := 0.27 * h
-	var pelvis := _span(rows, row.call(hip_y - 0.03 * h), row.call(hip_y + 0.03 * h), gx, 0)
-	var hz := (pelvis[2] + pelvis[3]) * 0.5 if pelvis[0] <= pelvis[1] else 0.0
+	var knee_y := KNEE_Y * h
+	var ankle_y := ANKLE_Y * h
+	var mid_z := func(y: float, half_w: float) -> float:  # middle front-to-back of the body near x = gx
+		var s := _span(rows, row.call(y - 0.015 * h), row.call(y + 0.015 * h), gx, 0, half_w)
+		return (s[2] + s[3]) * 0.5 if s[0] <= s[1] else 0.0
 	var at: Array[Vector3] = []
 	at.resize(BONE_NAMES.size())
-	at[Bone.HIPS] = Vector3(gx, hip_y, hz)
-	at[Bone.SPINE] = Vector3(gx, hip_y + 0.12 * h, hz)
-	var out := {"at": at, "gx": gx, "h": h, "band": band, "crotch": crotch, "hip_y": hip_y, "knee_y": knee_y, "arms": arms}
+	at[Bone.HIPS] = Vector3(gx, hip_y, mid_z.call(hip_y, 0.12 * h))
+	at[Bone.SPINE] = Vector3(gx, hip_y + 0.1 * h, mid_z.call(hip_y + 0.1 * h, 0.1 * h))
+	at[Bone.CHEST] = Vector3(gx, CHEST_Y * h, mid_z.call(CHEST_Y * h, 0.1 * h))
+	at[Bone.HEAD] = Vector3(gx, NECK_Y * h, mid_z.call(NECK_Y * h, 0.04 * h))
+	var out := {"at": at, "gx": gx, "h": h, "band": band, "crotch": crotch, "hip_y": hip_y, "knee_y": knee_y, "ankle_y": ankle_y, "arms": arms}
 	for side: int in [1, -1]:
 		var thigh := _span(rows, row.call(0.29 * h), row.call(0.36 * h), gx, side)  # mid-thigh, below the hands
 		var tx := thigh[4] if thigh[0] <= thigh[1] else gx + side * 0.05 * h
 		var kn := _span(rows, row.call(knee_y - 0.02 * h), row.call(knee_y + 0.02 * h), gx, side)
 		var kx := kn[4] if kn[0] <= kn[1] else tx
-		var kz := (kn[2] + kn[3]) * 0.5 if kn[0] <= kn[1] else hz
-		at[Bone.THIGH_L if side > 0 else Bone.THIGH_R] = Vector3(tx, hip_y, hz)
+		var kz := (kn[2] + kn[3]) * 0.5 if kn[0] <= kn[1] else at[Bone.HIPS].z
+		var an := _span(rows, row.call(ankle_y + 0.01 * h), row.call(ankle_y + 0.04 * h), gx, side)  # the lower shin
+		var ax := an[4] if an[0] <= an[1] else kx
+		var az := (an[2] + an[3]) * 0.5 if an[0] <= an[1] else kz
+		at[Bone.THIGH_L if side > 0 else Bone.THIGH_R] = Vector3(tx, hip_y, at[Bone.HIPS].z)
 		at[Bone.SHIN_L if side > 0 else Bone.SHIN_R] = Vector3(kx, knee_y, kz)
+		at[Bone.FOOT_L if side > 0 else Bone.FOOT_R] = Vector3(ax, ankle_y, az)
 		var arm := _arm(rows, gx, side, h, band)
 		out["arm_l" if side > 0 else "arm_r"] = arm
-		at[Bone.ARM_L if side > 0 else Bone.ARM_R] = arm["joint"]
+		at[Bone.UPPER_ARM_L if side > 0 else Bone.UPPER_ARM_R] = arm["joint"]
+		at[Bone.FOREARM_L if side > 0 else Bone.FOREARM_R] = arm["elbow"]
 	return out
 
 
 ## Bounds [min x, max x, min z, max z, median x] of the points in rows k0..k1 on one side of gx
-## (side 1: +x, -1: -x, 0: both); the median ignores a few points of a hand hanging into the rows.
-## Empty: min > max.
-static func _span(rows: Array[Array], k0: int, k1: int, gx: float, side: int) -> Array[float]:
+## (side 1: +x, -1: -x, 0: both; half_w > 0: only within half_w of gx); the median ignores a few
+## points of a hand hanging into the rows. Empty: min > max.
+static func _span(rows: Array[Array], k0: int, k1: int, gx: float, side: int, half_w := 0.0) -> Array[float]:
 	var b: Array[float] = [INF, -INF, INF, -INF, gx]
 	var xs: Array[float] = []
 	for k in range(maxi(k0, 0), mini(k1, rows.size() - 1) + 1):
 		for p: Vector3 in rows[k]:
 			if side != 0 and (p.x - gx) * side <= 0.0:
+				continue
+			if half_w > 0.0 and absf(p.x - gx) > half_w:
 				continue
 			b[0] = minf(b[0], p.x)
 			b[1] = maxf(b[1], p.x)
@@ -389,7 +379,8 @@ static func _span(rows: Array[Array], k0: int, k1: int, gx: float, side: int) ->
 
 ## One arm, measured as distance out from the leg gap: per row the arm's inner edge (the body's
 ## outer edge there, less an arm width tapering from the shoulder to the hand), the bottom of the
-## hand (scanning down, the outer edge steps in from the hand to the thigh) and the shoulder joint.
+## hand (scanning down, the outer edge steps in from the hand to the thigh), the leg's outer edge
+## just below the hand, and the shoulder and elbow joints.
 static func _arm(rows: Array[Array], gx: float, side: int, h: float, band: float) -> Dictionary:
 	var raw: Array[float] = []
 	for k in rows.size():
@@ -407,22 +398,26 @@ static func _arm(rows: Array[Array], gx: float, side: int, h: float, band: float
 		if raw[k] - maxf(raw[k - 1], raw[k - 2]) > 0.025 * h:
 			hand = k * band
 			break
-	var thigh := -INF  # the leg's outer edge just below the hand
+	var thigh := -INF
 	for k in range(maxi(int((hand - 0.06 * h) / band), 0), mini(int((hand - 0.015 * h) / band), raw.size() - 1) + 1):
 		thigh = maxf(thigh, raw[k])
-	var shoulder := 0.815 * h
+	var shoulder := SHOULDER_Y * h
 	var inner: Array[float] = []
 	for k in outer.size():
 		var t := clampf(inverse_lerp(hand, shoulder, (k + 0.5) * band), 0.0, 1.0)
 		inner.append(outer[k] - lerpf(0.035, 0.06, t) * h if outer[k] > 0.0 else INF)
-	var ks := clampi(int((shoulder - 0.06 * h) / band), 0, rows.size() - 1)
-	var mid := outer[ks] - 0.03 * h if outer[ks] > 0.0 else 0.17 * h
-	var z := Vector2(INF, -INF)
-	for p: Vector3 in rows[ks]:
-		if (p.x - gx) * side > inner[ks]:
-			z = Vector2(minf(z.x, p.z), maxf(z.y, p.z))
+	var joint := func(y: float, inset: float) -> Vector3:  # on the arm's centre line at height y
+		var k := clampi(int(y / band), 0, rows.size() - 1)
+		var mid := outer[k] - inset * h if outer[k] > 0.0 else 0.17 * h
+		var z := Vector2(INF, -INF)
+		for p: Vector3 in rows[k]:
+			if (p.x - gx) * side > inner[k]:
+				z = Vector2(minf(z.x, p.z), maxf(z.y, p.z))
+		return Vector3(gx + side * mid, y, (z.x + z.y) * 0.5 if z.x <= z.y else 0.0)
+	var top: Vector3 = joint.call(shoulder - 0.06 * h, 0.03)
+	var elbow: Vector3 = joint.call(ELBOW_Y * h, 0.025)
 	return {"inner": inner, "hand": hand, "thigh": thigh, "shoulder": shoulder,
-			"joint": Vector3(gx + side * mid, shoulder, (z.x + z.y) * 0.5 if z.x <= z.y else 0.0)}
+			"joint": Vector3(top.x, shoulder, top.z), "elbow": elbow}
 
 
 ## Writes bone indices and weights (four per vertex) into surface arrays, from the joints. base:
@@ -435,6 +430,8 @@ static func _skin_weights(arr: Array, j: Dictionary, base: int) -> void:
 	var hip_y: float = j["hip_y"]
 	var crotch: float = j["crotch"]
 	var knee_y: float = j["knee_y"]
+	var ankle_y: float = j["ankle_y"]
+	var elbow_y := ELBOW_Y * h
 	var arms: Array[Dictionary] = [{}, {}]
 	if j["arms"]:
 		arms = [j["arm_l"], j["arm_r"]]
@@ -447,20 +444,30 @@ static func _skin_weights(arr: Array, j: Dictionary, base: int) -> void:
 	for i in v.size():
 		var p := v[i]
 		w.fill(0.0)
+		var on_left := p.x > gx
 		var left := smoothstep(gx - 0.012 * h, gx + 0.012 * h, p.x)
-		var arm := _arm_weight(p, weld[base + i], arms[0] if p.x > gx else arms[1], 1 if p.x > gx else -1, gx, h, j["band"])
+		var arm := _arm_weight(p, weld[base + i], arms[0] if on_left else arms[1], 1 if on_left else -1, gx, h, j["band"])
+		var fore := 1.0 - smoothstep(elbow_y - 0.025 * h, elbow_y + 0.025 * h, p.y)
+		w[Bone.FOREARM_L if on_left else Bone.FOREARM_R] = arm * fore
+		w[Bone.UPPER_ARM_L if on_left else Bone.UPPER_ARM_R] = arm * (1.0 - fore)
 		var rest := 1.0 - arm
-		w[Bone.ARM_L if p.x > gx else Bone.ARM_R] = arm
 		var leg := rest * (1.0 - smoothstep(crotch - 0.01 * h, hip_y, p.y))
 		var shin := 1.0 - smoothstep(knee_y - 0.025 * h, knee_y + 0.025 * h, p.y)
+		var foot := 1.0 - smoothstep(ankle_y - 0.01 * h, ankle_y + 0.02 * h, p.y)
 		w[Bone.THIGH_L] = leg * left * (1.0 - shin)
-		w[Bone.SHIN_L] = leg * left * shin
+		w[Bone.SHIN_L] = leg * left * shin * (1.0 - foot)
+		w[Bone.FOOT_L] = leg * left * shin * foot
 		w[Bone.THIGH_R] = leg * (1.0 - left) * (1.0 - shin)
-		w[Bone.SHIN_R] = leg * (1.0 - left) * shin
+		w[Bone.SHIN_R] = leg * (1.0 - left) * shin * (1.0 - foot)
+		w[Bone.FOOT_R] = leg * (1.0 - left) * shin * foot
 		var body := rest - leg
-		var up := smoothstep(hip_y, hip_y + 0.15 * h, p.y)
-		w[Bone.SPINE] = body * up
+		var up := smoothstep(hip_y, hip_y + 0.12 * h, p.y)
+		var chest := smoothstep((CHEST_Y - 0.08) * h, CHEST_Y * h, p.y)
+		var head := smoothstep((NECK_Y - 0.015) * h, (NECK_Y + 0.015) * h, p.y) * (1.0 - smoothstep(0.09 * h, 0.12 * h, absf(p.x - gx)))
 		w[Bone.HIPS] = body * (1.0 - up)
+		w[Bone.SPINE] = body * up * (1.0 - chest)
+		w[Bone.CHEST] = body * up * chest * (1.0 - head)
+		w[Bone.HEAD] = body * up * chest * head
 		var used := 0
 		for b in w.size():
 			if w[b] > 0.0001:
@@ -489,8 +496,8 @@ static func _skin_weights(arr: Array, j: Dictionary, base: int) -> void:
 
 
 ## How much of point p (welded vertex wid) follows arm `a` (from _arm, on `side`; {}: no arm):
-## below the elbow what the flood from the wrist reached, above it (or without a flood) the part
-## outside the arm's inner edge, between the bottom of the hand and the shoulder.
+## below the flood top what the flood from the wrist reached, above it (or without a flood) the
+## part outside the arm's inner edge, between the bottom of the hand and the shoulder.
 static func _arm_weight(p: Vector3, wid: int, a: Dictionary, side: int, gx: float, h: float, band: float) -> float:
 	if a.is_empty():
 		return 0.0
@@ -502,10 +509,85 @@ static func _arm_weight(p: Vector3, wid: int, a: Dictionary, side: int, gx: floa
 	var edge := 0.0 if e == INF else smoothstep(e - 0.01 * h, e + 0.01 * h, d) * smoothstep(hand - 0.01 * h, hand, p.y) \
 			* (1.0 - smoothstep(float(a["shoulder"]) - 0.05 * h, float(a["shoulder"]), p.y))
 	var f: Dictionary = a["flood"]
-	if f.is_empty() or p.y >= float(f["elbow"]):
+	if f.is_empty() or p.y >= float(f["top"]):
 		return edge
 	var reached := float((f["inside"] as PackedByteArray)[wid])
-	return lerpf(reached, edge, smoothstep(float(f["elbow"]) - 0.04 * h, float(f["elbow"]), p.y))
+	return lerpf(reached, edge, smoothstep(float(f["top"]) - 0.04 * h, float(f["top"]), p.y))
+
+
+## Adds the points of each hand (fully on the forearm, below the wrist) to sums[0 / 1] (left /
+## right) and counts to sums[2 / 3]: their mean is the hand's centre the poses grip with.
+static func _hand_points(arr: Array, j: Dictionary, sums: Array) -> void:
+	var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var bones: PackedInt32Array = arr[Mesh.ARRAY_BONES]
+	var w: PackedFloat32Array = arr[Mesh.ARRAY_WEIGHTS]
+	for side in 2:
+		var a: Dictionary = j["arm_l" if side == 0 else "arm_r"]
+		var f: Dictionary = a["flood"]
+		var low: float = f["hand"] if not f.is_empty() else float(a["hand"])
+		var bone := Bone.FOREARM_L if side == 0 else Bone.FOREARM_R
+		for i in v.size():
+			if bones[i * 4] == bone and w[i * 4] > 0.99 and v[i].y < low + 0.06 * float(j["h"]):
+				sums[side] += v[i]
+				sums[side + 2] += 1.0
+
+
+## Drops the triangles that tie a hand to the leg it was generated touching (a palm merged into
+## the trousers): below the elbow, any triangle joining arm and non-arm points that stretches to
+## over four times its size (and 8 cm) with the forearms raised in front. Without them the hand
+## leaves the thigh cleanly instead of pulling a sheet of skin along. (Higher up, where a sleeve
+## merges into the side of the body, the gap would show with the arms down, so the cloth stretches.)
+static func _unbridge(arr: Array, j: Dictionary) -> void:
+	if arr[Mesh.ARRAY_INDEX] == null:
+		return
+	var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+	var bones: PackedInt32Array = arr[Mesh.ARRAY_BONES]
+	var w: PackedFloat32Array = arr[Mesh.ARRAY_WEIGHTS]
+	var at: Array[Vector3] = j["at"]
+	var lift := Basis(Vector3.RIGHT, -deg_to_rad(80.0))  # upper arms forward
+	var bend := Basis(Vector3.RIGHT, -deg_to_rad(60.0))  # and the elbows bent
+	var moved := PackedVector3Array()
+	moved.resize(v.size())
+	for i in v.size():
+		var p := v[i]
+		var q := p
+		for s in 4:
+			var b := bones[i * 4 + s]
+			var wt := w[i * 4 + s]
+			if wt <= 0.0:
+				continue
+			var sh := at[Bone.UPPER_ARM_L if b == Bone.UPPER_ARM_L or b == Bone.FOREARM_L else Bone.UPPER_ARM_R]
+			if b == Bone.UPPER_ARM_L or b == Bone.UPPER_ARM_R:
+				q += wt * (sh + lift * (p - sh) - p)
+			elif b == Bone.FOREARM_L or b == Bone.FOREARM_R:
+				var el := at[b]
+				var el_moved := sh + lift * (el - sh)
+				q += wt * (el_moved + lift * (bend * (p - el)) - p)
+		moved[i] = q
+	var top := FLOOD_TOP * float(j["h"])
+	var arm := PackedFloat32Array()  # how much of each point follows an arm
+	arm.resize(v.size())
+	for i in v.size():
+		for s in 4:
+			if bones[i * 4 + s] >= Bone.UPPER_ARM_L:
+				arm[i] += w[i * 4 + s]
+	var idx: PackedInt32Array = arr[Mesh.ARRAY_INDEX]
+	var kept := PackedInt32Array()
+	for t in range(0, idx.size() - 2, 3):
+		var a := idx[t]
+		var b := idx[t + 1]
+		var c := idx[t + 2]
+		var most := maxf(arm[a], maxf(arm[b], arm[c]))
+		var least := minf(arm[a], minf(arm[b], arm[c]))
+		if v[a].y < top and v[b].y < top and v[c].y < top and most > 0.5 and least < 0.5:
+			var before := maxf(v[a].distance_to(v[b]), maxf(v[b].distance_to(v[c]), v[c].distance_to(v[a])))
+			var after := maxf(moved[a].distance_to(moved[b]), maxf(moved[b].distance_to(moved[c]), moved[c].distance_to(moved[a])))
+			if after > maxf(before * 4.0, 0.08):
+				continue
+		kept.append(a)
+		kept.append(b)
+		kept.append(c)
+	arr[Mesh.ARRAY_INDEX] = kept
 
 
 ## Welded vertex ids (UV seams split one corner into several vertices) and the welded mesh's
@@ -541,16 +623,16 @@ static func _graph(pts: PackedVector3Array, tris: PackedInt32Array) -> Dictionar
 
 
 ## Forearm and hand on `side`: everything the mesh joins to the outermost point at wrist height,
-## below the elbow. A hand generated touching the thigh is joined to it: then the flood only crosses
+## below FLOOD_TOP. A hand generated touching the thigh is joined to it: then the flood only crosses
 ## points out past a cut-off (or a little inside it facing the body: the palm against the thigh),
 ## starting at the leg's outer edge below the hand (thigh) and moving out until the flood stays
 ## off the leg (nothing below FLOOD_LOW). {"inside": welded id -> 1, "hand": its lowest point,
-## "elbow": height}, or {} when no cut-off frees the arm.
+## "top": height}, or {} when no cut-off frees the arm.
 static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float) -> Dictionary:
 	var pos: PackedVector3Array = g["pos"]
 	var nrm: PackedVector3Array = g["nrm"]
 	var adj: Array[Array] = g["adj"]
-	var elbow := 0.58 * h
+	var top := FLOOD_TOP * h
 	var seed := -1
 	for i in pos.size():
 		var p := pos[i]
@@ -570,11 +652,11 @@ static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float
 			for v: int in adj[stack.pop_back()]:
 				var q := pos[v]
 				var out := (q.x - gx) * side
-				if inside[v] == 0 and q.y < elbow and (out > cut or (out > cut - 0.025 * h and nrm[v].normalized().x * side < -0.3)):
+				if inside[v] == 0 and q.y < top and (out > cut or (out > cut - 0.025 * h and nrm[v].normalized().x * side < -0.3)):
 					inside[v] = 1
 					low = minf(low, q.y)
 					stack.append(v)
 		if low >= FLOOD_LOW * h:
-			return {"inside": inside, "hand": low, "elbow": elbow}
+			return {"inside": inside, "hand": low, "top": top}
 		cut = maxf(cut + 0.005 * h, thigh + 0.005 * h)
 	return {}

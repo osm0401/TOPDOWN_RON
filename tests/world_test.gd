@@ -575,15 +575,16 @@ func _character_model_tests() -> void:
 	var n: Dictionary = v3._npcs[i]
 	_agent(i).brain.state = NpcBrain.State.SURRENDER
 	v3._update_npcs(0.016)
-	_check((n["model_up"]["node"] as Node3D).visible and not (n["model"]["node"] as Node3D).visible and not (n["arms"] as Node3D).visible,
-			"3D view: surrender swaps in the hands-up model (no extra arms)")
+	_check((n["model_up"] as Dictionary).is_empty() and (n["model"]["node"] as Node3D).visible and not (n["arms"] as Node3D).visible
+			and int(n["model"]["key"]) == CharacterAnim.Stance.STAND * 100 + CharacterAnim.Hold.HANDS_UP,
+			"3D view: surrendering, the model itself raises its hands (no separate model, no box arms)")
 	_agent(i).brain.state = NpcBrain.State.DOWN
 	v3._update_npcs(0.016)
 	var rig: Node3D = n["rig"]
 	_check(rig.position.y < float(n["model"]["lie_front"]) * 0.5, "3D view: going down it topples over, not straight to the floor")
 	for f in 40:
 		v3._update_npcs(0.016)
-	_check((n["model"]["node"] as Node3D).visible and not (n["model_up"]["node"] as Node3D).visible
+	_check((n["model"]["node"] as Node3D).visible
 			and absf(rig.position.y - float(n["model"]["lie_front"])) < 0.001 and (rig.basis * Vector3.RIGHT).y < -0.99,
 			"3D view: a downed NPC model lies face down (its front, rig +X, toward the floor), resting on the floor")
 	_agent(i).brain.state = NpcBrain.State.DEAD
@@ -775,6 +776,9 @@ func _walk_rig_tests(dir: String) -> void:
 	var hips_y := pos.call(B.HIPS).y as float
 	_check(hips_y < at.call(B.HIPS).y - 0.3 and pos.call(B.SHIN_L).y < 0.12, "kneeling: hips down, knees on the floor (%.2f, %.2f)" % [hips_y, pos.call(B.SHIN_L).y])
 	_check(hand.call(0).z < pos.call(B.SPINE).z - 0.05 and hand.call(0).distance_to(hand.call(1)) < 0.15, "cuffed: wrists together behind the back")
+	CharacterAnim.pose(m, {"hold": H.HANDS_UP}, cfg)
+	_check(hand.call(0).y > at.call(B.UPPER_ARM_L).y + 0.15 and hand.call(1).y > at.call(B.UPPER_ARM_R).y + 0.15
+			and hand.call(0).x > at.call(B.UPPER_ARM_L).x - 0.05 and hand.call(1).x < at.call(B.UPPER_ARM_R).x + 0.05, "hands up: both hands high above the shoulders, out to the sides")
 	CharacterAnim.pose(m, {"stance": S.CROUCH, "hold": H.COVER}, cfg)
 	_check(pos.call(B.HIPS).y < at.call(B.HIPS).y * 0.6 and pos.call(B.FOOT_L).distance_to(at.call(B.FOOT_L)) < 0.1 and hand.call(0).y > pos.call(B.HEAD).y,
 			"crouching: hips low, feet planted, hands over the head")

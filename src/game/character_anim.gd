@@ -14,7 +14,7 @@ extends RefCounted
 const CM := preload("res://src/game/character_models.gd")
 
 enum Stance { STAND, CROUCH, KNEEL, WORK, PRONE, DEAD }  ## PRONE / DEAD: WorldView3D lays the figure on its front / back
-enum Hold { NONE, RIFLE, PISTOL, PISTOL_ONE, PISTOL_LOW, WORK, CUFFED, COVER, HANDS_HEAD, STARTLED }
+enum Hold { NONE, RIFLE, PISTOL, PISTOL_ONE, PISTOL_LOW, WORK, CUFFED, COVER, HANDS_HEAD, STARTLED, HANDS_UP }
 
 
 ## Poses `model` (from CharacterModels.make; nothing happens without a skeleton). `s` describes the
@@ -234,6 +234,20 @@ static func _ik(q: Array[Quaternion], c: Dictionary, pr: Quaternion, root: Vecto
 	_chain(q, c, pr, (mid - root).normalized(), (root + dn * dist - mid).normalized())
 
 
+## Turns chain `c`'s forearm about its own length so the palm faces `want` (model space). The hands
+## hang palms in at rest; the twist goes into the forearm, as a real one does.
+static func _palm(q: Array[Quaternion], c: Dictionary, pr: Quaternion, want: Vector3) -> void:
+	var fore: Quaternion = pr * q[c["a"]] * q[c["b"]]
+	var along: Vector3 = fore * (c["rb"] as Vector3)
+	var palm: Vector3 = fore * Vector3(-float(c["side"]), 0.0, 0.0)
+	var a := (palm - along * palm.dot(along))
+	var b := (want - along * want.dot(along))
+	if a.length_squared() < 1e-6 or b.length_squared() < 1e-6:
+		return
+	var turn := a.normalized().signed_angle_to(b.normalized(), along)
+	q[c["b"]] = q[c["b"]] * Quaternion(c["rb"], turn)
+
+
 ## Two-bone chain `c` pointed by direction: first segment along da, second along db (global).
 static func _chain(q: Array[Quaternion], c: Dictionary, pr: Quaternion, da: Vector3, db: Vector3) -> void:
 	var ga := _arc(c["ra"], da)
@@ -386,11 +400,20 @@ static func _arms(r: Dictionary, q: Array[Quaternion], gr: Array[Quaternion], gp
 				var sign: float = arms[i]["side"]
 				targets[i] = [to_chest.call(Vector3(rest[CM.Bone.CHEST].x + sign * 0.07 * h, rest[CM.Bone.CHEST].y + 0.06 * h, rest[CM.Bone.CHEST].z + 0.14 * h)),
 						Vector3(sign, -1.0, -0.2)]
+		Hold.HANDS_UP:  # surrender: hands up beside the head, elbows out and down
+			var lift := float(pc["hands_up_lift"])
+			for i in 2:
+				var sign: float = arms[i]["side"]
+				var shoulder: Vector3 = rest[arms[i]["a"]]
+				targets[i] = [to_chest.call(Vector3(shoulder.x + sign * 0.02 * h, shoulder.y + lift * h, shoulder.z + 0.03 * h)),
+						Vector3(sign, -0.5, -0.1)]
 	for i in 2:
 		var c: Dictionary = arms[i]
 		var root := gp[c["a"]]
 		if targets[i] != null:
 			_ik(q, c, chest, root, targets[i][0], (targets[i][1] as Vector3).normalized())
+			if hold == Hold.HANDS_UP or hold == Hold.STARTLED:
+				_palm(q, c, chest, Vector3.BACK)  # show the palms
 			continue
 		# relaxed: hanging a little out from the body, swinging against the legs, elbows bending
 		# more the faster it goes; the right arm a bit forward with a pistol in it

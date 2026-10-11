@@ -11,10 +11,11 @@
   "aim_height_m": 1.1,
   "fog_y": 0.03,
   "characters": {
-    "_note": "assets/characters/<이름>.glb가 있으면 도형 대신 모델을 쓴다: officer(경찰), enemy(용의자), civilian(민간인), enemy_up / civilian_up(항복, 손 든 자세). height_m 키로 맞추고 바닥에 세운다(손 든 모델은 손끝까지 up_height_m). yaw_deg: 모델이 +Z(glTF 기본 정면)를 보면 90, 다른 쪽을 보면 바꾼다. player_tint / player_rim: 두 경찰을 구분하는 색. 몸 전체에 고르게 덧칠하는 정도와 윤곽(가장자리)에 비치는 정도(0~1). 어두운 방에서도 보이고 옷과 장비도 보이게 윤곽 위주로.",
+    "_note": "assets/characters/<이름>.glb가 있으면 도형 대신 모델을 쓴다: officer(경찰), enemy(용의자), civilian(민간인), enemy_up / civilian_up(항복, 손 든 자세: surrender_model이 true일 때만 쓰고, false면 서 있는 모델이 뼈대로 손을 든다). height_m 키로 맞추고 바닥에 세운다(손 든 모델은 손끝까지 up_height_m). yaw_deg: 모델이 +Z(glTF 기본 정면)를 보면 90, 다른 쪽을 보면 바꾼다. player_tint / player_rim: 두 경찰을 구분하는 색. 몸 전체에 고르게 덧칠하는 정도와 윤곽(가장자리)에 비치는 정도(0~1). 어두운 방에서도 보이고 옷과 장비도 보이게 윤곽 위주로.",
     "height_m": 1.75,
     "up_height_m": 1.9,
     "yaw_deg": 90.0,
+    "surrender_model": false,
     "player_tint": 0.03,
     "player_rim": 0.75,
     "walk": {
@@ -35,7 +36,7 @@
       "hip_drop": 0.6
     },
     "pose": {
-      "_note": "PROTOTYPE/TUNING: 자세. breath: 숨쉬기(초당 횟수, 가슴 각도). flinch_deg: 맞았을 때 몸이 젖혀지는 각도. recoil_deg / recoil_kick_deg: 쏠 때 가슴이 밀리는 각도 / 총구가 튀는 각도. rifle_blade_deg: 소총을 겨눌 때 왼쪽 어깨를 앞으로 트는 각도. flinch_s / recoil_s: 그 동작이 사라지는 시간(초). blend_s: 자세가 바뀔 때(서기→무릎 꿇기 등) 넘어가는 시간. fall_s: 쓰러지는 시간. muzzle_s: 총구 불꽃이 보이는 시간.",
+      "_note": "PROTOTYPE/TUNING: 자세. breath: 숨쉬기(초당 횟수, 가슴 각도). flinch_deg: 맞았을 때 몸이 젖혀지는 각도. recoil_deg / recoil_kick_deg: 쏠 때 가슴이 밀리는 각도 / 총구가 튀는 각도. rifle_blade_deg: 소총을 겨눌 때 왼쪽 어깨를 앞으로 트는 각도. flinch_s / recoil_s: 그 동작이 사라지는 시간(초). blend_s: 자세가 바뀔 때(서기→무릎 꿇기 등) 넘어가는 시간. fall_s: 쓰러지는 시간. muzzle_s: 총구 불꽃이 보이는 시간. hands_up_lift: 항복할 때 손이 어깨보다 올라가는 높이(키에 대한 비율).",
       "breath_hz": 0.25,
       "breath_deg": 1.2,
       "flinch_deg": 16.0,
@@ -46,7 +47,8 @@
       "rifle_blade_deg": 28.0,
       "blend_s": 0.25,
       "fall_s": 0.45,
-      "muzzle_s": 0.06
+      "muzzle_s": 0.06,
+      "hands_up_lift": 0.2
     }
   },
   "surfaces": {

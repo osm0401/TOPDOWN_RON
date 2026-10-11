@@ -31,6 +31,7 @@ D:\TOPDOWNRON
 - Autoload는 `Session` 하나만 (단계 1). 나머지는 씬 + 시그널.
 - 연결 수립(`session.gd`)과 게임 동기화(`sync.gd`)를 분리 → 나중에 Relay/Steam 교체 시 `session.gd`만 교체.
 - 테스트 실행: `D:\Godot\Godot_v4.7.2-stable_win64_console.exe --headless --path D:\TOPDOWNRON --script tests/run_tests.gd`
+- 성능 측정: `D:\Godot\Godot_v4.7.2-stable_win64_console.exe --headless --path D:\TOPDOWNRON res://tests/bench.tscn` (매 프레임 도는 함수들의 1회 시간, CPU만). 최적화 전후를 같은 PC에서 여러 번 번갈아 재서 비교한다.
 
 ## 2. 권한 표 (호스트 권한형, 승인됨)
 

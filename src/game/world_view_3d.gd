@@ -25,6 +25,8 @@ var _cam_pos := Vector2.ZERO
 var _cam_off := Vector2.ZERO  ## eased mouse look-ahead; the camera itself rides rigidly on the player
 var _cam_blend := 0.0  ## 0 follow the player, 1 door camera
 var _fog := ArrayMesh.new()
+var _fog_poly := PackedVector2Array()  ## the sight polygon and origin the fog mesh was built from
+var _fog_origin := Vector2.INF
 var _ring := TorusMesh.new()
 var _cam_ring: MeshInstance3D
 var _sil_ring: MeshInstance3D  ## outline range around the local officer in a dark room
@@ -482,14 +484,19 @@ func _update_camera(delta: float) -> void:
 	_sil_ring.position = _p3(here, 0.04)
 
 
-## Fog = quads from every sight-polygon edge out to FAR, flat on the floor.
+## Fog = quads from every sight-polygon edge out to FAR, flat on the floor. Rebuilt only when the
+## sight polygon changed (it changes at most once per physics frame, not at all while standing).
 func _update_fog() -> void:
-	_fog.clear_surfaces()
 	var v := view._vis
+	var o: Vector2 = view._vis_origin
+	if v == _fog_poly and o == _fog_origin:
+		return
+	_fog_poly = v
+	_fog_origin = o
+	_fog.clear_surfaces()
 	var n := v.size()
 	if n < 3:
 		return
-	var o: Vector2 = view._vis_origin
 	var y := float(_cfg["fog_y"])
 	var pts := PackedVector3Array()
 	var idx := PackedInt32Array()

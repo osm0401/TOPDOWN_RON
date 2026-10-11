@@ -21,10 +21,15 @@ const MAX_TAKES := 4  ## voice_<command>_<line>_0.wav .. _3.wav (different voice
 const SAMPLE_KEYS: Array[String] = ["rifle", "rifle_far", "pistol", "pistol_far", "footstep", "door",
 		"door_ajar", "kick", "taser", "reload", "hit", "hurt", "siren", "scream", "radio", "heart", "hum"]
 const SCREAM_LINE := "꺄악!"
+## Every key that has a synthesized stand-in (the far sets only exist as files).
+const SYNTH_KEYS: Array[String] = ["rifle", "pistol", "footstep", "door", "door_ajar", "kick", "voice", "scream",
+		"taser", "siren", "reload", "hit", "hurt", "radio", "heart", "hum", "ring"]
 
 static var _cache: Dictionary = {}  ## synthesized / loaded once per process
 static var _voice_cache: Dictionary = {}  ## spoken text -> recorded takes
 static var _voice_built := false
+static var _synth_task := -1  ## WorkerThreadPool task of prepare(), -1 when none is running
+static var _synth: Dictionary = {}  ## its result: key -> synthesized stand-ins
 
 var world: NetWorld
 var audition_reverb: Dictionary = {}  ## set by the audition panel; overrides the room reverb
@@ -156,26 +161,9 @@ func _setup_buses() -> void:
 func _build_bank() -> void:
 	if _cache.is_empty():
 		var t0 := Time.get_ticks_msec()
-		_cache = {
-			"rifle": [SfxSynth.gunshot(1, true), SfxSynth.gunshot(2, true), SfxSynth.gunshot(3, true)],
-			"pistol": [SfxSynth.gunshot(4, false), SfxSynth.gunshot(5, false), SfxSynth.gunshot(6, false)],
-			"footstep": [SfxSynth.footstep(10), SfxSynth.footstep(11), SfxSynth.footstep(12), SfxSynth.footstep(13)],
-			"door": [SfxSynth.door(21, 0.6, 0.6), SfxSynth.door(22, 0.7, 0.6)],
-			"door_ajar": [SfxSynth.door(31, 0.35, 0.4)],
-			"kick": [SfxSynth.kick(41), SfxSynth.kick(42)],
-			"voice": [SfxSynth.shout(51, 100.0, 0.7, 0.5), SfxSynth.shout(52, 125.0, 0.6, 0.5), SfxSynth.shout(53, 150.0, 0.65, 0.5)],
-			"scream": [SfxSynth.shout(61, 380.0, 0.9, 2.0), SfxSynth.shout(62, 450.0, 1.0, 2.0)],
-			"taser": [SfxSynth.taser(71)],
-			"siren": [SfxSynth.siren()],
-			"reload": [SfxSynth.reload_sound(81), SfxSynth.reload_sound(82)],
-			"hit": [SfxSynth.hit(91), SfxSynth.hit(92)],
-			"hurt": [SfxSynth.hurt(95)],
-			"radio": [SfxSynth.radio(97), SfxSynth.radio(98)],
-			"heart": [SfxSynth.heart()],
-			"hum": [SfxSynth.hum()],
-			"ring": [SfxSynth.ringing()],
-		}
-		print("[audio] synthesized in %d ms" % (Time.get_ticks_msec() - t0))
+		prepare()  # normally already started (and finished) in the lobby
+		_cache = wait_prepared()
+		print("[audio] stand-ins ready in %d ms (%d synthesized)" % [Time.get_ticks_msec() - t0, _cache.size()])
 		for key in SAMPLE_KEYS:  # files replace the stand-in of the same name; no file keeps it
 			var files := sample_streams(key)
 			if not files.is_empty():
@@ -190,6 +178,60 @@ func _build_bank() -> void:
 		if not _voice_cache.is_empty():
 			print("[audio] recorded voice lines for %d sentence(s)" % _voice_cache.size())
 	_bank = _cache
+
+
+## Starts synthesizing, on a worker thread, the stand-ins that no file replaces (synthesis takes
+## about half a second; the lobby calls this so entering the first mission does not stall).
+## Does nothing when the bank exists, a task runs already, or without sound (headless).
+static func prepare() -> void:
+	if _synth_task >= 0 or not _cache.is_empty() or not _synth.is_empty() or DisplayServer.get_name() == "headless":
+		return
+	var keys: Array[String] = []
+	for key in SYNTH_KEYS:
+		if not has_samples(key):
+			keys.append(key)
+	_synth_task = WorkerThreadPool.add_task(func() -> void: _synth = synthesize(keys), false, "sound stand-ins")
+
+
+## The result of prepare(), waiting for it when it still runs ({} when it never started).
+static func wait_prepared() -> Dictionary:
+	if _synth_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_synth_task)
+		_synth_task = -1
+	return _synth
+
+
+## The synthesized stand-ins of `keys` (pure: safe on a worker thread).
+static func synthesize(keys: Array[String]) -> Dictionary:
+	var out := {}
+	for key in keys:
+		match key:
+			"rifle": out[key] = [SfxSynth.gunshot(1, true), SfxSynth.gunshot(2, true), SfxSynth.gunshot(3, true)]
+			"pistol": out[key] = [SfxSynth.gunshot(4, false), SfxSynth.gunshot(5, false), SfxSynth.gunshot(6, false)]
+			"footstep": out[key] = [SfxSynth.footstep(10), SfxSynth.footstep(11), SfxSynth.footstep(12), SfxSynth.footstep(13)]
+			"door": out[key] = [SfxSynth.door(21, 0.6, 0.6), SfxSynth.door(22, 0.7, 0.6)]
+			"door_ajar": out[key] = [SfxSynth.door(31, 0.35, 0.4)]
+			"kick": out[key] = [SfxSynth.kick(41), SfxSynth.kick(42)]
+			"voice": out[key] = [SfxSynth.shout(51, 100.0, 0.7, 0.5), SfxSynth.shout(52, 125.0, 0.6, 0.5), SfxSynth.shout(53, 150.0, 0.65, 0.5)]
+			"scream": out[key] = [SfxSynth.shout(61, 380.0, 0.9, 2.0), SfxSynth.shout(62, 450.0, 1.0, 2.0)]
+			"taser": out[key] = [SfxSynth.taser(71)]
+			"siren": out[key] = [SfxSynth.siren()]
+			"reload": out[key] = [SfxSynth.reload_sound(81), SfxSynth.reload_sound(82)]
+			"hit": out[key] = [SfxSynth.hit(91), SfxSynth.hit(92)]
+			"hurt": out[key] = [SfxSynth.hurt(95)]
+			"radio": out[key] = [SfxSynth.radio(97), SfxSynth.radio(98)]
+			"heart": out[key] = [SfxSynth.heart()]
+			"hum": out[key] = [SfxSynth.hum()]
+			"ring": out[key] = [SfxSynth.ringing()]
+	return out
+
+
+## Is there at least one file <key>_<n>.wav (then the stand-in is never synthesized)?
+static func has_samples(key: String, dir := SAMPLE_DIR) -> bool:
+	for n in MAX_VARIANTS:
+		if ResourceLoader.exists("%s%s_%d.wav" % [dir, key, n]):
+			return true
+	return false
 
 
 ## Numbered files <key>_<n>.wav that exist, loaded (empty when none: assets/audio is not committed).

@@ -23,6 +23,8 @@ func _ready() -> void:
 	await _death_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
+	remove_child(_w)  # like the game: the world goes before the connection, so no frame sends to a closed peer
+	_w.free()
 	Session.leave()
 	get_tree().quit(1 if _failed > 0 else 0)
 
@@ -685,6 +687,13 @@ func _audio_extra_tests() -> void:
 	au._bank = {"rifle": [1], "rifle_far": [2], "pistol": [3]}
 	_check(au.set_key("rifle", 0.1) == "rifle_far" and au.set_key("rifle", 0.9) == "rifle" and au.set_key("pistol", 0.1) == "pistol", "faint sounds switch to the far set only when it exists")
 	_check(GameAudio.sample_streams("no_such_sound").is_empty(), "no files means no replacement (the synthesized stand-in stays)")
+	var bank := GameAudio.synthesize(["heart", "ring"])
+	_check(bank.keys() == ["heart", "ring"] and (bank["heart"][0] as AudioStreamWAV).data == SfxSynth.heart().data,
+			"the stand-in bank synthesizes exactly the sounds asked for (sounds with files are skipped)")
+	var missing := GameAudio.SAMPLE_KEYS.filter(func(k: String) -> bool: return not k.ends_with("_far") and not GameAudio.SYNTH_KEYS.has(k))
+	_check(missing.is_empty(), "every sound a file can replace has a stand-in (missing: %s)" % [missing])
+	_check(not GameAudio.has_samples("no_such_sound"), "no file: the stand-in is the one that plays")
+	_check(GameAudio.wait_prepared().is_empty(), "headless: no background synthesis was started")
 	# recorded voice lines: file names follow commands.json order
 	var lines := JsonData.load_dict("res://data/commands.json")
 	var stems := GameAudio.voice_stems(lines)

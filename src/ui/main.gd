@@ -17,7 +17,12 @@ func _ready() -> void:
 	Session.client_connected.connect(_enter_world)
 	Session.join_failed.connect(_show_status)
 	Session.connection_lost.connect(_leave_to_lobby)
+	GameAudio.prepare()  # the stand-in sounds are synthesized in the background while the lobby is up
 	_run_auto.call_deferred()
+
+
+func _exit_tree() -> void:
+	GameAudio.wait_prepared()  # never leave the worker task running at quit
 
 
 func _build_lobby() -> void:

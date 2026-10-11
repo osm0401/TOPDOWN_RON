@@ -3,20 +3,22 @@ extends RefCounted
 ## Small pure geometry helpers (no nodes, testable headless).
 
 
-## Liang-Barsky: does segment a-b touch rectangle r?
+## Liang-Barsky: does segment a-b touch rectangle r? (Runs for every wall on every sound an NPC or
+## the listener may hear: no arrays are built.)
 static func segment_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
 	var t0 := 0.0
 	var t1 := 1.0
 	var d := b - a
-	var p: Array[float] = [-d.x, d.x, -d.y, d.y]
-	var q: Array[float] = [a.x - r.position.x, r.end.x - a.x, a.y - r.position.y, r.end.y - a.y]
-	for i in 4:
-		if is_zero_approx(p[i]):
-			if q[i] < 0.0:
+	var e := r.end
+	for i in 4:  # left, right, top, bottom side
+		var p := -d.x if i == 0 else (d.x if i == 1 else (-d.y if i == 2 else d.y))
+		var q := a.x - r.position.x if i == 0 else (e.x - a.x if i == 1 else (a.y - r.position.y if i == 2 else e.y - a.y))
+		if is_zero_approx(p):
+			if q < 0.0:
 				return false
 		else:
-			var t: float = q[i] / p[i]
-			if p[i] < 0.0:
+			var t := q / p
+			if p < 0.0:
 				if t > t1:
 					return false
 				t0 = maxf(t0, t)

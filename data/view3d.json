@@ -8,6 +8,13 @@
   "actor_h": 1.7,
   "aim_height_m": 1.1,
   "fog_y": 0.03,
+  "characters": {
+    "_note": "assets/characters/<이름>.glb가 있으면 도형 대신 모델을 쓴다: officer(경찰), enemy(용의자), civilian(민간인), enemy_up / civilian_up(항복, 손 든 자세). height_m 키로 맞추고 바닥에 세운다(손 든 모델은 손끝까지 up_height_m). yaw_deg: 모델이 +Z(glTF 기본 정면)를 보면 90, 다른 쪽을 보면 바꾼다. player_tint: 두 경찰을 구분하는 색 덧칠 정도(0~1).",
+    "height_m": 1.75,
+    "up_height_m": 2.05,
+    "yaw_deg": 90.0,
+    "player_tint": 0.28
+  },
   "surfaces": {
     "_note": "PROTOTYPE/TUNING: 코드로 만든 임시 PBR 재질. mode 0=노이즈(회반죽/아스팔트), 1=타일, 2=나무 판자. 색은 RGB 0~1.",
     "ground": {"mode": 0, "color_a": [0.07, 0.07, 0.075], "color_b": [0.16, 0.155, 0.15], "scale": 0.9, "rough_min": 0.85, "rough_max": 1.0, "bump": 0.04},

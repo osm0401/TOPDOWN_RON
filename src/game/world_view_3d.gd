@@ -1,6 +1,7 @@
 class_name WorldView3D
 extends Node3D
-## PLACEHOLDER angled 3D rendering of NetWorld: primitive shapes, no assets.
+## PLACEHOLDER angled 3D rendering of NetWorld: primitive shapes; characters use the models in
+## assets/characters/ when they exist (CharacterModels), the primitive figures otherwise.
 ## The simulation stays in 2D plane coordinates, (x, y) px -> (x, 0, y) / px_per_m.
 ## WorldView keeps computing the sight polygon, flashlight cones and per-NPC visibility;
 ## this node reads that cache (view._vis, _cones, ...) and only draws. HUD, briefing and
@@ -54,8 +55,8 @@ func _ready() -> void:
 	_build_level()
 	for s in 2:
 		_players.append(_make_player(s))
-	for i in world.director.agents.size():
-		_npcs.append(_make_npc())
+	for a in world.director.agents:
+		_npcs.append(_make_npc(a))
 	world.mouse_world = _mouse_ground
 	world.sound_emitted.connect(_on_sound)
 	world.shot_fired.connect(_on_shot)
@@ -313,8 +314,12 @@ func _make_player(slot: int) -> Dictionary:
 	root.add_child(rig)
 	var mat := _mat(WorldView.PLAYER_COLORS[slot])
 	mat.emission_enabled = true
-	_add(_capsule(), mat, rig).position.y = _body_h * 0.5
-	_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
+	var model := CharacterModels.make("officer", _cfg["characters"])
+	if model.is_empty():
+		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
+		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
+	else:
+		rig.add_child(model["node"])
 	var gun := _add(_box(Vector3(0.6, 0.08, 0.08)), _mat(Color.WHITE), rig)
 	gun.position = Vector3(0.45, 1.15, 0.0)
 	var label := _label(0.006)
@@ -339,19 +344,27 @@ func _make_player(slot: int) -> Dictionary:
 	spot.visible = false
 	rig.add_child(spot)
 	return {
-		"root": root, "rig": rig, "mat": mat, "gun": gun, "label": label, "cone": cone, "spot": spot,
+		"root": root, "rig": rig, "mat": mat, "model": model, "gun": gun, "label": label, "cone": cone, "spot": spot,
 		"beam": _add(_box(Vector3(0.02, 0.02, 1.0)), _mat(Color(1.0, 0.1, 0.1, 0.75), true)),
 		"dot": _add(_sphere(0.05), _mat(Color(1.0, 0.2, 0.2), true))}
 
 
-func _make_npc() -> Dictionary:
+func _make_npc(a: NpcDirector.Agent) -> Dictionary:
 	var root := Node3D.new()
 	add_child(root)
 	var rig := Node3D.new()
 	root.add_child(rig)
 	var mat := _mat(WorldView.ENEMY_COLOR)
-	_add(_capsule(), mat, rig).position.y = _body_h * 0.5
-	_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
+	var kind := "enemy" if a.brain.role == NpcBrain.Role.ENEMY else "civilian"
+	var model := CharacterModels.make(kind, _cfg["characters"])
+	var model_up := CharacterModels.make(kind + "_up", _cfg["characters"]) if not model.is_empty() else {}
+	if model.is_empty():
+		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
+		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
+	else:
+		rig.add_child(model["node"])
+		if not model_up.is_empty():  # hands up (surrender) has its own model
+			rig.add_child(model_up["node"])
 	var cap_mesh := CylinderMesh.new()
 	cap_mesh.top_radius = 0.19
 	cap_mesh.bottom_radius = 0.19
@@ -378,8 +391,8 @@ func _make_npc() -> Dictionary:
 	var dbg := _label(0.005, Color(1, 1, 1, 0.85))
 	dbg.position.y = 0.1
 	root.add_child(dbg)
-	return {"root": root, "rig": rig, "mat": mat, "cap": cap, "band": band, "gun": gun, "arms": arms,
-			"cuffs": cuffs, "dropped": dropped, "sil": sil, "marker": marker, "dbg": dbg}
+	return {"root": root, "rig": rig, "mat": mat, "model": model, "model_up": model_up, "cap": cap, "band": band, "gun": gun,
+			"arms": arms, "cuffs": cuffs, "dropped": dropped, "sil": sil, "marker": marker, "dbg": dbg}
 
 
 # ---- input ------------------------------------------------------------------
@@ -575,11 +588,17 @@ func _update_players(delta: float) -> void:
 		var dead := ps.dead()
 		root.position = _p3(at)
 		var rig: Node3D = n["rig"]
+		var model: Dictionary = n["model"]
 		rig.basis = Basis(Vector3.UP, yaw) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
-		rig.position.y = LYING_Y if dead else 0.0
+		rig.position.y = (float(model.get("lie_y", LYING_Y)) if dead else 0.0)
 		var pm := n["mat"] as StandardMaterial3D
 		pm.albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
 		pm.emission = pm.albedo_color * 0.3  # officers stay readable in a dark room
+		if not model.is_empty():  # the two officers keep their colours (and stay readable in the dark) as a tint
+			var tint: Color = Color(0.5, 0.5, 0.5, 0.55) if dead else WorldView.PLAYER_COLORS[s]
+			if not dead:
+				tint.a = float(_cfg["characters"]["player_tint"])
+			(model["overlay"] as StandardMaterial3D).albedo_color = tint
 		(n["gun"] as Node3D).visible = not dead
 		(n["spot"] as Node3D).visible = ps.flash and not dead
 		var text := "" if dead else "HP %d/%d" % [ps.hp, ps.max_hp]
@@ -635,19 +654,33 @@ func _update_npcs(delta: float) -> void:
 				col = base.darkened(0.2)
 			S.RESTRAINED:
 				col = base.darkened(0.4)
+		var flash := false
 		for k in view._npc_flash:
 			if (k as Vector2).distance_to(a.pos) < 24.0:
+				flash = true
 				col = Color.WHITE
 		(n["mat"] as StandardMaterial3D).albedo_color = col
 		var lying := st == S.DOWN or st == S.DEAD
 		var rig: Node3D = n["rig"]
+		var model: Dictionary = n["model"]
+		var model_up: Dictionary = n["model_up"]
+		var hands_up := st == S.SURRENDER and not model_up.is_empty()
 		rig.basis = Basis(Vector3.BACK, PI * 0.5) if lying else Basis.IDENTITY
-		rig.position.y = LYING_Y if lying else 0.0
+		rig.position.y = float(model.get("lie_y", LYING_Y)) if lying else 0.0
+		if not model.is_empty():
+			(model["node"] as Node3D).visible = not hands_up
+			var tint := _npc_tint(st, flash)
+			(model["overlay"] as StandardMaterial3D).albedo_color = tint
+			if hands_up:
+				(model_up["node"] as Node3D).visible = true
+				(model_up["overlay"] as StandardMaterial3D).albedo_color = tint
+			elif not model_up.is_empty():
+				(model_up["node"] as Node3D).visible = false
 		rig.scale = Vector3(1.0, 0.6 if st == S.HIDE else (0.65 if st == S.RESTRAINED else 1.0), 1.0)
 		(n["cap"] as Node3D).visible = a.clues.has("cap")
 		(n["band"] as Node3D).visible = a.clues.has("band")
 		(n["gun"] as Node3D).visible = b.armed and st != S.DOWN and st != S.HIDE and st != S.DEAD
-		(n["arms"] as Node3D).visible = st == S.SURRENDER
+		(n["arms"] as Node3D).visible = st == S.SURRENDER and not hands_up
 		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED
 		(n["dropped"] as Node3D).visible = b.had_weapon and not b.armed
 		var marker := ""
@@ -681,6 +714,22 @@ func _update_npcs(delta: float) -> void:
 		if b.reason != "":
 			text += ": " + b.reason
 		(n["dbg"] as Label3D).text = text
+
+
+## Tint laid over an NPC model: white flash when hit, grey when dead, darker while down, hiding
+## or restrained (what the primitive figure shows with its colour).
+func _npc_tint(st: int, flash: bool) -> Color:
+	var S := NpcBrain.State
+	if flash:
+		return Color(1, 1, 1, 0.75)
+	match st:
+		S.DEAD:
+			return Color(0.45, 0.45, 0.45, 0.6)
+		S.DOWN, S.HIDE:
+			return Color(0, 0, 0, 0.2)
+		S.RESTRAINED:
+			return Color(0, 0, 0, 0.35)
+	return Color(0, 0, 0, 0)
 
 
 func _update_fx(delta: float) -> void:

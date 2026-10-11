@@ -16,6 +16,12 @@ from audio_common import AUDIO, far_version, fade_out, highpass, normalize_peak,
 OUT = AUDIO / "_far_dsp"
 
 
+def far_take(x, sr: int, cutoff: float = 1800.0, boom: float = 0.35, wet: float = 0.8, decay: float = 1.8, soften: float = 4.0):
+    """One close game sound -> its far game sound (dull, soft attack, long echo, faded, normalized)."""
+    y = far_version(x, sr, cutoff, boom, wet, decay, soften)
+    return normalize_peak(fade_out(highpass(y, sr, 40.0), sr, 0.4), 0.95)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", required=True, help="close sound key, e.g. rifle")
@@ -37,9 +43,7 @@ def main() -> None:
                 p.unlink()
     for n, src in enumerate(files):
         x, sr = read_mono(src)
-        y = far_version(x, sr, a.cutoff, a.boom, a.wet, a.decay, a.soften)
-        y = fade_out(highpass(y, sr, 40.0), sr, 0.4)
-        write_wav(out_dir / f"{a.dst}_{n}.wav", normalize_peak(y, 0.95), sr)
+        write_wav(out_dir / f"{a.dst}_{n}.wav", far_take(x, sr, a.cutoff, a.boom, a.wet, a.decay, a.soften), sr)
     print(f"{len(files)} far file(s) -> {out_dir}")
 
 

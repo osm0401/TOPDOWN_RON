@@ -16,4 +16,7 @@ assets/audio/_shortlist/
 assets/audio/_pick/
 assets/audio/_voice_raw/
 assets/audio/_far_dsp/
+# Ready or Not import (tools/audio/import_ron.py): its report, transcripts and the backups of replaced files
+assets/audio/_import/
+assets/audio/_backup/
 __pycache__/

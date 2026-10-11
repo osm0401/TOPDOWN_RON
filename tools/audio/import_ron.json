@@ -1,0 +1,101 @@
+{
+  "_note": "Ready or Not 소리 가져오기(import_ron.py) 설정. 폴더 경로, 대사 표, 명령 문장별로 쓸 영어 대사, 무기 소리 분류 단어. 가져온 파일은 VOID Interactive의 저작물이라 assets/audio는 커밋하지 않는다(.gitignore).",
+  "voice_dir": "D:\\Downloads\\Output\\Exports\\ReadyOrNot\\Content\\VO_PC\\SWATEli",
+  "weapons_dir": "D:\\Downloads\\Fmod_Bank_Tools\\wav\\Weapons[0]",
+  "godot": "D:\\Godot\\Godot_v4.7.2-stable_win64.exe",
+  "asr": {
+    "_note": "음성 인식(faster-whisper, 없으면 openai-whisper). match_min: 들은 문장과 목표 문장의 유사도 하한(0~1). max_s: 이보다 긴 파일은 명령 대사가 아니므로 듣지 않는다.",
+    "model": "small.en",
+    "match_min": 0.75,
+    "max_s": 6.0
+  },
+  "table": [
+    {"n": [0], "text": "Police! Hands in the air!"},
+    {"n": [1], "text": "This is the police, hands up!"},
+    {"n": [2], "text": "Police! Hands up!"},
+    {"n": [3], "text": "Police! Put your hands up!"},
+    {"n": [4, 8], "text": "Hands up!"},
+    {"n": [5], "text": "Get down and put your hands up!"},
+    {"n": [6, 7], "text": "Hands up now!"},
+    {"n": [9], "text": "Hands in the air!"},
+    {"n": [10], "text": "Put your hands in the air!"},
+    {"n": [11, 12], "text": "Hands where I can see them!"},
+    {"n": [13], "text": "Put your hands where I can see them!"},
+    {"n": [14], "text": "Get down and show me your hands!"},
+    {"n": [15, 16], "text": "Arms outstretched!"}
+  ],
+  "table_hint": ["hands", "handsup", "hand", "comply", "compliance", "yell", "shout", "surrender", "arrest", "command"],
+  "_commands": "명령마다 commands.json의 문장 순서대로: table = 그 문장에 넣을 대사 표 번호(N), phrases = 폴더에서 찾으면 같이 쓸 같은 뜻의 영어 대사. 문장마다 테이크 4개(voice_<명령>_<문장>_<0~3>.wav), 모자라면 같은 명령의 다른 대사로 채운다. 대사 표 17줄은 모두 어딘가에 들어간다.",
+  "commands": {
+    "weapon_drop": [
+      {"ko": "무기 버려!", "table": [2], "phrases": ["Drop the weapon!", "Drop your weapon!", "Drop it!", "Drop the gun!", "Drop your gun!", "Weapon down!"]},
+      {"ko": "당장 무기 내려놔!", "table": [3], "phrases": ["Put the weapon down!", "Put your weapon down!", "Put the gun down!", "Put it down!", "Drop it now!", "Drop the weapon now!", "Drop your weapon now!", "Put it down now!"]},
+      {"ko": "경찰이다, 무기 버려!", "table": [0, 1], "phrases": ["Police! Drop the weapon!", "Police! Drop your weapon!", "Police! Drop it!", "Police! Drop the gun!", "Police! Put the weapon down!", "Police! Put it down!"]},
+      {"ko": "총 내려놓고 물러서!", "table": [], "phrases": ["Put the gun down and step back!", "Drop the gun and step back!", "Drop it and step back!", "Step back!", "Back away!", "Get back!", "Back up!"]}
+    ],
+    "down": [
+      {"ko": "엎드려!", "table": [5], "phrases": ["Get down!", "Down!", "Get down! Get down!"]},
+      {"ko": "바닥에 엎드려!", "table": [14], "phrases": ["Get on the ground!", "On the ground!", "Get down on the ground!", "Ground!", "Get on the floor!", "On the floor!", "Get down on the floor!"]},
+      {"ko": "숙여, 지금 당장!", "table": [], "phrases": ["Get down now!", "Down now!", "Get down right now!"]},
+      {"ko": "몸 낮춰, 엎드려!", "table": [], "phrases": ["Stay down!", "Get low!", "Lie down!", "Face down!", "Get on your stomach!", "Get down on your stomach!"]}
+    ],
+    "freeze": [
+      {"ko": "움직이지 마!", "table": [11, 12], "phrases": ["Don't move!", "Stop moving!", "Don't you move!"]},
+      {"ko": "꼼짝 마!", "table": [13], "phrases": ["Freeze!", "Police! Freeze!", "Freeze, police!", "Police! Don't move!"]},
+      {"ko": "그대로 멈춰!", "table": [15, 16], "phrases": ["Stop!", "Stop right there!", "Stay where you are!", "Hold it!", "Hold it right there!", "Stay right there!", "Police! Stop!"]},
+      {"ko": "한 발짝도 움직이지 마!", "table": [], "phrases": ["Don't move a muscle!", "Don't take another step!", "Not another step!", "Not one step!", "Don't come any closer!", "Stay still!"]}
+    ],
+    "turn": [
+      {"ko": "돌아서, 손 머리 위로!", "table": [9, 10], "phrases": ["Turn around, hands on your head!", "Hands on your head!", "Put your hands on your head!", "Hands behind your head!", "Put your hands behind your head!", "Turn around and put your hands on your head!"]},
+      {"ko": "뒤돌아서 무릎 꿇어!", "table": [], "phrases": ["Turn around and get on your knees!", "Get on your knees!", "On your knees!", "Knees!", "Kneel down!", "Turn around, on your knees!"]},
+      {"ko": "돌아서 손 들어!", "table": [4, 8, 6, 7], "phrases": ["Turn around, hands up!", "Turn around and put your hands up!", "Turn around, hands in the air!", "Turn around and raise your hands!"]},
+      {"ko": "천천히 돌아서!", "table": [], "phrases": ["Turn around slowly!", "Slowly turn around!", "Turn around!", "Turn around now!", "Face the wall!", "Face away from me!"]}
+    ]
+  },
+  "hurt": {
+    "_note": "총에 맞았을 때 내 경찰의 신음(hurt_<n>.wav). 이름에 이 단어가 있거나, 음성 인식이 phrases 또는 [grunts] 같은 소리 설명을 들은 짧은 파일.",
+    "name_tokens": ["pain", "hurt", "injured", "injury", "wounded", "wound", "grunt", "grunts", "groan", "damage", "damaged", "ouch", "imhit"],
+    "phrases": ["I'm hit!", "I am hit!", "I'm hit! I'm hit!", "Ah, I'm hit!", "Agh, I'm hit!"],
+    "descriptors": ["grunt", "groan", "pain", "gasp", "grunting", "groaning", "moan"],
+    "min_s": 0.15,
+    "max_s": 2.0,
+    "keep": 4
+  },
+  "weapons": {
+    "_note": "파일 이름(과 폴더 이름)을 단어로 나눠 무기 종류(class)와 소리 층(layer)을 정한다. 그다음 catalog.json의 같은 소리 기준으로 점수를 매겨 한 무기의 테이크를 묶어서 고른다.",
+    "classes": {
+      "rifle": ["rifle", "rifles", "ar", "ar15", "ar10", "m4", "m4a1", "m16", "m16a4", "mk16", "mk17", "mk18", "scar", "hk416", "416", "g36", "g36c", "g3", "sa58", "fal", "ak", "ak47", "ak74", "akm", "aks", "aks74u", "556", "762", "carbine", "sbr", "arn", "arn180", "arwc", "sr16", "sr25", "sg552", "sg553", "aug", "famas", "tavor", "galil", "assault", "assaultrifle"],
+      "smg": ["smg", "mp5", "mp5k", "mp5a3", "mp5sd", "ump", "ump45", "mp7", "mp9", "mpx", "vector", "kriss", "p90", "uzi", "tec9", "mac10", "mac11", "pdw"],
+      "pistol": ["pistol", "pistols", "handgun", "sidearm", "glock", "g17", "g19", "ga17", "m9", "p92", "p92x", "m1911", "1911", "m45", "m45a1", "usp", "p226", "p320", "fiveseven", "fn57", "57usg", "deagle", "deserteagle", "beretta", "revolver", "python", "357", "9mm", "45acp"],
+      "shotgun": ["shotgun", "shotguns", "870", "m870", "m4super", "super90", "benelli", "beanbag", "m1014", "ks23", "spas", "pepperball", "lesslethal"]
+    },
+    "exclude": ["suppressed", "silenced", "suppressor", "supp", "dryfire", "empty", "whiz", "whizz", "flyby", "crack_by", "ricochet", "richochet", "ricco", "casing", "casings", "shell", "shells", "brass", "grenade", "flashbang", "explosion", "explode", "c2", "stinger", "gas", "melee", "equip", "unequip", "holster", "draw", "aim", "ads", "laser", "flashlight", "switch", "selector", "foley"],
+    "layers": {
+      "far": ["far", "distant", "dist", "distance", "faraway"],
+      "tail": ["tail", "tails", "verb", "reverb", "reflection", "reflections", "slap", "echo"],
+      "sub": ["lfe", "sub", "bass", "lowend"],
+      "mech": ["mech", "mechanical", "mechanics", "hammer", "trigger", "rattle", "clank"],
+      "shot": ["shot", "shots", "fire", "fired", "firing", "shoot", "gunshot", "close", "near", "core", "body", "punch", "main", "crack", "dry", "1p", "fp", "firstperson", "3p", "tp", "thirdperson", "single", "semi"],
+      "reload": ["reload", "reloads", "reloading"],
+      "mag_out": ["magout", "magazineout", "eject", "release", "remove", "removal", "out"],
+      "mag_in": ["magin", "magazinein", "insert", "insertion", "seat", "in"],
+      "bolt": ["bolt", "charge", "charging", "chamber", "rack", "slide", "boltrelease", "slidereleases", "sliderelease"],
+      "mag": ["mag", "magazine", "clip"],
+      "taser": ["taser", "tazer", "x26", "x2", "ecd"],
+      "impact": ["impact", "impacts", "hit", "bullet"],
+      "flesh": ["flesh", "body", "meat", "human", "ped", "character", "npc", "blood", "gore", "kevlar"]
+    },
+    "prefer": {"1p": 0.04, "fp": 0.04, "firstperson": 0.04, "close": 0.03, "dry": 0.03, "int": -0.02, "ext": -0.03, "3p": -0.02, "tp": -0.02, "thirdperson": -0.02},
+    "min_score": 0.55,
+    "keys": {
+      "rifle": {"class": ["rifle"], "fallback_class": ["smg"], "layer": "shot", "keep": 6},
+      "rifle_far": {"class": ["rifle"], "fallback_class": ["smg"], "layer": "far", "keep": 4, "pair": "rifle"},
+      "pistol": {"class": ["pistol"], "layer": "shot", "keep": 6},
+      "pistol_far": {"class": ["pistol"], "layer": "far", "keep": 4, "pair": "pistol"},
+      "reload": {"class": ["rifle", "smg", "pistol"], "layer": "reload", "keep": 3, "min_s": 0.8, "max_s": 3.5},
+      "taser": {"class": [], "layer": "taser", "keep": 2},
+      "hit": {"class": [], "layer": "flesh_impact", "keep": 4}
+    },
+    "reload_parts_at_s": {"mag_out": 0.05, "mag_in": 0.85, "bolt": 1.5}
+  }
+}

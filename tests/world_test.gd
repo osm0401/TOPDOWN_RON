@@ -5,6 +5,8 @@ extends Node
 ## Exit code 0 = all passed.
 
 const CharacterModels := preload("res://src/game/character_models.gd")
+const CharacterAnim := preload("res://src/game/character_anim.gd")
+const GearModels := preload("res://src/game/gear_models.gd")
 
 var _failed := 0
 var _w: NetWorld
@@ -563,8 +565,10 @@ func _character_model_tests() -> void:
 	await _frames(2)
 	_check(not (v3._players[0]["model"] as Dictionary).is_empty(), "3D view: the officer uses the model")
 	v3._update_players(0.016)
-	var tint: Color = (v3._players[0]["model"]["overlay"] as StandardMaterial3D).albedo_color
-	_check(is_equal_approx(tint.a, float(v3._cfg["characters"]["player_tint"])) and is_equal_approx(tint.b, WorldView.PLAYER_COLORS[0].b), "3D view: the officer keeps its player colour as a tint")
+	var rim: ShaderMaterial = v3._players[0]["rim"]
+	var tint: Color = rim.get_shader_parameter("tint")
+	_check(CharacterModels.meshes(v3._players[0]["model"]["node"])[0].material_overlay == rim and is_equal_approx(tint.b, WorldView.PLAYER_COLORS[0].b)
+			and is_equal_approx(float(rim.get_shader_parameter("rim")), float(v3._cfg["characters"]["player_rim"])), "3D view: the officer keeps its player colour as a rim glow")
 	var i := 0
 	while _agent(i).dormant or _agent(i).brain.role != NpcBrain.Role.ENEMY:
 		i += 1
@@ -576,15 +580,18 @@ func _character_model_tests() -> void:
 	_agent(i).brain.state = NpcBrain.State.DOWN
 	v3._update_npcs(0.016)
 	var rig: Node3D = n["rig"]
+	_check(rig.position.y < float(n["model"]["lie_front"]) * 0.5, "3D view: going down it topples over, not straight to the floor")
+	for f in 40:
+		v3._update_npcs(0.016)
 	_check((n["model"]["node"] as Node3D).visible and not (n["model_up"]["node"] as Node3D).visible
-			and absf(rig.position.y - float(n["model"]["lie_y"])) < 0.001 and not rig.basis.is_equal_approx(Basis.IDENTITY),
-			"3D view: a downed NPC model lies on its back, resting on the floor")
+			and absf(rig.position.y - float(n["model"]["lie_front"])) < 0.001 and (rig.basis * Vector3.RIGHT).y < -0.99,
+			"3D view: a downed NPC model lies face down (its front, rig +X, toward the floor), resting on the floor")
 	_agent(i).brain.state = NpcBrain.State.DEAD
 	v3._update_npcs(0.016)
 	_check(is_equal_approx((n["model"]["overlay"] as StandardMaterial3D).albedo_color.a, 0.6), "3D view: a dead NPC model is greyed")
 	# walking: the stride follows the drawn motion and settles back to standing
 	var sk := n["model"]["skeleton"] as Skeleton3D
-	var rest := sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L)
+	var rest := Quaternion.IDENTITY  # a standing thigh
 	_agent(i).brain.state = NpcBrain.State.IDLE
 	_agent(i).brain.facing = 0.0
 	var from := _agent(i).pos
@@ -610,6 +617,38 @@ func _character_model_tests() -> void:
 		_agent(i).pos += Vector2(90.0 * 0.016, 0.0)
 		v3._update_npcs(0.016)
 	_check(is_zero_approx(float(n["walk_amount"])), "3D view: a downed NPC does not walk even when moved")
+	# gear: the officer's rifle in the hands and pistol holstered; swapped, pistol out and rifle slung
+	var cop: Dictionary = v3._players[0]["model"]
+	var ps := _w.players[0]
+	ps.active = 0
+	v3._update_players(0.016)
+	var gear: Dictionary = cop["gear"]
+	_check(gear.has("hand") and (gear["hand"] as Node3D).name.begins_with("rifle") and (gear["hand"] as Node3D).visible
+			and (gear["holster"] as Node3D).name == "pistol" and not (v3._players[0]["gun"] as Node3D).visible,
+			"3D view: the officer holds the rifle, pistol holstered (no box gun)")
+	ps.active = 1
+	v3._update_players(0.016)
+	gear = cop["gear"]
+	_check((gear["hand"] as Node3D).name == "pistol" and (gear["back"] as Node3D).name.begins_with("rifle") and (gear["back"] as Node3D).visible,
+			"3D view: with the pistol out the rifle is slung")
+	ps.active = 0
+	_check(v3._gun_point(cop, "muzzle") != Vector3.INF, "3D view: the officer's muzzle is known (tracers and the laser start there)")
+	_agent(i).brain.state = NpcBrain.State.RESTRAINED
+	v3._update_npcs(0.016)
+	var npc_sk := n["model"]["skeleton"] as Skeleton3D
+	var rest_hips := npc_sk.get_bone_rest(CharacterModels.Bone.HIPS).origin.y
+	var first := npc_sk.get_bone_pose_position(CharacterModels.Bone.HIPS).y
+	_check(first > rest_hips - 0.1, "3D view: a new pose blends in (one frame in, the hips have barely moved)")
+	for f in 30:
+		v3._update_npcs(0.016)
+	_check((n["model"]["gear"] as Dictionary).has("cuffs") and npc_sk.get_bone_pose_position(CharacterModels.Bone.HIPS).y < npc_sk.get_bone_rest(CharacterModels.Bone.HIPS).origin.y - 0.3
+			and is_equal_approx((n["rig"] as Node3D).scale.y, 1.0), "3D view: a restrained NPC kneels in cuffs (not squashed)")
+	_check((n["dropped"] as Node3D).name == "pistol", "3D view: a dropped weapon is a pistol on the floor")
+	v3.zoom_by(0.001)
+	_check(is_equal_approx(v3._zoom_to, float(v3._cfg["camera"]["zoom_min"])), "zoom in stops at zoom_min")
+	v3.zoom_by(1000.0)
+	_check(is_equal_approx(v3._zoom_to, float(v3._cfg["camera"]["zoom_max"])), "zoom out stops at zoom_max")
+	WorldView3D._zoom_to = 1.0
 	v3.free()
 	CharacterModels.folder = CharacterModels.DIR
 	CharacterModels.release()
@@ -619,8 +658,8 @@ func _character_model_tests() -> void:
 
 
 ## The auto-rig on a box "person" (legs, torso, arms a little off the body, head) written as a
-## .glb: joints at human proportions, every part skinned to its bone, and the walk pose moving the
-## right way for forward, sideways and no motion.
+## .glb: joints at human proportions, every part skinned to its bone; then CharacterAnim's poses on
+## it: walking forward and sideways, standing, rifle and pistol grips, kneeling, crouching, cuffed.
 func _walk_rig_tests(dir: String) -> void:
 	var src := Node3D.new()
 	var parts := {  # name: [size, centre]
@@ -651,14 +690,21 @@ func _walk_rig_tests(dir: String) -> void:
 	if sk == null:
 		return
 	var B := CharacterModels.Bone
+	var h := 1.75
 	var at := func(b: int) -> Vector3: return sk.get_bone_global_rest(b).origin
-	_check(at.call(B.HIPS).y > 0.85 and at.call(B.HIPS).y < 0.93 and absf(at.call(B.SHIN_L).y - 0.27 * 1.75) < 0.01, "hips and knees at human proportions (%s, %s)" % [at.call(B.HIPS), at.call(B.SHIN_L)])
+	_check(at.call(B.HIPS).y > 0.85 and at.call(B.HIPS).y < 0.93 and absf(at.call(B.SHIN_L).y - 0.27 * h) < 0.01 and absf(at.call(B.FOOT_L).y - 0.05 * h) < 0.01,
+			"hips, knees and ankles at human proportions (%s, %s, %s)" % [at.call(B.HIPS), at.call(B.SHIN_L), at.call(B.FOOT_L)])
 	_check(absf(at.call(B.THIGH_L).x - 0.1) < 0.02 and absf(at.call(B.THIGH_R).x + 0.1) < 0.02, "each thigh bone sits in its leg (left = +X, the model faces +Z) (%s, %s)" % [at.call(B.THIGH_L), at.call(B.THIGH_R)])
-	_check(at.call(B.ARM_L).x > 0.2 and at.call(B.ARM_R).x < -0.2 and absf(at.call(B.ARM_L).y - 0.815 * 1.75) < 0.01, "shoulder joints at the arms")
-	# which bone carries each part, judged at its lower end
-	var expect := {"leg_l": B.SHIN_L, "leg_r": B.SHIN_R, "arm_l": B.ARM_L, "arm_r": B.ARM_R, "head": B.SPINE}
+	_check(absf(at.call(B.CHEST).y - 0.71 * h) < 0.01 and absf(at.call(B.HEAD).y - 0.86 * h) < 0.01, "chest and neck joints")
+	_check(at.call(B.UPPER_ARM_L).x > 0.2 and at.call(B.UPPER_ARM_R).x < -0.2 and absf(at.call(B.UPPER_ARM_L).y - 0.815 * h) < 0.01
+			and at.call(B.FOREARM_L).x > 0.2 and absf(at.call(B.FOREARM_L).y - 0.62 * h) < 0.01, "shoulders and elbows in the arms")
+	var hand_l: Vector3 = sk.get_meta("hand_l")
+	_check(hand_l.x > 0.22 and hand_l.y > 0.69 and hand_l.y < 0.85, "the left hand's centre is found at the bottom of the left arm (%s)" % hand_l)
+	# which bone carries each part
+	var expect := {"foot": [B.FOOT_L, B.FOOT_R], "shin": [B.SHIN_L, B.SHIN_R], "hand": [B.FOREARM_L, B.FOREARM_R], "upper": [B.UPPER_ARM_L, B.UPPER_ARM_R], "head": [B.HEAD, B.HEAD]}
 	var weights_ok := true
 	var parts_ok := true
+	var bad := ""
 	for mi: MeshInstance3D in CharacterModels.meshes(m["node"]):
 		var arr := (mi.mesh as ArrayMesh).surface_get_arrays(0)
 		var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
@@ -670,30 +716,68 @@ func _walk_rig_tests(dir: String) -> void:
 			weights_ok = weights_ok and absf(sum - 1.0) < 0.001
 			var p := v[k]
 			var part := ""
-			if p.y < 0.2:
-				part = "leg_l" if p.x > 0.0 else "leg_r"
-			elif p.y > 0.75 and p.y < 0.8 and absf(p.x) > 0.24:
-				part = "arm_l" if p.x > 0.0 else "arm_r"
+			if p.y < 0.04:
+				part = "foot"
+			elif p.y > 0.2 and p.y < 0.35:
+				part = "shin"
+			elif p.y > 0.72 and p.y < 0.8 and absf(p.x) > 0.24:
+				part = "hand"
+			elif p.y > 1.22 and p.y < 1.3 and absf(p.x) > 0.24:
+				part = "upper"
 			elif p.y > 1.6:
 				part = "head"
-			if part != "" and (bones[k * 4] != expect[part] or w[k * 4] < 0.99):
+			if part != "" and (bones[k * 4] != expect[part][0 if p.x > 0.0 else 1] or w[k * 4] < 0.99):
 				parts_ok = false
+				bad = "%s at %s: bone %d weight %.2f" % [part, p, bones[k * 4], w[k * 4]]
 	_check(weights_ok, "every vertex's weights add up to 1")
-	_check(parts_ok, "feet follow the shins, hands the arms, the head the spine")
-	var gait: Dictionary = JsonData.load_dict("res://data/view3d.json")["characters"]["walk"]
-	var foot := func(b: int) -> Vector3:
+	_check(parts_ok, "feet, shins, hands, upper arms and head each follow their own bone %s" % bad)
+
+	var cfg: Dictionary = JsonData.load_dict("res://data/view3d.json")["characters"]
+	var S := CharacterAnim.Stance
+	var H := CharacterAnim.Hold
+	var pos := func(b: int) -> Vector3:
 		sk.force_update_all_bone_transforms()
 		return sk.get_bone_global_pose(b).origin
-	var rest_l: Vector3 = foot.call(B.SHIN_L)
-	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.BACK, gait)
-	_check(foot.call(B.SHIN_L).z > rest_l.z + 0.1 and foot.call(B.SHIN_R).z < rest_l.z - 0.1, "mid-stride forward: the left knee ahead, the right behind")
+	var hand := func(side: int) -> Vector3:  # the posed hand centre, from the skeleton itself
+		sk.force_update_all_bone_transforms()
+		var bone: int = B.FOREARM_L if side == 0 else B.FOREARM_R
+		var pose := sk.get_bone_global_pose(bone)
+		var rest_hand: Vector3 = sk.get_meta("hand_l" if side == 0 else "hand_r")
+		return pose.origin + pose.basis * (rest_hand - at.call(bone))
+	var knee_l: Vector3 = at.call(B.SHIN_L)
+	CharacterAnim.pose(m, {"phase": PI * 0.5, "amount": 1.0, "speed": 1.8, "dir": Vector3.BACK}, cfg)
+	_check(pos.call(B.SHIN_L).z > knee_l.z + 0.1 and pos.call(B.SHIN_R).z < knee_l.z - 0.1, "mid-stride forward: the left knee ahead, the right behind")
 	_check(sk.get_bone_pose_position(B.HIPS).y < sk.get_bone_rest(B.HIPS).origin.y - 0.01, "legs apart: the hips dip")
-	var hand_l := sk.get_bone_global_pose(B.ARM_L).basis * Vector3.DOWN  # after foot.call: updated
-	_check(hand_l.z < -0.1, "the left arm swings back as the left leg goes forward")
-	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.RIGHT, gait)
-	_check(foot.call(B.SHIN_L).x > rest_l.x + 0.1 and absf(foot.call(B.SHIN_L).z - rest_l.z) < 0.02, "sideways: the legs step sideways, not forward")
-	CharacterModels.pose_walk(m, PI * 0.5, 0.0, 1.8, Vector3.BACK, gait)
-	_check(foot.call(B.SHIN_L).is_equal_approx(rest_l) and sk.get_bone_pose_rotation(B.ARM_L).is_equal_approx(Quaternion.IDENTITY), "amount 0: back to the rest pose")
+	_check(hand.call(0).z < hand.call(1).z - 0.15, "the left hand swings back as the left leg goes forward")
+	CharacterAnim.pose(m, {"phase": PI * 0.5, "amount": 1.0, "speed": 1.8, "dir": Vector3.RIGHT}, cfg)
+	_check(pos.call(B.SHIN_L).x > knee_l.x + 0.1 and absf(pos.call(B.SHIN_L).z - knee_l.z) < 0.02, "sideways: the legs step sideways, not forward")
+	CharacterAnim.pose(m, {}, cfg)
+	_check(pos.call(B.SHIN_L).is_equal_approx(knee_l) and hand.call(0).y < 0.85 and absf(hand.call(0).z) < 0.06, "standing: legs at rest, arms hanging")
+	# rifle: right hand on the grip, left on the handguard, muzzle out in front
+	var rifle := GearModels.make("rifle_lethal")
+	sk.add_child(rifle)
+	m["gear"] = {"hand": rifle}
+	CharacterAnim.pose(m, {"hold": H.RIFLE}, cfg)
+	var muzzle: Transform3D = m.get("muzzle", Transform3D())
+	_check(hand.call(1).distance_to(rifle.transform.origin) < 0.03 and hand.call(0).distance_to(rifle.transform * (rifle.get_meta("fore") as Vector3)) < 0.06,
+			"rifle: right hand on the grip, left hand on the handguard (%.3f, %.3f)" % [hand.call(1).distance_to(rifle.transform.origin), hand.call(0).distance_to(rifle.transform * (rifle.get_meta("fore") as Vector3))])
+	_check(muzzle.basis.z.z > 0.97 and muzzle.origin.z > 0.6 and muzzle.origin.y > 1.2, "rifle: the muzzle points ahead at shoulder height (%s)" % muzzle.origin)
+	var pistol := GearModels.make("pistol")
+	sk.add_child(pistol)
+	m["gear"] = {"hand": pistol}
+	CharacterAnim.pose(m, {"hold": H.PISTOL}, cfg)
+	_check(hand.call(1).distance_to(pistol.transform.origin) < 0.03 and hand.call(0).distance_to(pistol.transform * (pistol.get_meta("fore") as Vector3)) < 0.05,
+			"pistol: both hands on the grip")
+	CharacterAnim.pose(m, {"hold": H.PISTOL_ONE, "aim": Vector3(1, 0, 1).normalized()}, cfg)
+	_check((m["muzzle"] as Transform3D).basis.z.dot(Vector3(1, 0, 1).normalized()) > 0.97, "one-handed: the pistol points where it aims")
+	m["gear"] = {}
+	CharacterAnim.pose(m, {"stance": S.KNEEL, "hold": H.CUFFED}, cfg)
+	var hips_y := pos.call(B.HIPS).y as float
+	_check(hips_y < at.call(B.HIPS).y - 0.3 and pos.call(B.SHIN_L).y < 0.12, "kneeling: hips down, knees on the floor (%.2f, %.2f)" % [hips_y, pos.call(B.SHIN_L).y])
+	_check(hand.call(0).z < pos.call(B.SPINE).z - 0.05 and hand.call(0).distance_to(hand.call(1)) < 0.15, "cuffed: wrists together behind the back")
+	CharacterAnim.pose(m, {"stance": S.CROUCH, "hold": H.COVER}, cfg)
+	_check(pos.call(B.HIPS).y < at.call(B.HIPS).y * 0.6 and pos.call(B.FOOT_L).distance_to(at.call(B.FOOT_L)) < 0.1 and hand.call(0).y > pos.call(B.HEAD).y,
+			"crouching: hips low, feet planted, hands over the head")
 	(m["node"] as Node).free()
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + "walker.glb"))
 

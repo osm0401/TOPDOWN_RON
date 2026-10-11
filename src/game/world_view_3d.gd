@@ -1,7 +1,8 @@
 class_name WorldView3D
 extends Node3D
 ## PLACEHOLDER angled 3D rendering of NetWorld: primitive shapes; characters use the models in
-## assets/characters/ when they exist (CharacterModels), the primitive figures otherwise.
+## assets/characters/ when they exist (CharacterModels, posed by CharacterAnim, carrying gear from
+## GearModels), the primitive figures otherwise. Mouse wheel: zoom.
 ## The simulation stays in 2D plane coordinates, (x, y) px -> (x, 0, y) / px_per_m.
 ## WorldView keeps computing the sight polygon, flashlight cones and per-NPC visibility;
 ## this node reads that cache (view._vis, _cones, ...) and only draws. HUD, briefing and
@@ -12,7 +13,12 @@ const FAR := 5000.0
 const BEAM_Y := 1.2
 const LYING_Y := 0.28
 const SURFACE := preload("res://src/game/surface.gdshader")
+const RIM_TINT := preload("res://src/game/rim_tint.gdshader")
 const CharacterModels := preload("res://src/game/character_models.gd")
+const CharacterAnim := preload("res://src/game/character_anim.gd")
+const GearModels := preload("res://src/game/gear_models.gd")
+
+static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
 
 var world: NetWorld
 var view: WorldView
@@ -39,6 +45,8 @@ var _players: Array[Dictionary] = []
 var _npcs: Array[Dictionary] = []
 var _fx: Array[Dictionary] = []  ## live ripples, tracers, muzzle flashes and speech bubbles
 var _lights: Array[Dictionary] = []  ## static ceiling/street lights: {node, pos (px)}
+var _zoom := 1.0  ## eased toward _zoom_to
+var _t := 0.0  ## seconds since the view opened (breathing, idle sway)
 
 
 func _ready() -> void:
@@ -62,6 +70,7 @@ func _ready() -> void:
 	world.sound_emitted.connect(_on_sound)
 	world.shot_fired.connect(_on_shot)
 	world.speech_emitted.connect(_on_speech)
+	world.damaged.connect(_on_damaged)
 
 
 func _exit_tree() -> void:
@@ -316,12 +325,17 @@ func _make_player(slot: int) -> Dictionary:
 	var mat := _mat(WorldView.PLAYER_COLORS[slot])
 	mat.emission_enabled = true
 	var model := CharacterModels.make("officer", _cfg["characters"])
+	var rim: ShaderMaterial = null
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
 		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
 	else:
 		rig.add_child(model["node"])
-	var gun := _add(_box(Vector3(0.6, 0.08, 0.08)), _mat(Color.WHITE), rig)
+		rim = ShaderMaterial.new()  # the player colour as a glow along the silhouette, the model still visible
+		rim.shader = RIM_TINT
+		for mi in CharacterModels.meshes(model["node"]):
+			mi.material_overlay = rim
+	var gun := _add(_box(Vector3(0.6, 0.08, 0.08)), _mat(Color.WHITE), rig)  # primitive figure only
 	gun.position = Vector3(0.45, 1.15, 0.0)
 	var label := _label(0.006)
 	label.position.y = _actor_h + 0.45
@@ -345,7 +359,7 @@ func _make_player(slot: int) -> Dictionary:
 	spot.visible = false
 	rig.add_child(spot)
 	return {
-		"root": root, "rig": rig, "mat": mat, "model": model, "gun": gun, "label": label, "cone": cone, "spot": spot,
+		"root": root, "rig": rig, "mat": mat, "model": model, "rim": rim, "gun": gun, "label": label, "cone": cone, "spot": spot,
 		"beam": _add(_box(Vector3(0.02, 0.02, 1.0)), _mat(Color(1.0, 0.1, 0.1, 0.75), true)),
 		"dot": _add(_sphere(0.05), _mat(Color(1.0, 0.2, 0.2), true))}
 
@@ -382,8 +396,18 @@ func _make_npc(a: NpcDirector.Agent) -> Dictionary:
 		_add(_box(Vector3(0.07, 0.5, 0.07)), mat, arms).position = Vector3(0.0, 1.45, side)
 	var cuffs := _add(_box(Vector3(0.1, 0.1, 0.4)), _mat(Color(1.0, 0.9, 0.2)), rig)
 	cuffs.position = Vector3(0.2, 0.7, 0.0)
-	var dropped := _add(_box(Vector3(0.5, 0.06, 0.1)), _mat(Color(1.0, 0.9, 0.3)), root)
-	dropped.position = Vector3(0.3, 0.05, 0.35)
+	var dropped: Node3D
+	if model.is_empty():
+		dropped = _add(_box(Vector3(0.5, 0.06, 0.1)), _mat(Color(1.0, 0.9, 0.3)), root)
+		dropped.position = Vector3(0.3, 0.05, 0.35)
+	else:  # the pistol itself on the floor, lit yellow so it still reads as the dropped-weapon cue
+		var pistol := GearModels.make("pistol")
+		var glow := _mat(Color(1.0, 0.85, 0.2, 0.45), true)
+		glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		pistol.material_overlay = glow
+		pistol.transform = Transform3D(Basis(Vector3.UP, 0.6) * Basis(Vector3.BACK, PI * 0.5) * Basis.from_scale(Vector3.ONE * 1.3), Vector3(0.3, 0.025, 0.35))
+		root.add_child(pistol)
+		dropped = pistol
 	var sil := _add(_capsule(), _mat(Color(0.35, 0.35, 0.4, 0.8), true), root)
 	sil.position.y = _body_h * 0.5
 	var marker := _label(0.012)
@@ -397,6 +421,24 @@ func _make_npc(a: NpcDirector.Agent) -> Dictionary:
 
 
 # ---- input ------------------------------------------------------------------
+
+## Mouse wheel: zoom the camera in (closer to the figures) or out, within data/view3d.json camera
+## zoom_min .. zoom_max (shares of distance_m).
+func _unhandled_input(event: InputEvent) -> void:
+	var mb := event as InputEventMouseButton
+	if mb == null or not mb.pressed:
+		return
+	var c: Dictionary = _cfg["camera"]
+	if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+		zoom_by(1.0 / float(c["zoom_step"]))
+	elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		zoom_by(float(c["zoom_step"]))
+
+
+func zoom_by(factor: float) -> void:
+	var c: Dictionary = _cfg["camera"]
+	_zoom_to = clampf(_zoom_to * factor, float(c["zoom_min"]), float(c["zoom_max"]))
+
 
 ## Ground point (px) under a screen position, on the chest-height plane so the aim
 ## direction matches the cursor as seen from the drawn figure.
@@ -428,7 +470,23 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
 	var m := _mat(Color(1.0, 0.35, 0.3) if shooter >= 2 else Color(1.0, 0.95, 0.5), true)
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var mi := _add(_box(Vector3(0.04, 0.04, 1.0)), m)
-	_beam(mi, _p3(from, BEAM_Y), _p3(to, BEAM_Y))
+	var n: Dictionary = _players[shooter] if shooter < 2 else (_npcs[shooter - 2] if shooter - 2 < _npcs.size() else {})
+	var muzzle := Vector3.INF
+	if not n.is_empty():
+		n["recoil"] = 1.0
+		muzzle = _gun_point(n["model"], "muzzle")
+		var aim := _gun_dir(n["model"])
+		if muzzle != Vector3.INF and aim != Vector3.ZERO:  # a short star of flame out of the barrel
+			var fm := _mat(Color(1.0, 0.85, 0.45), true)
+			fm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			fm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+			var cone := SphereMesh.new()
+			cone.radius = 0.05
+			cone.height = 0.1
+			var fl := _add(cone, fm)
+			fl.global_transform = Transform3D(Basis.looking_at(-aim, Vector3.UP) * Basis.from_scale(Vector3(1.0, 1.0, 2.6)), muzzle + aim * 0.1)  # long along the barrel
+			_fx.append({"type": "muzzle", "node": fl, "mat": fm, "age": 0.0})
+	_beam(mi, muzzle if muzzle != Vector3.INF else _p3(from, BEAM_Y), _p3(to, BEAM_Y))
 	_fx.append({"type": "tracer", "node": mi, "mat": m, "age": 0.0})
 	var mc: Dictionary = _cfg["lighting"]["muzzle"]  # the shot lights the room for a moment
 	var flash := OmniLight3D.new()
@@ -436,7 +494,7 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
 	flash.omni_range = float(mc["range_m"])
 	flash.light_color = _col(mc["color"])
 	flash.shadow_enabled = true
-	flash.position = _p3(from, float(mc["height_m"]))
+	flash.position = muzzle if muzzle != Vector3.INF else _p3(from, float(mc["height_m"]))
 	add_child(flash)
 	_fx.append({"type": "flash", "node": flash, "age": 0.0, "energy": float(mc["energy"]), "life": float(mc["life_s"])})
 
@@ -452,6 +510,7 @@ func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
 # ---- per frame --------------------------------------------------------------
 
 func _process(delta: float) -> void:
+	_t += delta
 	_update_camera(delta)
 	_update_fog()
 	_update_level(delta)
@@ -482,6 +541,8 @@ func _update_camera(delta: float) -> void:
 	if me.cam_door < 0 and world.auto_role == "":
 		var vp := get_viewport()
 		off = ((vp.get_mouse_position() - vp.get_visible_rect().size * 0.5) * 0.3).limit_length(160.0)
+	_zoom = lerpf(_zoom, _zoom_to, minf(delta * 10.0, 1.0))
+	off *= minf(_zoom, 1.0)  # zoomed in, look ahead less so the officer stays in view
 	_cam_off = _cam_off.lerp(off, step)
 	_cam_blend = move_toward(_cam_blend, 1.0 if me.cam_door >= 0 else 0.0, delta * 6.0)
 	var target := (world.display_pos(world.my_slot) + _cam_off).lerp(view._vis_origin, _cam_blend)
@@ -489,7 +550,7 @@ func _update_camera(delta: float) -> void:
 	var c: Dictionary = _cfg["camera"]
 	var pitch := deg_to_rad(float(c["pitch_deg"]))
 	var at := _p3(_cam_pos)
-	_cam.position = at + Vector3(0.0, sin(pitch), cos(pitch)) * float(c["distance_m"])
+	_cam.position = at + Vector3(0.0, sin(pitch), cos(pitch)) * float(c["distance_m"]) * _zoom
 	_cam.look_at(at)
 	_cam_ring.visible = me.cam_door >= 0
 	_cam_ring.position = _p3(view._vis_origin, 0.04)
@@ -590,23 +651,32 @@ func _update_players(delta: float) -> void:
 		root.position = _p3(at)
 		var rig: Node3D = n["rig"]
 		var model: Dictionary = n["model"]
-		rig.basis = Basis(Vector3.UP, yaw) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
-		rig.position.y = (float(model.get("lie_y", LYING_Y)) if dead else 0.0)
-		_walk(n, [model], dead, delta)
+		var lie := _fall(n, dead, delta)
+		rig.basis = Basis(Vector3.UP, yaw) * Basis(Vector3.BACK, PI * 0.5 * lie)
+		rig.position.y = float(model.get("lie_y", LYING_Y)) * lie
+		_pose_officer(ps, n, delta)
 		var pm := n["mat"] as StandardMaterial3D
 		pm.albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
 		pm.emission = pm.albedo_color * 0.3  # officers stay readable in a dark room
-		if not model.is_empty():  # the two officers keep their colours (and stay readable in the dark) as a tint
-			var tint: Color = Color(0.5, 0.5, 0.5, 0.55) if dead else WorldView.PLAYER_COLORS[s]
-			if not dead:
-				tint.a = float(_cfg["characters"]["player_tint"])
-			(model["overlay"] as StandardMaterial3D).albedo_color = tint
-		(n["gun"] as Node3D).visible = not dead
-		(n["spot"] as Node3D).visible = ps.flash and not dead
+		if not model.is_empty():  # the two officers keep their colours (and stay readable in the dark): a rim glow, grey when dead
+			var rim: ShaderMaterial = n["rim"]
+			var cc: Dictionary = _cfg["characters"]
+			rim.set_shader_parameter("tint", Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s])
+			rim.set_shader_parameter("even", 0.55 if dead else float(cc["player_tint"]))
+			rim.set_shader_parameter("rim", 0.0 if dead else float(cc["player_rim"]))
+		(n["gun"] as Node3D).visible = not dead and model.is_empty()
+		var spot: SpotLight3D = n["spot"]
+		spot.visible = ps.flash and not dead
+		var light := _gun_point(model, "light")
+		if light != Vector3.INF:  # the beam comes out of the weapon light
+			spot.global_position = light
+		else:
+			spot.position = Vector3(0.3, float(_cfg["lighting"]["flash"]["height_m"]), 0.0)
 		var text := "" if dead else "HP %d/%d" % [ps.hp, ps.max_hp]
 		if ps.busy():
 			text += "\n%s %d%%" % [WorldView.ACTION_LABELS[ps.action], int(100.0 * clampf(ps.action_t / ps.action_dur, 0.0, 1.0))]
 		(n["label"] as Label3D).text = text
+		(n["label"] as Label3D).pixel_size = 0.006 * _zoom  # same size on screen at any zoom
 		_fan(n["cone"], view._cones[s], 0.02)
 		var dot: Vector2 = view._laser_dots[s]
 		var beam: MeshInstance3D = n["beam"]
@@ -616,7 +686,8 @@ func _update_players(delta: float) -> void:
 			beam.visible = false
 		else:
 			dot_node.position = _p3(dot, BEAM_Y)
-			_beam(beam, _p3(at + Vector2.from_angle(ps.aim) * 18.0, BEAM_Y), dot_node.position)
+			var muzzle := _gun_point(model, "muzzle")
+			_beam(beam, muzzle if muzzle != Vector3.INF else _p3(at + Vector2.from_angle(ps.aim) * 18.0, BEAM_Y), dot_node.position)
 
 
 func _update_npcs(delta: float) -> void:
@@ -629,8 +700,9 @@ func _update_npcs(delta: float) -> void:
 		var seen: int = view._npc_seen[i] if i < view._npc_seen.size() else LightModel.Seen.IDENTIFIED
 		root.visible = not a.dormant and seen != LightModel.Seen.NONE
 		if not root.visible:
-			n.erase("pos")  # next appearance snaps to the sim position
+			n.erase("pos")  # next appearance snaps to the sim position (and lies or stands at once)
 			n.erase("walk_at")
+			n.erase("lie")
 			continue
 		var sil := seen == LightModel.Seen.SILHOUETTE
 		var fresh := not n.has("pos")
@@ -669,8 +741,14 @@ func _update_npcs(delta: float) -> void:
 		var model: Dictionary = n["model"]
 		var model_up: Dictionary = n["model_up"]
 		var hands_up := st == S.SURRENDER and not model_up.is_empty()
-		rig.basis = Basis(Vector3.BACK, PI * 0.5) if lying else Basis.IDENTITY
-		rig.position.y = float(model.get("lie_y", LYING_Y)) if lying else 0.0
+		if lying:  # a model lies face down (hands behind its head) when down, on its back when dead
+			n["prone"] = st == S.DOWN and not model.is_empty()
+		var prone: bool = n.get("prone", false)
+		var lie := _fall(n, lying, delta)
+		rig.basis = Basis(Vector3.BACK, (-PI * 0.5 if prone else PI * 0.5) * lie)
+		rig.position.y = (float(model["lie_front"]) if prone else float(model.get("lie_y", LYING_Y))) * lie
+		if flash:
+			n["flinch"] = 1.0
 		if not model.is_empty():
 			(model["node"] as Node3D).visible = not hands_up
 			var tint := _npc_tint(st, flash)
@@ -680,13 +758,15 @@ func _update_npcs(delta: float) -> void:
 				(model_up["overlay"] as StandardMaterial3D).albedo_color = tint
 			elif not model_up.is_empty():
 				(model_up["node"] as Node3D).visible = false
-		_walk(n, [model, model_up], lying or st == S.HIDE or st == S.RESTRAINED, delta)
-		rig.scale = Vector3(1.0, 0.6 if st == S.HIDE else (0.65 if st == S.RESTRAINED else 1.0), 1.0)
-		(n["cap"] as Node3D).visible = a.clues.has("cap")
-		(n["band"] as Node3D).visible = a.clues.has("band")
-		(n["gun"] as Node3D).visible = b.armed and st != S.DOWN and st != S.HIDE and st != S.DEAD
+		var shapes := model.is_empty()  # the primitive figure: squashed, with boxes for gun, cap, band, cuffs
+		if not shapes:
+			_pose_npc(a, n, model_up if hands_up else model, delta)
+		rig.scale = Vector3(1.0, 0.6 if st == S.HIDE and shapes else (0.65 if st == S.RESTRAINED and shapes else 1.0), 1.0)
+		(n["cap"] as Node3D).visible = a.clues.has("cap") and shapes
+		(n["band"] as Node3D).visible = a.clues.has("band") and shapes
+		(n["gun"] as Node3D).visible = b.armed and st != S.DOWN and st != S.HIDE and st != S.DEAD and shapes
 		(n["arms"] as Node3D).visible = st == S.SURRENDER and not hands_up
-		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED
+		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED and shapes
 		(n["dropped"] as Node3D).visible = b.had_weapon and not b.armed
 		var marker := ""
 		var marker_color := Color(1.0, 0.45, 0.1)
@@ -712,7 +792,8 @@ func _update_npcs(delta: float) -> void:
 				marker_color = Color(0.75, 0.75, 0.75)
 		(n["marker"] as Label3D).text = marker
 		(n["marker"] as Label3D).modulate = marker_color
-		(n["marker"] as Label3D).pixel_size = 0.012 if marker in ["?", "!", "!!"] else 0.007  # symbols big, words smaller
+		(n["marker"] as Label3D).pixel_size = (0.012 if marker in ["?", "!", "!!"] else 0.007) * _zoom  # symbols big, words smaller; same size on screen at any zoom
+		(n["dbg"] as Label3D).pixel_size = 0.005 * _zoom
 		var text: String = NpcBrain.STATE_NAMES[st]
 		if b.feigning:
 			text += " (가장)"
@@ -721,10 +802,11 @@ func _update_npcs(delta: float) -> void:
 		(n["dbg"] as Label3D).text = text
 
 
-## Steps a figure's models (CharacterModels.pose_walk) with what is drawn: the speed is how far the
-## root moved this frame, so eased officers and NPCs step with their drawn motion, and the stride
-## phase advances with distance. still: lying, hiding or restrained, no stride.
-func _walk(n: Dictionary, models: Array, still: bool, delta: float) -> void:
+## The walking part of a figure's pose, from what is drawn: the speed is how far the root moved this
+## frame, so eased officers and NPCs step with their drawn motion, and the stride phase advances
+## with distance. still: lying, hiding or restrained, no stride. Returns a CharacterAnim state
+## ({"phase", "amount", "speed", "t", "seed"}); n["walk_v"] keeps the velocity (m/s, world).
+func _stride(n: Dictionary, still: bool, delta: float) -> Dictionary:
 	var g: Dictionary = _cfg["characters"]["walk"]
 	var at := (n["root"] as Node3D).position
 	var prev: Vector3 = n.get("walk_at", at)
@@ -741,13 +823,180 @@ func _walk(n: Dictionary, models: Array, still: bool, delta: float) -> void:
 	n["walk_amount"] = amount
 	var phase := fmod(float(n.get("walk_phase", 0.0)) + TAU * speed * delta / (float(g["stride_m"]) + float(g["stride_per_mps"]) * speed), TAU)
 	n["walk_phase"] = phase
-	for m: Dictionary in models:
-		var sk := m.get("skeleton") as Skeleton3D
-		if sk == null:
-			continue
-		var dir := sk.global_basis.inverse() * vel  # into the model's own space (+Z its front)
-		dir.y = 0.0
-		CharacterModels.pose_walk(m, phase, amount, speed, dir.normalized(), g)
+	return {"phase": phase, "amount": amount, "speed": speed, "t": _t, "dt": delta, "seed": float(n["root"].get_instance_id() % 97)}
+
+
+## How far a figure has fallen (0 standing .. 1 lying), moving toward `lying` over pose fall_s: it
+## topples faster and faster, and gets up smoothly. A figure first seen lying is down already.
+func _fall(n: Dictionary, lying: bool, delta: float) -> float:
+	var target := 1.0 if lying else 0.0
+	var v := move_toward(float(n.get("lie", target)), target, delta / float(_cfg["characters"]["pose"]["fall_s"]))
+	n["lie"] = v
+	return v * v if lying else smoothstep(0.0, 1.0, v)
+
+
+## A world direction in the model's own space (+Z its front), flattened; ZERO stays ZERO.
+func _to_model(model: Dictionary, v: Vector3, flat := true) -> Vector3:
+	var sk := model.get("skeleton") as Skeleton3D
+	if sk == null or v.length_squared() < 1e-6:
+		return Vector3.ZERO
+	var d := sk.global_basis.inverse() * v
+	if flat:
+		d.y = 0.0
+	return d.normalized()
+
+
+## A gear node of `kind` on the model's skeleton, made the first time it is asked for.
+func _gear(model: Dictionary, kind: String) -> Node3D:
+	var have: Dictionary = model.get_or_add("gear_nodes", {})
+	if not have.has(kind):
+		var g := GearModels.make(kind)
+		(model["skeleton"] as Skeleton3D).add_child(g)
+		have[kind] = g
+	return have[kind]
+
+
+## Shows the gear in `slots` ({slot: gear kind}, CharacterAnim's slots), hides the rest, poses.
+func _pose(model: Dictionary, s: Dictionary, slots: Dictionary) -> void:
+	if model.get("skeleton") == null:
+		return
+	var gear := {}
+	for slot: String in slots:
+		gear[slot] = _gear(model, slots[slot])
+	for g: Node3D in (model.get_or_add("gear_nodes", {}) as Dictionary).values():
+		g.visible = gear.values().has(g)
+	model["gear"] = gear
+	s["dir"] = _to_model(model, s.get("vel", Vector3.ZERO))
+	CharacterAnim.pose(model, s, _cfg["characters"])
+
+
+## A 0..1 cue that was set to 1 (n[key]: flinch on a hit, recoil on a shot), fading over pose[secs_key].
+func _fade(n: Dictionary, key: String, secs_key: String, delta: float) -> float:
+	var v := maxf(float(n.get(key, 0.0)) - delta / float(_cfg["characters"]["pose"][secs_key]), 0.0)
+	n[key] = v
+	return v
+
+
+## An officer's pose: rifle or pistol on the aim (the other one slung or holstered), reloading,
+## taking a knee to pick a lock, restrain or use the door camera, limp when dead.
+func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
+	var model: Dictionary = n["model"]
+	if model.get("skeleton") == null:
+		return
+	var S := CharacterAnim.Stance
+	var H := CharacterAnim.Hold
+	var dead := ps.dead()
+	var s := _stride(n, dead or ps.busy(), delta)
+	s["vel"] = n["walk_v"]
+	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
+	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
+	var rifle: String = ps.weapon_kinds[0] if not ps.weapon_kinds.is_empty() else "rifle_lethal"
+	var slots := {}
+	if dead:
+		s["stance"] = S.DEAD
+		slots = {"holster": "pistol"}
+	elif ps.busy():
+		s["stance"] = S.WORK
+		s["hold"] = H.WORK
+		slots = {"back": rifle, "holster": "pistol"}
+		if ps.action == PlayerState.ACTION_CAMERA:
+			slots["hand"] = "camera"
+	elif ps.active == 0:
+		s["hold"] = H.RIFLE
+		slots = {"hand": rifle, "holster": "pistol"}
+	else:
+		s["hold"] = H.PISTOL
+		slots = {"hand": "pistol", "back": rifle}
+	var w: WeaponState = ps.weapons[ps.active] if ps.active < ps.weapons.size() else null
+	if w != null and w.reloading and not dead and not ps.busy():
+		n["reload_t"] = float(n.get("reload_t", 0.0)) + delta
+		s["reload"] = clampf(float(n["reload_t"]) / maxf(w.reload_time, 0.1), 0.0, 1.0)
+	else:
+		n["reload_t"] = 0.0
+	_pose(model, s, slots)
+
+
+## An NPC's pose from its state: pistol low or on the officer it threatens, startled hands, cowering
+## with the head covered, kneeling cuffed, face down with hands behind the head, limp when dead;
+## the head turns to the nearest officer while it reacts to one. Clues (cap, armband) are worn.
+func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: float) -> void:
+	if model.get("skeleton") == null:
+		return
+	var S := NpcBrain.State
+	var CS := CharacterAnim.Stance
+	var H := CharacterAnim.Hold
+	var b := a.brain
+	var st: int = b.state
+	var s := _stride(n, st in [S.DOWN, S.DEAD, S.HIDE, S.RESTRAINED], delta)
+	s["vel"] = n["walk_v"]
+	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
+	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
+	var slots := {}
+	if a.clues.has("cap"):
+		slots["cap"] = "cap"
+	if a.clues.has("band"):
+		slots["band"] = "band"
+	var to_officer := Vector3.ZERO
+	var near := _nearest_officer(a.pos)
+	if near != Vector2.INF and st in [S.SPOTTED, S.THREAT, S.ATTACK, S.SURRENDER, S.FLEE]:
+		to_officer = _to_model(model, _p3(near - a.pos, 0.0), false)
+	match st:
+		S.DEAD:
+			s["stance"] = CS.DEAD
+		S.DOWN:
+			s["stance"] = CS.PRONE
+			s["hold"] = H.HANDS_HEAD
+		S.HIDE:
+			s["stance"] = CS.CROUCH
+			s["hold"] = H.COVER
+		S.RESTRAINED:
+			s["stance"] = CS.KNEEL
+			s["hold"] = H.CUFFED
+			slots["cuffs"] = "cuffs"
+		_:
+			if b.armed and st != S.SURRENDER:
+				slots["hand"] = "pistol"
+				s["hold"] = H.PISTOL_ONE if st in [S.THREAT, S.ATTACK] and to_officer != Vector3.ZERO else H.PISTOL_LOW
+			elif st in [S.SPOTTED, S.THREAT, S.ATTACK]:
+				s["hold"] = H.STARTLED
+	if to_officer == Vector3.ZERO and st in [S.IDLE, S.INVESTIGATE]:  # glancing around; searching harder
+		var wide := 0.8 if st == S.INVESTIGATE else 0.45
+		var turn := sin(_t * (0.9 if st == S.INVESTIGATE else 0.35) + float(s["seed"])) * wide
+		s["look"] = Vector3(sin(turn), 0.0, cos(turn))
+	else:
+		s["look"] = to_officer
+	s["aim"] = to_officer if to_officer != Vector3.ZERO else Vector3.BACK
+	_pose(model, s, slots)
+
+
+## The nearest living officer's position (px), or Vector2.INF.
+func _nearest_officer(from: Vector2) -> Vector2:
+	var best := Vector2.INF
+	for ps in world.players:
+		if ps.present and not ps.dead() and (best == Vector2.INF or from.distance_to(ps.pos) < from.distance_to(best)):
+			best = ps.pos
+	return best
+
+
+## World position of a point of the gun in the model's hands ("muzzle" or "light"), or Vector3.INF.
+func _gun_point(model: Dictionary, key: String) -> Vector3:
+	var sk := model.get("skeleton") as Skeleton3D
+	if sk == null or not model.has(key) or not sk.is_inside_tree():
+		return Vector3.INF
+	return sk.global_transform * (model[key] as Transform3D).origin
+
+
+## World direction the gun in the model's hands points, or ZERO.
+func _gun_dir(model: Dictionary) -> Vector3:
+	var sk := model.get("skeleton") as Skeleton3D
+	if sk == null or not model.has("muzzle") or not sk.is_inside_tree():
+		return Vector3.ZERO
+	return (sk.global_transform.basis * (model["muzzle"] as Transform3D).basis.z).normalized()
+
+
+func _on_damaged(slot: int) -> void:
+	if slot >= 0 and slot < _players.size():
+		_players[slot]["flinch"] = 1.0
 
 
 ## Tint laid over an NPC model: white flash when hit, grey when dead, darker while down, hiding
@@ -788,6 +1037,10 @@ func _update_fx(delta: float) -> void:
 				var k: float = f["age"] / f["life"]
 				(node as OmniLight3D).light_energy = f["energy"] * (1.0 - k)
 				done = k >= 1.0
+			"muzzle":
+				var k: float = f["age"] / float(_cfg["characters"]["pose"]["muzzle_s"])
+				(f["mat"] as StandardMaterial3D).albedo_color.a = 1.0 - k
+				done = k >= 1.0
 			"tracer":
 				var k: float = f["age"] / WorldView.TRACER_S
 				(f["mat"] as StandardMaterial3D).albedo_color.a = 1.0 - k
@@ -797,6 +1050,7 @@ func _update_fx(delta: float) -> void:
 				var fade := 1.0 - clampf((float(f["age"]) - life * 0.7) / (life * 0.3), 0.0, 1.0)
 				node.position = _p3(f["pos"], _actor_h + 0.9 + float(f["age"]) * 0.15)
 				(node as Label3D).modulate.a = fade
+				(node as Label3D).pixel_size = 0.006 * _zoom
 				node.visible = not (f["npc"] and view._vis.size() >= 3 and not Geometry2D.is_point_in_polygon(f["pos"], view._vis))
 				done = f["age"] >= life
 		if done:

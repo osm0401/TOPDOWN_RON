@@ -511,6 +511,9 @@ func _character_model_tests() -> void:
 	var body := MeshInstance3D.new()
 	var box := BoxMesh.new()
 	box.size = Vector3(0.4, 2.0, 0.6)
+	var metal := StandardMaterial3D.new()
+	metal.metallic = 1.0  # what image-to-3D generators leave behind
+	box.material = metal
 	body.mesh = box
 	body.position = Vector3(3.0, 5.0, -2.0)
 	body.scale = Vector3(10.0, 10.0, 10.0)
@@ -536,6 +539,8 @@ func _character_model_tests() -> void:
 		_check(again["node"] != m["node"] and again["overlay"] != m["overlay"], "every figure gets its own copy and tint")
 		var meshes := CharacterModels.meshes(m["node"])
 		_check(not meshes.is_empty() and meshes.all(func(mi: MeshInstance3D) -> bool: return mi.material_overlay == m["overlay"]), "the tint covers every surface")
+		var mat := meshes[0].mesh.surface_get_material(0) as BaseMaterial3D
+		_check(mat != null and is_zero_approx(mat.metallic), "a metallic 1.0 left by the generator (no metallic texture) is made non-metallic")
 		(m["node"] as Node).free()
 		(again["node"] as Node).free()
 	_check(CharacterModels.make("nobody", cfg, dir).is_empty(), "no file: no model (the primitive figure stays)")
@@ -545,7 +550,7 @@ func _character_model_tests() -> void:
 
 	# in the 3D view: models replace the shapes and follow the NPC state
 	CharacterModels.folder = dir
-	CharacterModels._templates.clear()
+	CharacterModels.release()
 	Session.host(true)
 	await _boot(true)
 	var v3 := WorldView3D.new()
@@ -576,7 +581,7 @@ func _character_model_tests() -> void:
 	_check(is_equal_approx((n["model"]["overlay"] as StandardMaterial3D).albedo_color.a, 0.6), "3D view: a dead NPC model is greyed")
 	v3.free()
 	CharacterModels.folder = CharacterModels.DIR
-	CharacterModels._templates.clear()
+	CharacterModels.release()
 	for name in ["enemy", "enemy_up", "civilian", "civilian_up", "officer"]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + name + ".glb"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))

@@ -15,3 +15,5 @@ assets/audio/_raw/
 assets/audio/_shortlist/
 assets/audio/_pick/
 assets/audio/_voice_raw/
+assets/audio/_far_dsp/
+__pycache__/

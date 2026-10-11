@@ -695,6 +695,16 @@ func _audio_extra_tests() -> void:
 	var tone := SfxSynth.footstep(1)
 	GameAudio.loop_whole(tone)
 	_check(tone.loop_mode == AudioStreamWAV.LOOP_FORWARD and tone.loop_end == tone.data.size() / 2, "loop_whole makes a sample repeat over its whole length")
+	# distance buses carry the echo and low thump; the far file sets can be switched off
+	var far_bus := AudioServer.get_bus_index(GameAudio.BUS_FAR)
+	var kinds: Array[String] = []
+	for e in AudioServer.get_bus_effect_count(far_bus):
+		kinds.append(AudioServer.get_bus_effect(far_bus, e).get_class())
+	_check(kinds == ["AudioEffectLowPassFilter", "AudioEffectLowShelfFilter", "AudioEffectReverb"], "the far bus dulls, keeps the thump and adds an echo tail")
+	au._bank = {"rifle": [1], "rifle_far": [2]}
+	au.use_far_sets = false
+	_check(au.set_key("rifle", 0.1) == "rifle", "with far sets off, faint sounds keep the normal set")
+	au.use_far_sets = true
 	# reverb presets grow with the room
 	_check(float(au.reverb_for_size(23.0)["room_size"]) > float(au.reverb_for_size(5.0)["room_size"]) and float(au.reverb_outdoor()["wet"]) < float(au.reverb_for_size(5.0)["wet"]), "reverb presets grow with the room and outdoors stays dry")
 	# the audition panel (needs real streams in the bank)

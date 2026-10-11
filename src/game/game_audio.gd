@@ -28,6 +28,7 @@ static var _voice_built := false
 
 var world: NetWorld
 var audition_reverb: Dictionary = {}  ## set by the audition panel; overrides the room reverb
+var use_far_sets := true  ## false: faint sounds are only treated by the distance buses (F in the audition panel)
 
 var _cfg: Dictionary = {}
 var _bank: Dictionary = {}
@@ -47,6 +48,7 @@ var _last_reinforce := 0
 
 func _ready() -> void:
 	_cfg = JsonData.load_dict("res://data/audio.json")
+	use_far_sets = bool(_cfg["dull"]["use_far_sets"])
 	_setup_buses()
 	_listener = AudioListener2D.new()
 	add_child(_listener)
@@ -128,7 +130,7 @@ func _setup_buses() -> void:
 	AudioServer.add_bus_effect(sfx, ear)  # slot FX_EAR
 	AudioServer.add_bus_effect(sfx, AudioEffectReverb.new())  # slot FX_REVERB, eased per room
 	var dull: Dictionary = _cfg["dull"]
-	for entry in [[BUS_MID, float(dull["mid_hz"])], [BUS_FAR, float(dull["far_hz"])], [BUS_MUFFLED, float(_cfg["muffle_hz"])]]:
+	for entry in [[BUS_MID, float(dull["mid_hz"]), "mid"], [BUS_FAR, float(dull["far_hz"]), "far"], [BUS_MUFFLED, float(_cfg["muffle_hz"]), ""]]:
 		AudioServer.add_bus()
 		var idx := AudioServer.bus_count - 1
 		AudioServer.set_bus_name(idx, entry[0])
@@ -136,6 +138,17 @@ func _setup_buses() -> void:
 		var lp := AudioEffectLowPassFilter.new()
 		lp.cutoff_hz = entry[1]
 		AudioServer.add_bus_effect(idx, lp)
+		if entry[2] != "":  # distance: duller, then the low thump stays and the echo tail grows
+			var shelf := AudioEffectLowShelfFilter.new()
+			shelf.cutoff_hz = 150.0
+			shelf.gain = db_to_linear(float(dull[entry[2] + "_boom_db"]))
+			AudioServer.add_bus_effect(idx, shelf)
+			var rv: Dictionary = dull[entry[2] + "_reverb"]
+			var echo := AudioEffectReverb.new()
+			echo.room_size = float(rv["room_size"])
+			echo.wet = float(rv["wet"])
+			echo.damping = float(rv["damping"])
+			AudioServer.add_bus_effect(idx, echo)
 	if AudioServer.get_bus_effect_count(0) == 0:
 		AudioServer.add_bus_effect(0, AudioEffectLimiter.new())
 
@@ -257,7 +270,7 @@ func bus_for(loud: float, muffled: bool) -> String:
 ## The variant set for a faint sound: <key>_far when it exists, else the normal set.
 func set_key(key: String, loud: float) -> String:
 	var far := key + "_far"
-	return far if loud < float(_cfg["dull"]["far_below"]) and _bank.has(far) else key
+	return far if use_far_sets and loud < float(_cfg["dull"]["far_below"]) and _bank.has(far) else key
 
 
 ## A random variant that is not the one played last for this key.

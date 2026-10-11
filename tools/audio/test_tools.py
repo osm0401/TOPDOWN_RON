@@ -66,6 +66,27 @@ hum_cfg = ac.sound_cfg(cat, "hum")
 hum_out = process.process_one(lowpassed_noise(24.0, 5, 200.0), SR, hum_cfg)
 check(abs(len(hum_out) / SR - (24.0 - hum_cfg["crossfade_s"])) < 0.01, "room tone is looped over its whole length (no tail cut)")
 
+# a far version is duller, has a longer tail and no sharp attack
+near = bang(0.02, 3.0, tau=0.02)
+far = ac.far_version(near, SR)
+
+
+def centroid(x: np.ndarray) -> float:
+    spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+    return float((spec * np.fft.rfftfreq(len(x), 1.0 / SR)).sum() / spec.sum())
+
+
+def tail_share(x: np.ndarray) -> float:
+    """Share of the energy that arrives more than 0.3 s after the bang."""
+    e = x.astype(np.float64) ** 2
+    i = int((ac.onset_index(x) / SR + 0.3) * SR)
+    return float(e[i:].sum() / e.sum())
+
+
+check(centroid(far) < 0.7 * centroid(near), "the far version is much duller")
+check(tail_share(far) > 3 * tail_share(near), "the far version has a longer echo tail")
+check(float(np.abs(np.diff(far[: int(0.05 * SR)])).max()) < float(np.abs(np.diff(near[: int(0.05 * SR)])).max()), "the far version has a softer attack")
+
 # looped room tone has no jump at the seam
 tone = lowpassed_noise(8.0, 3, 200.0)
 loop = ac.make_loop(tone, SR, 1.5)

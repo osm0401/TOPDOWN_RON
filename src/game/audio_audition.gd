@@ -23,7 +23,7 @@ func _ready() -> void:
 	var box := ColorRect.new()
 	box.color = Color(0, 0, 0, 0.7)
 	box.position = Vector2(16, 400)
-	box.size = Vector2(620, 118)
+	box.size = Vector2(760, 138)
 	add_child(box)
 	_label = Label.new()
 	_label.position = Vector2(28, 408)
@@ -70,6 +70,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		KEY_EQUAL:
 			_room = posmod(_room + 1, ROOMS.size())
 			_apply_room()
+		KEY_F:  # compare: faint sounds from their own _far files, or from the distance effects alone
+			audio.use_far_sets = not audio.use_far_sets
 		KEY_SPACE, KEY_ENTER:
 			var d: Array = DISTANCES[_dist]
 			audio.audition_play(keys[_key], _variant, float(d[1]), bool(d[2]))
@@ -98,7 +100,8 @@ func _refresh() -> void:
 	var origin := "-"
 	if not variants.is_empty():
 		origin = tr("파일") if (variants[_variant % variants.size()] as Resource).resource_path != "" else tr("합성")
-	_label.text = "%s\n%s: %s   %s %d/%d (%s)\n%s: %s   %s: %s\n%s" % [
+	_label.text = "%s\n%s: %s   %s %d/%d (%s)\n%s: %s   %s: %s   %s: %s\n%s" % [
 		tr("소리 시험 (F7로 닫기)"), tr("소리"), key, tr("변형"), _variant + 1, maxi(variants.size(), 1), origin,
 		tr("거리"), DISTANCES[_dist][0], tr("울림"), ROOMS[_room][0],
-		tr("↑↓ 소리   ←→ 변형   [ ] 거리   - = 울림   Space 재생")]
+		tr("먼 소리 세트(_far)"), tr("사용") if audio.use_far_sets else tr("안 함(효과만)"),
+		tr("↑↓ 소리   ←→ 변형   [ ] 거리   - = 울림   F 먼 소리 세트   Space 재생")]

@@ -130,6 +130,42 @@ def normalize_peak(x: np.ndarray, peak: float) -> np.ndarray:
     return x if m == 0.0 else (x * (peak / m)).astype(np.float32)
 
 
+def lowpass(x: np.ndarray, sr: int, hz: float, order: int = 4) -> np.ndarray:
+    sos = signal.butter(order, hz, "lowpass", fs=sr, output="sos")
+    return signal.sosfilt(sos, x).astype(np.float32)
+
+
+def reverb(x: np.ndarray, sr: int, wet: float, decay_s: float) -> np.ndarray:
+    """Schroeder reverb (4 combs + 2 allpasses): a dense tail. `decay_s` = time to fall by 60 dB."""
+    acc = np.zeros(len(x), dtype=np.float64)
+    for ms in (29.7, 37.1, 41.1, 43.7):
+        d = int(ms * 0.001 * sr)
+        g = 0.001 ** (ms * 0.001 / decay_s)
+        a = np.zeros(d + 1)
+        a[0], a[d] = 1.0, -g
+        acc += signal.lfilter([1.0], a, x.astype(np.float64)) * 0.25
+    for ms in (5.0, 1.7):
+        d = int(ms * 0.001 * sr)
+        b = np.zeros(d + 1)
+        a = np.zeros(d + 1)
+        b[0], b[d] = -0.7, 1.0
+        a[0], a[d] = 1.0, -0.7
+        acc = signal.lfilter(b, a, acc)
+    return (x + acc * wet).astype(np.float32)
+
+
+def far_version(x: np.ndarray, sr: int, cutoff_hz: float = 1800.0, boom: float = 0.35, wet: float = 0.8,
+                decay_s: float = 1.8, soften_ms: float = 4.0) -> np.ndarray:
+    """A close sound as heard from far away: highs gone, the attack rounded off, the low thump
+    kept, then a long echo tail (what a distant shot sounds like after bouncing off buildings)."""
+    k = max(int(soften_ms * 0.001 * sr), 1)
+    y = np.convolve(x, np.hanning(2 * k + 1) / np.hanning(2 * k + 1).sum(), mode="same").astype(np.float32)  # rounded attack
+    y = lowpass(y, sr, cutoff_hz)
+    y = y + boom * lowpass(x, sr, 140.0, 2)  # low thump survives distance
+    tail = np.zeros(int(decay_s * 0.6 * sr), dtype=np.float32)
+    return reverb(np.concatenate([y, tail]), sr, wet, decay_s)
+
+
 def make_loop(x: np.ndarray, sr: int, crossfade_s: float) -> np.ndarray:
     """Seamless loop: the last `crossfade_s` fades into the first one (equal power)."""
     n = int(crossfade_s * sr)

@@ -7,7 +7,12 @@
   "min_loudness": 0.03,
   "_files": "assets/audio/<소리>_<번호>.wav 가 있으면 같은 이름의 합성음 대신 쓴다(번호 0~15, 없으면 합성음). <소리>_far 는 멀리서 작게 들릴 때 쓰는 별도 세트. 녹음 대사는 voice_<명령>_<줄>_<테이크>.wav. assets/audio는 git 제외(라이선스 확인 전).",
   "px_per_m": 50.0,
-  "dull": {"mid_below": 0.65, "far_below": 0.3, "mid_hz": 7000.0, "far_hz": 3000.0},
+  "dull": {
+    "mid_below": 0.65, "far_below": 0.3, "mid_hz": 7000.0, "far_hz": 3000.0,
+    "_note": "멀수록 고음이 줄고 직접음 대비 반향이 늘고 저음이 남는다. reverb는 버스 효과, boom_db는 150 Hz 아래 저음 강조(dB). use_far_sets=false면 <소리>_far 파일 세트를 쓰지 않고 효과로만 처리한다.",
+    "mid_reverb": {"room_size": 0.5, "wet": 0.15, "damping": 0.5}, "far_reverb": {"room_size": 0.85, "wet": 0.45, "damping": 0.6},
+    "mid_boom_db": 1.0, "far_boom_db": 3.0, "use_far_sets": true
+  },
   "reverb": {
     "outdoor": {"room_size": 0.1, "wet": 0.04, "damping": 0.7},
     "indoor": {"size_per_m": 0.025, "min": 0.2, "max": 0.8, "wet": 0.2, "damping": 0.45},

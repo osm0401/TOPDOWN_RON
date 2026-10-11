@@ -12,6 +12,7 @@ const FAR := 5000.0
 const BEAM_Y := 1.2
 const LYING_Y := 0.28
 const SURFACE := preload("res://src/game/surface.gdshader")
+const CharacterModels := preload("res://src/game/character_models.gd")
 
 var world: NetWorld
 var view: WorldView

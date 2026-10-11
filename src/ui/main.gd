@@ -2,6 +2,8 @@ extends Node
 ## Lobby (host / join by room code) and NetWorld lifecycle.
 ## Test flags (after "--"): --auto-host, --auto-join  (localhost room code, scripted play).
 
+const CharacterModels := preload("res://src/game/character_models.gd")
+
 var _lobby: Control
 var _status: Label
 var _code_edit: LineEdit

@@ -1,10 +1,12 @@
-class_name CharacterModels
 extends RefCounted
 ## Character models for the 3D view: assets/characters/<name>.glb (officer, enemy, civilian and the
 ## hands-up enemy_up / civilian_up). Any model works: it is scaled to the figure height, stood on the
 ## floor at the origin and turned to face +X (the rig's aim; data/view3d.json "characters" yaw_deg
 ## fixes a model that faces elsewhere). No file: WorldView3D keeps its primitive figure.
 ## Loaded once per process; every figure gets its own copy (meshes are shared).
+## No class_name on purpose: users preload this file. A new global class name is only known after
+## the editor has rescanned the project, so a game started straight after git pull (no editor)
+## failed to compile every script that named it.
 
 const DIR := "res://assets/characters/"
 

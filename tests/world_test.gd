@@ -4,6 +4,8 @@ extends Node
 ##   Godot_console.exe --headless --path D:\TOPDOWNRON res://tests/world_test.tscn
 ## Exit code 0 = all passed.
 
+const CharacterModels := preload("res://src/game/character_models.gd")
+
 var _failed := 0
 var _w: NetWorld
 

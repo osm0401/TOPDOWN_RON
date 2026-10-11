@@ -25,7 +25,8 @@ const CHEST_Y := 0.71
 const NECK_Y := 0.86
 const SHOULDER_Y := 0.815
 const ELBOW_Y := 0.62
-const FLOOD_TOP := 0.58  ## the wrist flood stays below this share (under the elbow)
+const FLOOD_TOP := 0.58  ## the wrist flood stays below this share (under the elbow) when the arm is merged with the body
+const ARM_TOPS: Array[float] = [0.77, 0.72, 0.66, FLOOD_TOP]  ## heights the wrist flood tries, highest first
 const FLOOD_LOW := 0.36  ## share of the height no hand reaches down to: a flood from the wrist below it ran into a leg
 
 static var folder := DIR  ## where make() looks (tests point it elsewhere)
@@ -622,17 +623,30 @@ static func _graph(pts: PackedVector3Array, tris: PackedInt32Array) -> Dictionar
 	return {"weld": weld, "pos": pos, "nrm": nrm, "adj": adj}
 
 
-## Forearm and hand on `side`: everything the mesh joins to the outermost point at wrist height,
-## below FLOOD_TOP. A hand generated touching the thigh is joined to it: then the flood only crosses
-## points out past a cut-off (or a little inside it facing the body: the palm against the thigh),
-## starting at the leg's outer edge below the hand (thigh) and moving out until the flood stays
-## off the leg (nothing below FLOOD_LOW). {"inside": welded id -> 1, "hand": its lowest point,
-## "top": height}, or {} when no cut-off frees the arm.
+## The arm on `side` as far up as the mesh keeps it apart from the body: everything the mesh joins
+## to the outermost point at wrist height, below a top height. An arm modelled clear of the body
+## (A-pose) is followed up to near the armpit, so the whole arm moves without dragging the body
+## along; an arm merged with the body's side leaks into the torso (reaches the middle) from high
+## up, so the top steps down, at worst to FLOOD_TOP (forearm and hand). A hand generated touching
+## the thigh is joined to it: then the flood only crosses points out past a cut-off (or a little
+## inside it facing the body: the palm against the thigh), starting at the leg's outer edge below
+## the hand (thigh) and moving out until the flood stays off the leg (nothing below FLOOD_LOW).
+## {"inside": welded id -> 1, "hand": its lowest point, "top": height}, or {} when nothing frees it.
 static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float) -> Dictionary:
+	for top: float in ARM_TOPS:
+		var f := _flood_arm(g, gx, side, h, thigh, top * h)
+		if not f.is_empty():
+			return f
+	return {}
+
+
+## One try of _forearm with the flood kept below `top` (m).
+static func _flood_arm(g: Dictionary, gx: float, side: int, h: float, thigh: float, top: float) -> Dictionary:
 	var pos: PackedVector3Array = g["pos"]
 	var nrm: PackedVector3Array = g["nrm"]
 	var adj: Array[Array] = g["adj"]
-	var top := FLOOD_TOP * h
+	var mid := 0.05 * h  # an arm never comes this close to the body's middle; a flood that does is in the torso
+	var cut_top := FLOOD_TOP * h  # the cut-off only parts hand from thigh: above the forearm it does not apply
 	var seed := -1
 	for i in pos.size():
 		var p := pos[i]
@@ -648,15 +662,17 @@ static func _forearm(g: Dictionary, gx: float, side: int, h: float, thigh: float
 		inside[seed] = 1
 		var stack: Array[int] = [seed]
 		var low := pos[seed].y
-		while not stack.is_empty() and low >= FLOOD_LOW * h:
+		var torso := false
+		while not stack.is_empty() and low >= FLOOD_LOW * h and not torso:
 			for v: int in adj[stack.pop_back()]:
 				var q := pos[v]
 				var out := (q.x - gx) * side
-				if inside[v] == 0 and q.y < top and (out > cut or (out > cut - 0.025 * h and nrm[v].normalized().x * side < -0.3)):
+				if inside[v] == 0 and q.y < top and (out > cut or q.y >= cut_top or (out > cut - 0.025 * h and nrm[v].normalized().x * side < -0.3)):
 					inside[v] = 1
 					low = minf(low, q.y)
+					torso = torso or out < mid
 					stack.append(v)
-		if low >= FLOOD_LOW * h:
+		if low >= FLOOD_LOW * h and not torso:
 			return {"inside": inside, "hand": low, "top": top}
 		cut = maxf(cut + 0.005 * h, thigh + 0.005 * h)
 	return {}

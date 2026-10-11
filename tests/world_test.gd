@@ -549,6 +549,7 @@ func _character_model_tests() -> void:
 	var up := CharacterModels.make("enemy_up", {"height_m": 1.75, "up_height_m": 2.05, "yaw_deg": 90.0}, dir)
 	_check(absf(CharacterModels.bounds(up["node"]).size.y - 2.05) < 0.01, "a hands-up model is fitted fingertips included (2.05 m)")
 	(up["node"] as Node).free()
+	_walk_rig_tests(dir)
 
 	# in the 3D view: models replace the shapes and follow the NPC state
 	CharacterModels.folder = dir
@@ -581,12 +582,120 @@ func _character_model_tests() -> void:
 	_agent(i).brain.state = NpcBrain.State.DEAD
 	v3._update_npcs(0.016)
 	_check(is_equal_approx((n["model"]["overlay"] as StandardMaterial3D).albedo_color.a, 0.6), "3D view: a dead NPC model is greyed")
+	# walking: the stride follows the drawn motion and settles back to standing
+	var sk := n["model"]["skeleton"] as Skeleton3D
+	var rest := sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L)
+	_agent(i).brain.state = NpcBrain.State.IDLE
+	_agent(i).brain.facing = 0.0
+	var from := _agent(i).pos
+	for f in 30:  # 1.8 m/s east, the way it faces
+		_agent(i).pos = from + Vector2(90.0 * 0.016 * f, 0.0)
+		_agent(i).home = _agent(i).pos
+		v3._update_npcs(0.016)
+	_check(float(n["walk_amount"]) > 0.9 and absf((n["walk_v"] as Vector3).length() - 1.8) < 0.1, "3D view: a moving NPC walks at its drawn speed (%.2f m/s)" % (n["walk_v"] as Vector3).length())
+	var walk_dir: Vector3 = sk.global_basis.inverse() * n["walk_v"]
+	_check(walk_dir.normalized().z > 0.95, "3D view: walking where it faces is forward for the model (%s)" % walk_dir.normalized())
+	var stepping := false
+	for f in 20:
+		_agent(i).pos += Vector2(90.0 * 0.016, 0.0)
+		_agent(i).home = _agent(i).pos
+		v3._update_npcs(0.016)
+		stepping = stepping or not sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L).is_equal_approx(rest)
+	_check(stepping, "3D view: the legs swing while it walks")
+	for f in 90:
+		v3._update_npcs(0.016)
+	_check(float(n["walk_amount"]) < 0.01 and sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L).is_equal_approx(rest), "3D view: standing still it settles back to the rest pose")
+	_agent(i).brain.state = NpcBrain.State.DOWN
+	for f in 3:
+		_agent(i).pos += Vector2(90.0 * 0.016, 0.0)
+		v3._update_npcs(0.016)
+	_check(is_zero_approx(float(n["walk_amount"])), "3D view: a downed NPC does not walk even when moved")
 	v3.free()
 	CharacterModels.folder = CharacterModels.DIR
 	CharacterModels.release()
 	for name in ["enemy", "enemy_up", "civilian", "civilian_up", "officer"]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + name + ".glb"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+
+
+## The auto-rig on a box "person" (legs, torso, arms a little off the body, head) written as a
+## .glb: joints at human proportions, every part skinned to its bone, and the walk pose moving the
+## right way for forward, sideways and no motion.
+func _walk_rig_tests(dir: String) -> void:
+	var src := Node3D.new()
+	var parts := {  # name: [size, centre]
+		"leg_l": [Vector3(0.14, 0.82, 0.16), Vector3(0.1, 0.41, 0.0)], "leg_r": [Vector3(0.14, 0.82, 0.16), Vector3(-0.1, 0.41, 0.0)],
+		"torso": [Vector3(0.4, 0.62, 0.24), Vector3(0.0, 1.09, 0.0)], "head": [Vector3(0.2, 0.3, 0.22), Vector3(0.0, 1.6, 0.0)],
+		"arm_l": [Vector3(0.08, 0.7, 0.1), Vector3(0.27, 1.05, 0.0)], "arm_r": [Vector3(0.08, 0.7, 0.1), Vector3(-0.27, 1.05, 0.0)]}
+	for part: String in parts:
+		var mi := MeshInstance3D.new()
+		mi.name = part
+		var box := BoxMesh.new()
+		box.size = parts[part][0]
+		box.subdivide_height = 24
+		box.subdivide_width = 3
+		box.subdivide_depth = 3
+		mi.mesh = box
+		mi.position = parts[part][1]
+		src.add_child(mi)
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	doc.append_from_scene(src, state)
+	var written := doc.write_to_filesystem(state, ProjectSettings.globalize_path(dir + "walker.glb"))
+	src.free()
+	_check(written == OK, "box person written")
+	var m := CharacterModels.make("walker", {"height_m": 1.75, "yaw_deg": 0.0}, dir)
+	add_child(m["node"])  # bone poses resolve inside the tree
+	var sk := m.get("skeleton") as Skeleton3D
+	_check(sk != null and sk.get_bone_count() == CharacterModels.BONE_NAMES.size(), "a model without bones is rigged when it loads")
+	if sk == null:
+		return
+	var B := CharacterModels.Bone
+	var at := func(b: int) -> Vector3: return sk.get_bone_global_rest(b).origin
+	_check(at.call(B.HIPS).y > 0.85 and at.call(B.HIPS).y < 0.93 and absf(at.call(B.SHIN_L).y - 0.27 * 1.75) < 0.01, "hips and knees at human proportions (%s, %s)" % [at.call(B.HIPS), at.call(B.SHIN_L)])
+	_check(absf(at.call(B.THIGH_L).x - 0.1) < 0.02 and absf(at.call(B.THIGH_R).x + 0.1) < 0.02, "each thigh bone sits in its leg (left = +X, the model faces +Z) (%s, %s)" % [at.call(B.THIGH_L), at.call(B.THIGH_R)])
+	_check(at.call(B.ARM_L).x > 0.2 and at.call(B.ARM_R).x < -0.2 and absf(at.call(B.ARM_L).y - 0.815 * 1.75) < 0.01, "shoulder joints at the arms")
+	# which bone carries each part, judged at its lower end
+	var expect := {"leg_l": B.SHIN_L, "leg_r": B.SHIN_R, "arm_l": B.ARM_L, "arm_r": B.ARM_R, "head": B.SPINE}
+	var weights_ok := true
+	var parts_ok := true
+	for mi: MeshInstance3D in CharacterModels.meshes(m["node"]):
+		var arr := (mi.mesh as ArrayMesh).surface_get_arrays(0)
+		var v: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+		var bones: PackedInt32Array = arr[Mesh.ARRAY_BONES]
+		var w: PackedFloat32Array = arr[Mesh.ARRAY_WEIGHTS]
+		_check(arr[Mesh.ARRAY_NORMAL] != null, "the rigged mesh has normals")
+		for k in v.size():
+			var sum := w[k * 4] + w[k * 4 + 1] + w[k * 4 + 2] + w[k * 4 + 3]
+			weights_ok = weights_ok and absf(sum - 1.0) < 0.001
+			var p := v[k]
+			var part := ""
+			if p.y < 0.2:
+				part = "leg_l" if p.x > 0.0 else "leg_r"
+			elif p.y > 0.75 and p.y < 0.8 and absf(p.x) > 0.24:
+				part = "arm_l" if p.x > 0.0 else "arm_r"
+			elif p.y > 1.6:
+				part = "head"
+			if part != "" and (bones[k * 4] != expect[part] or w[k * 4] < 0.99):
+				parts_ok = false
+	_check(weights_ok, "every vertex's weights add up to 1")
+	_check(parts_ok, "feet follow the shins, hands the arms, the head the spine")
+	var gait: Dictionary = JsonData.load_dict("res://data/view3d.json")["characters"]["walk"]
+	var foot := func(b: int) -> Vector3:
+		sk.force_update_all_bone_transforms()
+		return sk.get_bone_global_pose(b).origin
+	var rest_l: Vector3 = foot.call(B.SHIN_L)
+	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.BACK, gait)
+	_check(foot.call(B.SHIN_L).z > rest_l.z + 0.1 and foot.call(B.SHIN_R).z < rest_l.z - 0.1, "mid-stride forward: the left knee ahead, the right behind")
+	_check(sk.get_bone_pose_position(B.HIPS).y < sk.get_bone_rest(B.HIPS).origin.y - 0.01, "legs apart: the hips dip")
+	var hand_l := sk.get_bone_global_pose(B.ARM_L).basis * Vector3.DOWN  # after foot.call: updated
+	_check(hand_l.z < -0.1, "the left arm swings back as the left leg goes forward")
+	CharacterModels.pose_walk(m, PI * 0.5, 1.0, 1.8, Vector3.RIGHT, gait)
+	_check(foot.call(B.SHIN_L).x > rest_l.x + 0.1 and absf(foot.call(B.SHIN_L).z - rest_l.z) < 0.02, "sideways: the legs step sideways, not forward")
+	CharacterModels.pose_walk(m, PI * 0.5, 0.0, 1.8, Vector3.BACK, gait)
+	_check(foot.call(B.SHIN_L).is_equal_approx(rest_l) and sk.get_bone_pose_rotation(B.ARM_L).is_equal_approx(Quaternion.IDENTITY), "amount 0: back to the rest pose")
+	(m["node"] as Node).free()
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + "walker.glb"))
 
 
 func _view3d_tests() -> void:

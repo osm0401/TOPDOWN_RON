@@ -18,6 +18,7 @@ func _ready() -> void:
 	await _solo_selection_test()
 	await _stage5_tests()
 	await _view3d_tests()
+	await _character_model_tests()
 	await _audio_tests()
 	await _audio_extra_tests()
 	await _death_tests()
@@ -500,6 +501,87 @@ func _stage5_tests() -> void:
 
 
 ## Placeholder angled 3D view: cursor-to-ground mapping, aim hook, fog mesh, sight test, cutaway.
+## Character models: any .glb is scaled to the figure, stood on the floor and turned to the aim,
+## and the 3D view swaps / lays / tints it with the NPC state.
+func _character_model_tests() -> void:
+	var dir := "user://character_test/"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	# a box "person" 4 x 20 x 6 units, far from the origin: wrong size, place and scale on purpose
+	var src := Node3D.new()
+	var body := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(0.4, 2.0, 0.6)
+	body.mesh = box
+	body.position = Vector3(3.0, 5.0, -2.0)
+	body.scale = Vector3(10.0, 10.0, 10.0)
+	src.add_child(body)
+	var written := OK
+	for name in ["enemy", "enemy_up", "civilian", "civilian_up", "officer"]:
+		var doc := GLTFDocument.new()
+		var state := GLTFState.new()
+		doc.append_from_scene(src, state)
+		written = maxi(written, doc.write_to_filesystem(state, ProjectSettings.globalize_path(dir + name + ".glb")))
+	src.free()
+	_check(written == OK, "test models written")
+	var cfg := {"height_m": 1.75, "yaw_deg": 90.0}
+	var m := CharacterModels.make("enemy", cfg, dir)
+	_check(not m.is_empty(), "a .glb in the folder becomes a character model")
+	if not m.is_empty():
+		var b := CharacterModels.bounds(m["node"])
+		_check(absf(b.size.y - 1.75) < 0.01 and absf(b.position.y) < 0.01, "model scaled to 1.75 m and standing on the floor (%s)" % b)
+		_check(absf(b.get_center().x) < 0.01 and absf(b.get_center().z) < 0.01, "model centred on the figure's position")
+		_check(absf(b.size.x - 0.525) < 0.01 and absf(b.size.z - 0.35) < 0.01, "yaw 90: the model's front (+Z) now faces the aim (+X)")
+		_check(absf(float(m["lie_y"]) - 0.2625) < 0.01, "lying on its back it rests on the floor (lift = half its depth)")
+		var again := CharacterModels.make("enemy", cfg, dir)
+		_check(again["node"] != m["node"] and again["overlay"] != m["overlay"], "every figure gets its own copy and tint")
+		var meshes := CharacterModels.meshes(m["node"])
+		_check(not meshes.is_empty() and meshes.all(func(mi: MeshInstance3D) -> bool: return mi.material_overlay == m["overlay"]), "the tint covers every surface")
+		(m["node"] as Node).free()
+		(again["node"] as Node).free()
+	_check(CharacterModels.make("nobody", cfg, dir).is_empty(), "no file: no model (the primitive figure stays)")
+	var up := CharacterModels.make("enemy_up", {"height_m": 1.75, "up_height_m": 2.05, "yaw_deg": 90.0}, dir)
+	_check(absf(CharacterModels.bounds(up["node"]).size.y - 2.05) < 0.01, "a hands-up model is fitted fingertips included (2.05 m)")
+	(up["node"] as Node).free()
+
+	# in the 3D view: models replace the shapes and follow the NPC state
+	CharacterModels.folder = dir
+	CharacterModels._templates.clear()
+	Session.host(true)
+	await _boot(true)
+	var v3 := WorldView3D.new()
+	v3.world = _w
+	v3.view = _w.get_node("View")
+	_w.add_child(v3)
+	await _frames(2)
+	_check(not (v3._players[0]["model"] as Dictionary).is_empty(), "3D view: the officer uses the model")
+	v3._update_players(0.016)
+	var tint: Color = (v3._players[0]["model"]["overlay"] as StandardMaterial3D).albedo_color
+	_check(is_equal_approx(tint.a, float(v3._cfg["characters"]["player_tint"])) and is_equal_approx(tint.b, WorldView.PLAYER_COLORS[0].b), "3D view: the officer keeps its player colour as a tint")
+	var i := 0
+	while _agent(i).dormant or _agent(i).brain.role != NpcBrain.Role.ENEMY:
+		i += 1
+	var n: Dictionary = v3._npcs[i]
+	_agent(i).brain.state = NpcBrain.State.SURRENDER
+	v3._update_npcs(0.016)
+	_check((n["model_up"]["node"] as Node3D).visible and not (n["model"]["node"] as Node3D).visible and not (n["arms"] as Node3D).visible,
+			"3D view: surrender swaps in the hands-up model (no extra arms)")
+	_agent(i).brain.state = NpcBrain.State.DOWN
+	v3._update_npcs(0.016)
+	var rig: Node3D = n["rig"]
+	_check((n["model"]["node"] as Node3D).visible and not (n["model_up"]["node"] as Node3D).visible
+			and absf(rig.position.y - float(n["model"]["lie_y"])) < 0.001 and not rig.basis.is_equal_approx(Basis.IDENTITY),
+			"3D view: a downed NPC model lies on its back, resting on the floor")
+	_agent(i).brain.state = NpcBrain.State.DEAD
+	v3._update_npcs(0.016)
+	_check(is_equal_approx((n["model"]["overlay"] as StandardMaterial3D).albedo_color.a, 0.6), "3D view: a dead NPC model is greyed")
+	v3.free()
+	CharacterModels.folder = CharacterModels.DIR
+	CharacterModels._templates.clear()
+	for name in ["enemy", "enemy_up", "civilian", "civilian_up", "officer"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + name + ".glb"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+
+
 func _view3d_tests() -> void:
 	Session.host(true)
 	await _boot(true)

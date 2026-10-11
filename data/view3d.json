@@ -14,7 +14,24 @@
     "height_m": 1.75,
     "up_height_m": 1.9,
     "yaw_deg": 90.0,
-    "player_tint": 0.12
+    "player_tint": 0.12,
+    "walk": {
+      "_note": "PROTOTYPE/TUNING: 걷기. 모델은 불러올 때 뼈대를 자동으로 붙이고(다리, 무릎, 팔), 화면에서 움직인 거리로 걸음을 맞춘다. 보폭(m) = stride_m + stride_per_mps × 속도(m/s). 각도 [걷기, 달리기]는 속도가 walk_mps에서 run_mps로 갈수록 오른쪽 값으로. start_mps보다 느리면 서 있고 full_mps에서 걸음이 다 나온다. hip_drop: 다리를 벌릴 때 엉덩이가 내려가는 정도(0~1).",
+      "stride_m": 1.25,
+      "stride_per_mps": 0.3,
+      "walk_mps": 1.5,
+      "run_mps": 4.4,
+      "start_mps": 0.25,
+      "full_mps": 0.9,
+      "blend_rate": 10.0,
+      "thigh_deg": [24.0, 36.0],
+      "knee_deg": [40.0, 75.0],
+      "stance_knee_deg": 5.0,
+      "arm_deg": [16.0, 28.0],
+      "lean_deg": [2.0, 9.0],
+      "twist_deg": [4.0, 7.0],
+      "hip_drop": 0.6
+    }
   },
   "surfaces": {
     "_note": "PROTOTYPE/TUNING: 코드로 만든 임시 PBR 재질. mode 0=노이즈(회반죽/아스팔트), 1=타일, 2=나무 판자. 색은 RGB 0~1.",

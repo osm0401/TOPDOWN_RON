@@ -592,6 +592,7 @@ func _update_players(delta: float) -> void:
 		var model: Dictionary = n["model"]
 		rig.basis = Basis(Vector3.UP, yaw) * (Basis(Vector3.BACK, PI * 0.5) if dead else Basis.IDENTITY)
 		rig.position.y = (float(model.get("lie_y", LYING_Y)) if dead else 0.0)
+		_walk(n, [model], dead, delta)
 		var pm := n["mat"] as StandardMaterial3D
 		pm.albedo_color = Color(0.5, 0.5, 0.5) if dead else WorldView.PLAYER_COLORS[s]
 		pm.emission = pm.albedo_color * 0.3  # officers stay readable in a dark room
@@ -629,6 +630,7 @@ func _update_npcs(delta: float) -> void:
 		root.visible = not a.dormant and seen != LightModel.Seen.NONE
 		if not root.visible:
 			n.erase("pos")  # next appearance snaps to the sim position
+			n.erase("walk_at")
 			continue
 		var sil := seen == LightModel.Seen.SILHOUETTE
 		var fresh := not n.has("pos")
@@ -639,6 +641,7 @@ func _update_npcs(delta: float) -> void:
 		(n["dbg"] as Label3D).visible = not sil and view._debug
 		if sil:
 			(n["dropped"] as Node3D).visible = false
+			n.erase("walk_at")
 			continue
 		var b := a.brain
 		var st: int = b.state
@@ -677,6 +680,7 @@ func _update_npcs(delta: float) -> void:
 				(model_up["overlay"] as StandardMaterial3D).albedo_color = tint
 			elif not model_up.is_empty():
 				(model_up["node"] as Node3D).visible = false
+		_walk(n, [model, model_up], lying or st == S.HIDE or st == S.RESTRAINED, delta)
 		rig.scale = Vector3(1.0, 0.6 if st == S.HIDE else (0.65 if st == S.RESTRAINED else 1.0), 1.0)
 		(n["cap"] as Node3D).visible = a.clues.has("cap")
 		(n["band"] as Node3D).visible = a.clues.has("band")
@@ -715,6 +719,35 @@ func _update_npcs(delta: float) -> void:
 		if b.reason != "":
 			text += ": " + b.reason
 		(n["dbg"] as Label3D).text = text
+
+
+## Steps a figure's models (CharacterModels.pose_walk) with what is drawn: the speed is how far the
+## root moved this frame, so eased officers and NPCs step with their drawn motion, and the stride
+## phase advances with distance. still: lying, hiding or restrained, no stride.
+func _walk(n: Dictionary, models: Array, still: bool, delta: float) -> void:
+	var g: Dictionary = _cfg["characters"]["walk"]
+	var at := (n["root"] as Node3D).position
+	var prev: Vector3 = n.get("walk_at", at)
+	n["walk_at"] = at
+	var step := Vector3(at.x - prev.x, 0.0, at.z - prev.z)
+	var v := step / delta if delta > 0.0 and step.length() < 1.0 else Vector3.ZERO  # 1 m in a frame: teleported
+	var vel: Vector3 = (n.get("walk_v", Vector3.ZERO) as Vector3).lerp(v, minf(delta * 12.0, 1.0))
+	n["walk_v"] = vel
+	var speed := vel.length()
+	var amount := 0.0
+	if not still:
+		var target := clampf(inverse_lerp(float(g["start_mps"]), float(g["full_mps"]), speed), 0.0, 1.0)
+		amount = lerpf(float(n.get("walk_amount", 0.0)), target, minf(delta * float(g["blend_rate"]), 1.0))
+	n["walk_amount"] = amount
+	var phase := fmod(float(n.get("walk_phase", 0.0)) + TAU * speed * delta / (float(g["stride_m"]) + float(g["stride_per_mps"]) * speed), TAU)
+	n["walk_phase"] = phase
+	for m: Dictionary in models:
+		var sk := m.get("skeleton") as Skeleton3D
+		if sk == null:
+			continue
+		var dir := sk.global_basis.inverse() * vel  # into the model's own space (+Z its front)
+		dir.y = 0.0
+		CharacterModels.pose_walk(m, phase, amount, speed, dir.normalized(), g)
 
 
 ## Tint laid over an NPC model: white flash when hit, grey when dead, darker while down, hiding

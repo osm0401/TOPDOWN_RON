@@ -125,6 +125,14 @@ def fade_out(x: np.ndarray, sr: int, fade_s: float) -> np.ndarray:
     return out
 
 
+def fade_in(x: np.ndarray, sr: int, fade_s: float) -> np.ndarray:
+    n = min(int(fade_s * sr), len(x))
+    out = x.copy()
+    if n > 0:
+        out[:n] *= np.linspace(0.0, 1.0, n, dtype=np.float32)
+    return out
+
+
 def normalize_peak(x: np.ndarray, peak: float) -> np.ndarray:
     m = float(np.abs(x).max()) if len(x) else 0.0
     return x if m == 0.0 else (x * (peak / m)).astype(np.float32)
@@ -198,3 +206,98 @@ def level_voice(x: np.ndarray, rms_db: float = -18.0, peak: float = 0.95) -> np.
         return x
     y = x * (10.0 ** (rms_db / 20.0) / rms)
     return (peak * np.tanh(y / peak)).astype(np.float32)
+
+
+# ---- checks -------------------------------------------------------------------
+
+def clipped_fraction(x: np.ndarray, level: float = 0.999, run: int = 4) -> float:
+    """Share of samples inside flat-topped runs (at least `run` samples in a row at full scale)."""
+    hot = np.abs(x) >= level
+    if not hot.any():
+        return 0.0
+    edges = np.diff(np.concatenate([[0], hot.astype(np.int8), [0]]))
+    starts, ends = np.nonzero(edges == 1)[0], np.nonzero(edges == -1)[0]
+    lengths = ends - starts
+    return float(lengths[lengths >= run].sum() / len(x))
+
+
+def audio_problems(x: np.ndarray, sr: int, min_s: float, max_s: float, silent_peak: float = 0.03) -> list[str]:
+    """What makes a sound unfit for the game: empty, broken, silent, too short or long, clipped,
+    offset. An empty list means it is fine. Game files are normalized, so a peak under `silent_peak`
+    (-30 dBFS) means nothing is in it."""
+    if len(x) == 0:
+        return ["empty"]
+    if not np.isfinite(x).all():
+        return ["broken (NaN)"]
+    out = []
+    dur = len(x) / sr
+    if dur < min_s:
+        out.append(f"too short {dur:.2f} s")
+    if dur > max_s:
+        out.append(f"too long {dur:.2f} s")
+    pk = float(np.abs(x).max())
+    if pk < silent_peak:
+        out.append(f"silent (peak {pk:.4f})")
+        return out
+    if clipped_fraction(x) > 0.001:
+        out.append("clipped")
+    if abs(float(x.mean())) > 0.05 * pk:
+        out.append("DC offset")
+    return out
+
+
+def voice_metrics(x: np.ndarray, sr: int) -> dict:
+    """How usable a recorded line is: length of the spoken part, quietest 50 ms against the loudest
+    (a line has pauses; constant noise does not), number of separate utterances, high band against
+    the speech band (radio and phone voices have almost nothing above 4 kHz) and clipping."""
+    dur = len(x) / sr if sr else 0.0
+    pk = float(np.abs(x).max()) if len(x) else 0.0
+    base = {"dur": round(dur, 3), "peak": round(pk, 4), "active_s": 0.0, "floor_db": 0.0, "segments": 0, "radio_db": 0.0, "clip": 0.0}
+    if len(x) < int(0.05 * sr) or pk <= 0.0:
+        return base
+    e = envelope(x, sr, 20.0)
+    emax = float(e.max())
+    active = e > emax * 10.0 ** (-30.0 / 20.0)
+    idx = np.nonzero(active)[0]
+    gaps = np.diff(idx) > int(0.3 * sr) if len(idx) > 1 else np.array([], dtype=bool)
+    n = int(0.05 * sr)
+    frames = x[: len(x) // n * n].astype(np.float64).reshape(-1, n)
+    rms = np.sqrt((frames ** 2).mean(axis=1))
+    floor_db = 20.0 * np.log10(max(float(rms.min()), 1e-9) / max(float(rms.max()), 1e-9))
+    seg = x[idx[0]: idx[-1] + 1] if len(idx) else x
+    spec = np.abs(np.fft.rfft(seg * np.hanning(len(seg)))) ** 2
+    freqs = np.fft.rfftfreq(len(seg), 1.0 / sr)
+    mid = float(spec[(freqs >= 300) & (freqs <= 3000)].sum())
+    high = float(spec[freqs >= 4000].sum())
+    radio_db = 10.0 * np.log10(max(high, 1e-20) / max(mid, 1e-20)) if mid > 0 else 0.0
+    base.update(active_s=round(float(active.sum()) / sr, 3), floor_db=round(floor_db, 1), segments=int(gaps.sum()) + (1 if len(idx) else 0),
+                radio_db=round(radio_db, 1), clip=round(clipped_fraction(x), 5))
+    return base
+
+
+def voice_quality(m: dict, sr: int, min_s: float = 0.25, max_s: float = 6.0) -> tuple[float, list[str]]:
+    """0..1 score of a line from voice_metrics, plus the reasons it lost points. 0 = unusable,
+    under 0.55 = only when nothing better exists (radio voice, clipped)."""
+    why = []
+    if m["dur"] <= 0.0 or m["peak"] < 0.003:
+        return 0.0, ["empty or silent"]
+    if m["active_s"] < 0.15 or m["dur"] < min_s:
+        return 0.0, ["too short"]
+    if m["dur"] > max_s:
+        return 0.0, ["too long"]
+    if m["floor_db"] > -12.0:  # never quieter than this: steady noise or music, not a spoken line
+        return 0.0, [f"steady noise (quietest part {m['floor_db']} dB)"]
+    q = 1.0
+    if m["clip"] > 0.001:
+        q *= 0.5
+        why.append("clipped")
+    if sr >= 16000 and m["radio_db"] < -40.0:
+        q *= 0.5
+        why.append(f"radio / band-limited ({m['radio_db']} dB above 4 kHz)")
+    if m["segments"] > 2:
+        q *= 0.8
+        why.append(f"{m['segments']} separate parts")
+    if m["peak"] < 0.05:
+        q *= 0.9
+        why.append("very quiet source")
+    return round(q, 3), why

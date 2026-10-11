@@ -9,5 +9,6 @@ when a file is missing, so a fresh clone still has sound.
 | file | what | origin | license status |
 |---|---|---|---|
 | `rifle_1.wav` | assault rifle shot | generated with Stable Audio Open 1.0 on the author's PC (prompt: "single assault rifle gunshot, close microphone, loud sharp crack, short echo in a concrete room, realistic sound effect", seed 1, take 1), then mono / trimmed / faded in a script | Stability AI Community License: terms for the public repo and for selling the game still to be checked (stability.ai/license) |
+| `voice_*.wav`, `hurt_*.wav`, `rifle*`, `pistol*`, `reload_*`, `taser_*`, `hit_*` (when imported) | officer lines of SWAT Eli and weapon sounds taken from Ready or Not by `tools/audio/import_ron.py`; `manifest.json` (`origin`) and `_import/REPORT.md` say which file each one came from | property of VOID Interactive: personal testing only, never commit or ship them; replace before any release |
 
 Generator setup (outside the repo): `D:\tools\sao`, script `gen_sfx.py`.

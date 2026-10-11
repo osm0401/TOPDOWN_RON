@@ -4,7 +4,7 @@
   "defaults": {
     "steps": 100,
     "takes": 16,
-    "batch": 4,
+    "batch": 2,
     "keep": 4,
     "peak": 0.95,
     "lowcut_hz": 40,
@@ -12,7 +12,7 @@
     "negative": "low quality, music, speech, voice, noise, distortion, cartoon, laughing"
   },
   "kinds": {
-    "_note": "kind별 선별 기준(want). onset_s: 소리가 시작되는 시점 상한, head_s/head_min: 앞쪽 head_s초 안에 들어 있어야 하는 에너지 비율, events: 허용 소리 덩어리 수 [최소,최대], centroid_hz: 음색 중심 범위",
+    "_note": "kind별 선별 기준(want). onset_s: 소리가 시작되는 시점 상한, head_s/head_min: 앞쪽 head_s초 안에 들어 있어야 하는 에너지 비율, events: 허용 소리 덩어리 수 [최소,최대], centroid_hz: 음색 중심 범위 event_rel: 첫 소리 대비 이 비율 이상인 덩어리만 센다(반향은 제외, 기본 0.3).",
     "impact": {
       "onset_s": 0.25,
       "head_s": 0.3,
@@ -24,7 +24,8 @@
       "centroid_hz": [
         500,
         6000
-      ]
+      ],
+      "event_rel": 0.5
     },
     "foley": {
       "onset_s": 0.5,

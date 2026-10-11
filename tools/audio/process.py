@@ -26,7 +26,8 @@ def process_one(x: np.ndarray, sr: int, cfg: dict) -> np.ndarray:
     """One raw take -> game sound. Room tone keeps its start; everything else starts at the sound."""
     if not cfg.get("loop"):
         x = trim_lead(x, sr)
-    x = trim_tail(x, sr, float(cfg["tail_s"]))
+    if "tail_s" in cfg:  # room tone loops over its whole length: nothing to cut
+        x = trim_tail(x, sr, float(cfg["tail_s"]))
     x = highpass(x, sr, float(cfg["lowcut_hz"]))
     if cfg.get("loop"):
         x = make_loop(x, sr, float(cfg["crossfade_s"]))

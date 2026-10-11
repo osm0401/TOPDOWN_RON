@@ -61,6 +61,11 @@ check(len(out) <= int(rifle["tail_s"] * SR), "the tail is cut to the catalog len
 check(abs(float(np.abs(out).max()) - rifle["peak"]) < 0.01, "peak is normalized")
 check(abs(float(out[-1])) < 0.01 and abs(float(out.mean())) < 0.02, "faded out, rumble and DC removed")
 
+# room tone: no tail setting, keeps its length minus the crossfade
+hum_cfg = ac.sound_cfg(cat, "hum")
+hum_out = process.process_one(lowpassed_noise(24.0, 5, 200.0), SR, hum_cfg)
+check(abs(len(hum_out) / SR - (24.0 - hum_cfg["crossfade_s"])) < 0.01, "room tone is looped over its whole length (no tail cut)")
+
 # looped room tone has no jump at the seam
 tone = lowpassed_noise(8.0, 3, 200.0)
 loop = ac.make_loop(tone, SR, 1.5)

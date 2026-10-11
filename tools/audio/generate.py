@@ -11,6 +11,7 @@ Existing seeds are skipped, so an interrupted run can simply be started again.
 The GPU temperature is checked before every batch (--max-temp); --rest adds a pause between batches.
 """
 import argparse
+import gc
 import json
 import os
 import subprocess
@@ -21,7 +22,7 @@ os.environ.setdefault("HF_HOME", "D:/tools/sao/hf_cache")  # login + model files
 
 from audio_common import RAW, load_catalog, sound_cfg, write_wav  # noqa: E402
 
-SECONDS_PER_AUDIO_SECOND = 10.6  # measured on an RTX 3060: 100 steps, batch of 4 -> 127 s for 4 x 3 s
+SECONDS_PER_TAKE = 28.0  # measured on an RTX 3060 at 100 steps: the cost per take does not depend on its length
 
 
 def done_seeds(key: str) -> set[int]:
@@ -49,8 +50,8 @@ def plan(cat: dict, only: list[str], takes: int, probe: bool, seed_base: int) ->
 
 
 def estimate_minutes(work: list[dict]) -> float:
-    secs = sum(len(w["seeds"]) * float(w["cfg"]["seconds"]) * int(w["cfg"]["steps"]) / 100.0 for w in work)
-    return secs * SECONDS_PER_AUDIO_SECOND / 60.0
+    secs = sum(len(w["seeds"]) * int(w["cfg"]["steps"]) / 100.0 * SECONDS_PER_TAKE for w in work)
+    return secs / 60.0
 
 
 def gpu_temp() -> int | None:
@@ -102,6 +103,9 @@ def run(cat: dict, work: list[dict], max_temp: int, rest: float) -> None:
                                           "steps": int(cfg["steps"]), "seconds": float(cfg["seconds"]), "model": cat["model"],
                                           "time": datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False) + "\n")
             print(f"[+] {key}: seeds {chunk[0]}..{chunk[-1]} in {time.time() - t0:.0f} s (GPU {gpu_temp()} C)", flush=True)
+            del audios
+            gc.collect()
+            torch.cuda.empty_cache()  # give cached blocks back: a 12 GB card that overflows into system memory runs 3x slower
             time.sleep(rest)
 
 

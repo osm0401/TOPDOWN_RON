@@ -82,7 +82,7 @@ def analyze(x: np.ndarray, sr: int, want: dict) -> dict:
     spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
     freqs = np.fft.rfftfreq(len(x), 1.0 / sr)
     centroid = float((spec * freqs).sum() / (spec.sum() + 1e-12))
-    events = count_events(x[on:], sr)
+    events = count_events(x[on:], sr, rel=float(want.get("event_rel", 0.3)))  # echoes below this share do not count
     clip = float((np.abs(x) > 0.99).mean())
     lo, hi = want["events"]
     ev_score = 1.0 if lo <= events <= hi else (0.4 if lo - 1 <= events <= hi + 1 else 0.1)

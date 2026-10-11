@@ -23,6 +23,7 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	GameAudio.wait_prepared()  # never leave the worker task running at quit
+	CharacterModels.release()
 
 
 func _build_lobby() -> void:

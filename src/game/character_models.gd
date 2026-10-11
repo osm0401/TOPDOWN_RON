@@ -34,6 +34,12 @@ static func make(name: String, cfg: Dictionary, dir := "") -> Dictionary:
 	return {"node": node, "overlay": overlay, "lie_y": float(node.get_meta("lie_y", 0.15))}
 
 
+## Drops the loaded models. Called when the game quits: a cached model still holding meshes when
+## the renderer shuts down is reported as leaked.
+static func release() -> void:
+	_templates.clear()
+
+
 static func meshes(root: Node) -> Array[MeshInstance3D]:
 	var out: Array[MeshInstance3D] = []
 	if root is MeshInstance3D:
@@ -72,7 +78,10 @@ static func _load_glb(path: String) -> Node3D:
 	if ResourceLoader.exists(path):
 		var ps := load(path) as PackedScene
 		if ps != null:
-			return ps.instantiate() as Node3D
+			var node := ps.instantiate() as Node3D
+			if node != null:
+				node.scene_file_path = ""  # packed below as plain nodes, not as an instance of the import
+			return node
 	if not FileAccess.file_exists(path):
 		return null
 	var doc := GLTFDocument.new()
@@ -94,6 +103,7 @@ static func _load_normalized(path: String, height: float, yaw_deg: float) -> Pac
 		push_warning("character model %s has no visible mesh" % path)
 		model.free()
 		return null
+	_fix_metal(model)
 	var s := height / box.size.y
 	model.scale *= s
 	model.position = model.position * s - Vector3(box.get_center().x, box.position.y, box.get_center().z) * s
@@ -112,6 +122,18 @@ static func _load_normalized(path: String, height: float, yaw_deg: float) -> Pac
 		return null
 	print("[characters] %s: %.2f m tall (scaled x%.3f)" % [path.get_file(), height, s])
 	return packed
+
+
+## Image-to-3D generators often leave the glTF default metallic 1.0 without a metallic texture:
+## cloth and skin would then render dark like metal. Such a material is made non-metallic.
+static func _fix_metal(model: Node3D) -> void:
+	for mi in meshes(model):
+		if mi.mesh == null:
+			continue
+		for i in mi.mesh.get_surface_count():
+			var mat := mi.mesh.surface_get_material(i) as BaseMaterial3D
+			if mat != null and mat.metallic_texture == null and mat.metallic > 0.99:
+				mat.metallic = 0.0
 
 
 static func _own(node: Node, owner: Node) -> void:

@@ -19,4 +19,8 @@ assets/audio/_far_dsp/
 # Ready or Not import (tools/audio/import_ron.py): its report, transcripts and the backups of replaced files
 assets/audio/_import/
 assets/audio/_backup/
+# character models: only the .glb files are kept; the editor's import files and the textures it extracts are rebuilt on import
+assets/characters/*.import
+assets/characters/*.jpg
+assets/characters/*.png
 __pycache__/

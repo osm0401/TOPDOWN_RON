@@ -372,13 +372,14 @@ func _make_npc(a: NpcDirector.Agent) -> Dictionary:
 	var mat := _mat(WorldView.ENEMY_COLOR)
 	var kind := "enemy" if a.brain.role == NpcBrain.Role.ENEMY else "civilian"
 	var model := CharacterModels.make(kind, _cfg["characters"])
-	var model_up := CharacterModels.make(kind + "_up", _cfg["characters"]) if not model.is_empty() else {}
+	var separate_up := bool(_cfg["characters"]["surrender_model"])  # else the model itself raises its hands
+	var model_up := CharacterModels.make(kind + "_up", _cfg["characters"]) if separate_up and not model.is_empty() else {}
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
 		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
 	else:
 		rig.add_child(model["node"])
-		if not model_up.is_empty():  # hands up (surrender) has its own model
+		if not model_up.is_empty():  # hands up (surrender) as its own model
 			rig.add_child(model_up["node"])
 	var cap_mesh := CylinderMesh.new()
 	cap_mesh.top_radius = 0.19
@@ -765,7 +766,7 @@ func _update_npcs(delta: float) -> void:
 		(n["cap"] as Node3D).visible = a.clues.has("cap") and shapes
 		(n["band"] as Node3D).visible = a.clues.has("band") and shapes
 		(n["gun"] as Node3D).visible = b.armed and st != S.DOWN and st != S.HIDE and st != S.DEAD and shapes
-		(n["arms"] as Node3D).visible = st == S.SURRENDER and not hands_up
+		(n["arms"] as Node3D).visible = st == S.SURRENDER and shapes
 		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED and shapes
 		(n["dropped"] as Node3D).visible = b.had_weapon and not b.armed
 		var marker := ""
@@ -953,8 +954,10 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 			s["stance"] = CS.KNEEL
 			s["hold"] = H.CUFFED
 			slots["cuffs"] = "cuffs"
+		S.SURRENDER:
+			s["hold"] = H.HANDS_UP
 		_:
-			if b.armed and st != S.SURRENDER:
+			if b.armed:
 				slots["hand"] = "pistol"
 				s["hold"] = H.PISTOL_ONE if st in [S.THREAT, S.ATTACK] and to_officer != Vector3.ZERO else H.PISTOL_LOW
 			elif st in [S.SPOTTED, S.THREAT, S.ATTACK]:

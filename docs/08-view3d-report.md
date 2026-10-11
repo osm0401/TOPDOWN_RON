@@ -5,7 +5,7 @@
 
 ## 쓰는 법
 - 게임 중 `F5`: 2D <-> 3D 전환 (HUD, 브리핑, 결과 화면은 그대로 2D)
-- 처음부터 3D: 실행 인자 `-- --view3d` (예: `Godot.exe --path D:/TOPDOWNRON -- --solo --view3d`)
+- 기본은 3D로 시작(`data/view3d.json`의 `start_3d`). 2D로 시작: 실행 인자 `-- --view2d` (예: `Godot.exe --path D:/TOPDOWNRON -- --solo --view2d`), `-- --view3d`는 3D로 시작
 - 값 조정: `data/view3d.json` (카메라 각도/거리/시야각, 벽 높이, 벽 낮춤, 조준 높이) — 모두 임시값
 
 ## 구조

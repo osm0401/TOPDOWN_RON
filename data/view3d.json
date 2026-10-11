@@ -1,5 +1,6 @@
 {
-  "_note": "PROTOTYPE/TUNING: 임시값. 비스듬한 3D 화면(도형 임시 표현) 설정. 시뮬레이션은 2D 좌표 그대로이고 화면만 3D. 1 m = px_per_m 픽셀.",
+  "_note": "PROTOTYPE/TUNING: 임시값. 비스듬한 3D 화면(도형 임시 표현) 설정. 시뮬레이션은 2D 좌표 그대로이고 화면만 3D. 1 m = px_per_m 픽셀. start_3d: 게임을 3D 화면으로 시작(false면 2D, F5로 전환, 실행 인자 --view2d / --view3d가 우선).",
+  "start_3d": true,
   "px_per_m": 50.0,
   "camera": {"pitch_deg": 58.0, "distance_m": 35.0, "fov_deg": 20.0},
   "ease_rate": 20.0,

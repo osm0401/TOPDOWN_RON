@@ -335,6 +335,17 @@ func _test_level() -> void:
 	await physics_frame
 	var poly_closed := lv.visibility_polygon(a, 700.0)
 	_check(_min_y(poly_closed) >= 430.0, "closed door: fog polygon stays in the corridor")
+	var cast_in := lv._vis_frame
+	await physics_frame
+	_check(lv.visibility_polygon(a, 700.0) == poly_closed and lv._vis_frame == cast_in, "standing still: the fog polygon is reused, not cast again")
+	lv.toggle_door(1, 1)
+	lv.visibility_polygon(a, 700.0)  # same frame as the change: the physics space has not caught up yet
+	await physics_frame
+	await physics_frame
+	_check(_min_y(lv.visibility_polygon(a, 700.0)) < 430.0, "after a door opens the fog polygon is cast again (not served stale)")
+	lv.toggle_door(1, 2)
+	await physics_frame
+	await physics_frame
 
 	var near := lv.nearest_door(Vector2(150, 480), 80.0)
 	_check(near == 5, "entrance door is nearest from the spawn")
@@ -345,6 +356,7 @@ func _test_level() -> void:
 	lv2.load_map("res://data/map_01.json")
 	lv2.unpack_doors(packed)
 	_check(lv2.is_door_open(4) and not lv2.is_door_open(1) and lv2.door_actor[4] == 1, "door state pack/unpack")
+	lv2.free()  # never in the tree: freed by hand or its bodies leak at exit
 
 	var body := CharacterBody2D.new()
 	body.collision_layer = 2

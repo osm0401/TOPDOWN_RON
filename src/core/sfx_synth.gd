@@ -73,9 +73,7 @@ static func _decay(b: PackedFloat32Array, tau: float) -> void:
 ## Adds src into dst starting at at_s seconds.
 static func _mix(dst: PackedFloat32Array, src: PackedFloat32Array, at_s: float, gain := 1.0) -> void:
 	var o := int(at_s * RATE)
-	for i in src.size():
-		if o + i >= dst.size():
-			break
+	for i in mini(src.size(), dst.size() - o):
 		dst[o + i] += src[i] * gain
 
 
@@ -96,20 +94,22 @@ static func _reverb(b: PackedFloat32Array, wet: float, decay_s: float) -> Packed
 	var n := b.size()
 	var acc := PackedFloat32Array()
 	acc.resize(n)
-	for d_ms in [29.7, 37.1, 41.1, 43.7]:
-		var d := int(float(d_ms) * 0.001 * RATE)
+	for d_ms in [29.7, 37.1, 41.1, 43.7]:  # the first d samples have no echo yet: no branch per sample
+		var d := mini(int(float(d_ms) * 0.001 * RATE), n)
 		var g := pow(0.001, float(d_ms) * 0.001 / decay_s)
-		var y := PackedFloat32Array()
-		y.resize(n)
+		var y := b.duplicate()
+		for i in range(d, n):
+			y[i] = b[i] + g * y[i - d]
 		for i in n:
-			y[i] = b[i] + (g * y[i - d] if i >= d else 0.0)
 			acc[i] += y[i] * 0.25
 	for ap_ms in [5.0, 1.7]:
-		var d := int(float(ap_ms) * 0.001 * RATE)
+		var d := mini(int(float(ap_ms) * 0.001 * RATE), n)
 		var o := PackedFloat32Array()
 		o.resize(n)
-		for i in n:
-			o[i] = -0.7 * acc[i] + (acc[i - d] + 0.7 * o[i - d] if i >= d else 0.0)
+		for i in d:
+			o[i] = -0.7 * acc[i]
+		for i in range(d, n):
+			o[i] = -0.7 * acc[i] + (acc[i - d] + 0.7 * o[i - d])
 		acc = o
 	var out := PackedFloat32Array()
 	out.resize(n)

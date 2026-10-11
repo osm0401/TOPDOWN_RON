@@ -31,6 +31,10 @@ var _door_shapes: Array[CollisionShape2D] = []
 var _door_corners: Array[PackedVector2Array] = []
 var _corners := PackedVector2Array()
 var _grid: AStarGrid2D
+var _shape_frame := -10  ## physics frame walls / doors last changed (the physics space follows at its next step)
+var _vis_key := Vector3(INF, INF, INF)  ## origin and radius of the last visibility polygon
+var _vis_frame := -10  ## physics frame it was cast in
+var _vis_poly := PackedVector2Array()
 
 
 func load_map(path: String) -> bool:
@@ -70,6 +74,7 @@ func load_map(path: String) -> bool:
 		_door_shapes.append(_add_body(r))
 		_door_corners.append(Geom2D.rect_corners(r))
 	build_grid()
+	_shape_frame = Engine.get_physics_frames()
 	return true
 
 
@@ -203,13 +208,15 @@ func blockers_between(a: Vector2, b: Vector2) -> Dictionary:
 	var walls := 0
 	var closed := 0
 	var ajar := 0
+	var box := Rect2(a, Vector2.ZERO).expand(b)  # cheap first test: most walls are nowhere near the segment
 	for r in wall_rects:
-		if Geom2D.segment_hits_rect(a, b, r):
+		if box.intersects(r, true) and Geom2D.segment_hits_rect(a, b, r):
 			walls += 1
 	for i in door_rects.size():
 		if _door_state[i] == DoorState.OPEN:
 			continue
-		if Geom2D.segment_hits_rect(a, b, door_collider_rect(i)):
+		var dr := door_collider_rect(i)
+		if box.intersects(dr, true) and Geom2D.segment_hits_rect(a, b, dr):
 			if _door_state[i] == DoorState.CLOSED:
 				closed += 1
 			else:
@@ -217,8 +224,14 @@ func blockers_between(a: Vector2, b: Vector2) -> Dictionary:
 	return {"walls": walls, "closed": closed, "ajar": ajar}
 
 
-## Star-shaped area visible from origin (walls + closed/ajar doors), limited to radius.
+## Star-shaped area visible from origin (walls + closed/ajar doors), limited to radius. Asked
+## every frame: while the viewer stands still the last one is reused, if it was cast at least two
+## physics frames after the walls were built or a door last changed (new shapes reach the physics
+## space only at its next step).
 func visibility_polygon(origin: Vector2, radius: float) -> PackedVector2Array:
+	var key := Vector3(origin.x, origin.y, radius)
+	if key == _vis_key and _vis_frame - _shape_frame >= 2:
+		return _vis_poly
 	var angles: Array[float] = []
 	_add_corner_angles(angles, _corners, origin, radius)
 	for dc in _door_corners:
@@ -226,7 +239,10 @@ func visibility_polygon(origin: Vector2, radius: float) -> PackedVector2Array:
 	for i in ARC_RAYS:
 		angles.append(TAU * i / ARC_RAYS - PI)
 	angles.sort()
-	return _cast(origin, angles, radius)
+	_vis_poly = _cast(origin, angles, radius)
+	_vis_key = key
+	_vis_frame = Engine.get_physics_frames()
+	return _vis_poly
 
 
 ## Visible part of a cone (flashlight): fan polygon [origin, hit, hit, ...].
@@ -321,6 +337,7 @@ func _horizontal(i: int) -> bool:
 
 
 func _apply_door(i: int) -> void:
+	_shape_frame = Engine.get_physics_frames()
 	var cs := _door_shapes[i]
 	var shape := cs.shape as RectangleShape2D
 	if _door_state[i] == DoorState.OPEN:

@@ -257,5 +257,23 @@ with tempfile.TemporaryDirectory() as tmp:
           "a take that is damaged by processing is replaced and reported")
     check(len(list(audio.glob("voice_weapon_drop_*.wav"))) == 16, "its sentence slots are still all filled")
 
+    # pins.json: files chosen by hand win over the automatic choice
+    ir.load_asr = lambda model: (fake_asr, "stand-in (test)")
+    (ir.WORK / "pins.json").write_text(json.dumps({
+        "voice": {"down": [["Eli_Freeze_01.wav"], [], [], []]},
+        "hurt": ["Eli_Pain_02.wav"],
+        "weapons": {"rifle": ["SA58_Shot_Close_01.wav", "Missing.wav"], "pistol": [],
+                    "reload": [[["ARN180_MagOut_01.wav", 0.0, 0.5], ["ARN180_BoltRelease_01.wav", 0.6, 0.8]]]}}), encoding="utf-8")
+    run(["--no-godot", "--voice-dir", str(vo), "--weapons-dir", str(wp)])
+    manifest = json.loads(process.MANIFEST.read_text(encoding="utf-8"))
+    check(sorted(p.name for p in audio.glob("voice_down_*.wav")) == ["voice_down_0_0.wav"], "a pinned command plays exactly its pinned takes")
+    check(len(list(audio.glob("voice_freeze_*.wav"))) == 16, "a command without pins is still chosen automatically")
+    check(sorted(p.name for p in audio.glob("hurt_*.wav")) == ["hurt_0.wav"], "the pinned pain sound")
+    check([e["origin"] for e in manifest["rifle"]] == ["SA58_Shot_Close_01.wav"], "the pinned rifle take; a name that is not in the folder is left out")
+    check(len(list(audio.glob("rifle_far_*.wav"))) == 1, "the far set follows the pinned rifle")
+    check(len(list(audio.glob("pistol_[0-9].wav"))) == 3, "an empty pin list leaves the sound as it is")
+    check(manifest["reload"][0]["origin"] == "ARN180_MagOut_01.wav + ARN180_BoltRelease_01.wav", "pinned parts are mixed into one take")
+    check(ir.verify_all(ac.load_catalog(), False, None) == [], "every game file still passes the check")
+
 print("ALL PASS" if failed == 0 else f"{failed} FAILED")
 sys.exit(1 if failed else 0)

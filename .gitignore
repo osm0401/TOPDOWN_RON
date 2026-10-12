@@ -23,4 +23,6 @@ assets/audio/_backup/
 assets/characters/*.import
 assets/characters/*.jpg
 assets/characters/*.png
+assets/audio/_voice_ref/
+assets/audio/_voice_gen/
 __pycache__/

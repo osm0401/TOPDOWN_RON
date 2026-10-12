@@ -17,6 +17,9 @@ from the close shots (make_far.py), a missing full reload is put together from m
 After writing, every game file is checked (empty, silent, too short or long, clipped, offset, and
 for voices: still says the line after trimming); a bad one is replaced by the next best candidate.
 
+Your own choice wins over the automatic one: assets/audio/_import/pins.json (not committed) names the
+files to use, see load_pins().
+
 Everything it decided: assets/audio/_import/REPORT.md, inventory.csv, choices.json. Files it replaced:
 assets/audio/_backup/<time>/. The imported sounds belong to VOID Interactive: assets/audio is never
 committed (.gitignore), keep them for your own testing.
@@ -55,8 +58,8 @@ VOICE_MIN_S = 0.25
 POOR = 0.55  # radio voice, clipped: used only for a command that has nothing better
 OUTLIER = 0.1  # a weapon take this far below the best take of its group is left out
 RADIO_WORDS = {"radio", "rdo", "comms", "comm", "walkie", "headset", "radioed"}
-HOW_RANK = {"table+asr": 0, "table": 0, "asr-table": 1, "asr": 2, "name": 3, "table?": 4}
-HOW_KO = {"table+asr": "표 번호+음성 인식", "table": "표 번호", "asr-table": "음성 인식(표 대사)", "asr": "음성 인식",
+HOW_RANK = {"pin": -1, "table+asr": 0, "table": 0, "asr-table": 1, "asr": 2, "name": 3, "table?": 4}
+HOW_KO = {"pin": "직접 지정", "table+asr": "표 번호+음성 인식", "table": "표 번호", "asr-table": "음성 인식(표 대사)", "asr": "음성 인식",
           "name": "파일 이름", "table?": "표 번호(인식 불확실)"}
 
 
@@ -126,6 +129,35 @@ def drop_orphan_imports() -> int:
             imp.unlink()
             n += 1
     return n
+
+
+def load_pins() -> dict:
+    """assets/audio/_import/pins.json: files chosen by hand, used instead of the automatic choice.
+      "voice":   {"<command>": [[file, ...] per sentence of commands.json, in take order]}
+      "hurt":    [file, ...]
+      "weapons": {"<key>": [file, or [[file, at_s, peak], ...] = files mixed at those times, ...]}
+    An empty weapons list leaves that sound as it is. File names are relative to the voice / weapons folder."""
+    path = WORK / "pins.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def mix_parts(pieces: list[tuple[Path, float, float]], max_s: float = 3.0) -> tuple[np.ndarray, int]:
+    """Files laid over each other: (file, start in seconds, peak it is normalized to)."""
+    sr, layers = None, []
+    for path, at, peak in pieces:
+        x, s = decode(path)
+        if sr is None:
+            sr = s
+        elif s != sr:
+            g = math.gcd(sr, s)
+            x = signal.resample_poly(x, sr // g, s // g).astype(np.float32)
+        layers.append((int(float(at) * sr), ac.normalize_peak(ac.trim_lead(x, sr), float(peak))))
+    total = max(i + len(x) for i, x in layers) + int(0.1 * sr)
+    mix = np.zeros(min(total, int(max_s * sr)), dtype=np.float32)
+    for i, x in layers:
+        n = max(min(len(x), len(mix) - i), 0)
+        mix[i: i + n] += x[:n]
+    return ac.normalize_peak(mix, 0.9), sr  # overlapping parts can add up past full scale
 
 
 class Backup:
@@ -306,6 +338,17 @@ def match_voice(recs: list[dict], targets: list[dict], index_map: dict[int, str]
             r["match"] = {"cmd": t["cmd"], "i": t["i"], "text": t["text"], "table": t["table"], "ns": t["ns"], "sim": round(sim, 3), "how": how}
 
 
+def pin_voice(recs: list[dict], pins: dict) -> None:
+    """Pinned voice files count as found for their sentence, whatever the matching said."""
+    by_rel = {r["rel"]: r for r in recs}
+    for cmd, sentences in pins.items():
+        for i, files in enumerate(sentences):
+            for rel in files:
+                r = by_rel.get(rel)
+                if r is not None and not r.get("error"):
+                    r["match"] = {"cmd": cmd, "i": i, "text": r.get("text") or r["stem"], "table": False, "ns": [], "sim": 1.0, "how": "pin"}
+
+
 def heard_before(r: dict) -> tuple[str, ...]:
     """What the processed take must still sound like: the untrimmed transcript or the line it was
     matched to (empty: nothing to check against)."""
@@ -319,7 +362,7 @@ def rank_key(r: dict) -> tuple:
     return HOW_RANK[m["how"]], -m["sim"], -r["q"], r["rel"]
 
 
-def plan_voice(recs: list[dict], cfg: dict) -> tuple[dict, dict]:
+def plan_voice(recs: list[dict], cfg: dict, pins: dict | None = None) -> tuple[dict, dict]:
     """command -> per sentence the files for takes 0..3; plus command -> every usable file (the pool)."""
     usable = sorted((r for r in recs if r.get("match") and not r.get("bad")), key=rank_key)
     seen = {}
@@ -331,7 +374,12 @@ def plan_voice(recs: list[dict], cfg: dict) -> tuple[dict, dict]:
             continue
         seen[r["hash"]] = r["rel"]
         by_cmd[r["match"]["cmd"]].append(r)
+    ok = {r["rel"] for r in recs if r.get("match") and not r.get("bad")}
     for cmd, sentences in cfg["commands"].items():
+        if pins and cmd in pins:  # exactly the pinned takes (minus the ones that failed the check)
+            plan[cmd] = [[f for f in files if f in ok][:TAKES] for files in pins[cmd]]
+            pools[cmd] = list(dict.fromkeys(f for files in pins[cmd] for f in files if f in ok))
+            continue
         found = [r for r in by_cmd.get(cmd, []) if r["q"] >= POOR] or by_cmd.get(cmd, [])
         heard_texts = {r["match"]["text"] for r in found if not r["match"].get("unheard")}
         # a numbered file the recognizer heard no words in only stands in for a line nothing else says
@@ -378,13 +426,13 @@ class VoiceChecker:
         return y, sr, probs
 
 
-def apply_voice(recs: list[dict], cfg: dict, check: VoiceChecker, backup: Backup, dry: bool) -> dict:
+def apply_voice(recs: list[dict], cfg: dict, check: VoiceChecker, backup: Backup, dry: bool, pins: dict | None = None) -> dict:
     """Writes voice_<command>_<line>_<take>.wav for every command with found lines. A take that fails
     the check is dropped and the plan is made again without it, until every written take is good."""
     by_rel = {r["rel"]: r for r in recs}
     fixes = []
     for _ in range(200):
-        plan, pools = plan_voice(recs, cfg)
+        plan, pools = plan_voice(recs, cfg, pins)
         bad = []
         for cmd, slots in plan.items():
             for slot in slots:
@@ -567,28 +615,27 @@ def compose_reloads(recs: list[dict], kcfg: dict, wcfg: dict, cat: dict, keep: i
             p[k].sort(key=lambda c: (-c["score"], c["rel"]))
         for v in range(min(keep - len(out), max(len(lst) for lst in p.values()))):
             pieces = [(name, p[name][v % len(p[name])]) for name in ("mag_out", "mag_in", "bolt") if p.get(name)]
-            sr = None
-            layers = []
-            for name, c in pieces:
-                x, s = decode(c["path"])
-                if sr is None:
-                    sr = s
-                elif s != sr:
-                    g = math.gcd(sr, s)
-                    x = signal.resample_poly(x, sr // g, s // g).astype(np.float32)
-                x = ac.normalize_peak(ac.trim_lead(x, sr), 0.7)
-                layers.append((int(float(at[name]) * sr), x))
-            total = max(i + len(x) for i, x in layers) + int(0.1 * sr)
-            mix = np.zeros(min(total, int(3.0 * sr)), dtype=np.float32)
-            for i, x in layers:
-                n = max(min(len(x), len(mix) - i), 0)
-                mix[i: i + n] += x[:n]
-            mix = ac.normalize_peak(mix, 0.9)  # overlapping parts can add up past full scale
+            mix, sr = mix_parts([(c["path"], float(at[name]), 0.7) for name, c in pieces])
             out.append({"rel": " + ".join(c["rel"] for _, c in pieces), "mix": (mix, sr), "weapon": weapon, "group": "mix:" + weapon,
                         "class": pieces[0][1]["class"], "score": round(float(np.mean([c["score"] for _, c in pieces])), 3),
                         "hash": audio_hash(mix), "analysis": ac.analyze(mix, sr, ac.sound_cfg(cat, "reload")["want"])})
         if len(out) >= keep:
             break
+    return out
+
+
+def pinned_takes(items: list, by_rel: dict[str, dict]) -> list[dict]:
+    """pins.json weapon entries -> takes: a file name, or a list of [file, at_s, peak] mixed into one take.
+    A name that is not in the folder drops its take."""
+    out = []
+    for item in items:
+        if isinstance(item, str):
+            if item in by_rel and not by_rel[item]["problems"]:
+                out.append({**by_rel[item], "score": 1.0, "analysis": {}})
+        elif all(part[0] in by_rel for part in item):
+            mix, sr = mix_parts([(by_rel[f]["path"], at, peak) for f, at, peak in item])
+            out.append({"rel": " + ".join(part[0] for part in item), "mix": (mix, sr), "weapon": "pin", "group": "pin", "class": "",
+                        "score": 1.0, "hash": audio_hash(mix), "analysis": {}})
     return out
 
 
@@ -888,12 +935,18 @@ def run_voice(cfg: dict, folder: Path, args, backup: Backup, ctx: dict, used: di
         ctx["warnings"].append(f"대사 표 번호를 맞춘 묶음 `{index_info['group']}`이 표보다 훨씬 큽니다({index_info['files']}개): "
                                "음성 인식이 없으면 번호가 다른 대사를 가리킬 수 있습니다.")
     match_voice(recs, targets, index_map, float(acfg["match_min"]), run is not None)
+    pins = load_pins()
+    pin_voice(recs, pins.get("voice", {}))
     by_rel = {r["rel"]: r for r in recs}
     check = VoiceChecker(run, float(acfg["match_min"]), float(acfg["max_s"]) + 0.5)
-    res = apply_voice(recs, cfg, check, backup, args.dry_run)
+    res = apply_voice(recs, cfg, check, backup, args.dry_run, pins.get("voice"))
     hurt = None
     if cfg.get("hurt"):
-        hurt = apply_hurt(pick_hurt(recs, cfg["hurt"], float(acfg["match_min"])), cfg["hurt"], check, backup, args.dry_run)
+        cands, hcfg = pick_hurt(recs, cfg["hurt"], float(acfg["match_min"])), cfg["hurt"]
+        if pins.get("hurt"):
+            cands = [{**by_rel[f], "hurt_how": "pin"} for f in pins["hurt"] if f in by_rel and not by_rel[f].get("error")]
+            hcfg = {**hcfg, "keep": len(cands)}
+        hurt = apply_hurt(cands, hcfg, check, backup, args.dry_run)
         for w in hurt["written"]:
             used["v:" + w["source"]] = w["file"]
     for w in res["written"]:
@@ -959,8 +1012,23 @@ def run_weapons(cfg: dict, folder: Path, args, cat: dict, backup: Backup, ctx: d
     keys_out = {}
     chosen_weapon = {}
     by_rel = {r["rel"]: r for r in recs}
+    pins = load_pins().get("weapons", {})
     for key, kcfg in wcfg["keys"].items():
         if key not in cat["sounds"]:
+            continue
+        if key in pins:
+            chosen = pinned_takes(pins[key], by_rel)
+            if not chosen:
+                keys_out[key] = {"note": "직접 지정(pins.json): 쓸 파일이 없어 그대로 둡니다."}
+                continue
+            res = apply_weapon_key(key, chosen, [], cat, backup, args.dry_run)
+            if res["written"]:
+                chosen_weapon[key] = chosen[0].get("weapon")
+            keys_out[key] = {**res, "note": "직접 지정(pins.json)."}
+            for src, f in zip(res.get("sources", []), res["written"]):
+                for part in src.split(" + "):
+                    used["w:" + part] = (used.get("w:" + part, "") + " " + f).strip()
+            say(f"  {key}: {len(res['written'])}개 (직접 지정){' 바꿈 ' + str(len(res['fixes'])) if res['fixes'] else ''}")
             continue
         min_score = float(kcfg.get("min_score", wcfg["min_score"] - (0.1 if kcfg["layer"] == "far" else 0.0)))
         cands, fallback = weapon_candidates(recs, key, kcfg, wcfg, cat)

@@ -43,3 +43,6 @@ assets/props/**/*.import
 assets/props/**/*.png
 assets/props/**/*.jpg
 assets/textures/**/*.import
+
+# exported game builds (tests/net_smoke, export_presets.cfg)
+build/

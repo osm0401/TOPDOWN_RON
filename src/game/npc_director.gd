@@ -40,6 +40,8 @@ var _diff: Dictionary
 var _params: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
 var _queue: Array[Dictionary] = []
+var _pl_prev: Array[Vector2] = []
+var _pl_speed: Array[float] = []  ## px/s of each officer (smoothed): a moving officer is harder to hit
 
 
 func _init(lv: Level, tuning: Dictionary, diff: Dictionary, player_list: Array[PlayerState], seed_value: int) -> void:
@@ -75,6 +77,7 @@ func on_sound(kind: int, at: Vector2, source: int = -1) -> void:
 
 
 func tick(delta: float) -> void:
+	_track_players(delta)
 	var sounds := _queue
 	_queue = []
 	var alerts: Array[Dictionary] = []
@@ -82,6 +85,28 @@ func tick(delta: float) -> void:
 		_tick_agent(i, delta, sounds, alerts)
 	for al in alerts:
 		_share_alert(int(al["from"]), al["pos"])
+
+
+func _track_players(delta: float) -> void:
+	if _pl_prev.size() != players.size():
+		_pl_prev.clear()
+		_pl_speed.clear()
+		for pl in players:
+			_pl_prev.append(pl.pos)
+			_pl_speed.append(0.0)
+	for s in players.size():
+		var moved := _pl_prev[s].distance_to(players[s].pos)
+		var v := moved / delta if delta > 0.0 and moved < 100.0 else 0.0  # a jump of 100 px is a teleport
+		_pl_speed[s] = lerpf(_pl_speed[s], v, minf(delta * 8.0, 1.0))
+		_pl_prev[s] = players[s].pos
+
+
+## How much harder officer `slot` is to hit while moving: 1 standing still .. aim_move_mult at full speed.
+func moving_target_mult(slot: int) -> float:
+	if slot < 0 or slot >= _pl_speed.size():
+		return 1.0
+	var k := clampf(_pl_speed[slot] / maxf(float(_t["move_speed"]), 1.0), 0.0, 1.0)
+	return lerpf(1.0, float(_np.get("aim_move_mult", 1.0)), k)
 
 
 # ---- player actions on NPCs --------------------------------------------------
@@ -218,7 +243,8 @@ func pack() -> Array:
 		ps.append(a.pos)
 		face.append(b.facing)
 		data.append(b.state | (16 if b.armed else 0) | (32 if b.feigning else 0) | (64 if b.had_weapon else 0) \
-			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0) | (131072 if b.in_cover else 0))
+			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0) | (131072 if b.in_cover else 0) \
+			| (262144 if b.aiming else 0))
 	return [ps, data, face]
 
 
@@ -236,6 +262,7 @@ func unpack(ps: PackedVector2Array, data: PackedInt32Array, face: PackedFloat32A
 		b.hp = (d >> 8) & 255
 		a.dormant = (d & 65536) != 0
 		b.in_cover = (d & 131072) != 0
+		b.aiming = (d & 262144) != 0
 
 
 # ---- per-agent tick ------------------------------------------------------------
@@ -251,6 +278,9 @@ func _tick_agent(i: int, delta: float, sounds: Array[Dictionary], alerts: Array[
 		b.needs_flee_target = false
 	if b.needs_cover:
 		b.set_cover(_pick_cover(a))
+	if b.needs_ambush:
+		var amb := _pick_ambush(a)
+		b.set_ambush(amb[0], amb[1])
 	_hear(i, a, sounds)
 	if b.role == NpcBrain.Role.ENEMY:
 		_see(a)
@@ -283,7 +313,7 @@ func _hear(i: int, a: Agent, sounds: Array[Dictionary]) -> void:
 			continue
 		var blockers := level.blockers_between(at, a.pos)
 		if SoundProp.is_heard(dist, blockers, pen, radius, mult):
-			a.brain.hear(kind_name, at, SoundProp.loudness(dist, blockers, pen, radius, mult))
+			a.brain.hear(kind_name, at, SoundProp.loudness(dist, blockers, pen, radius, mult), level.room_at(at) != level.room_at(a.pos))
 
 
 func _see(a: Agent) -> void:
@@ -361,6 +391,7 @@ func _npc_shoot(i: int, a: Agent) -> void:
 	var from := a.pos + dir * 18.0
 	var dist := a.pos.distance_to(pl.pos)
 	var chance := float(_diff["accuracy"]) * (1.0 - float(_np["hit_falloff"]) * clampf(dist / float(_diff["detect_range"]), 0.0, 1.0))
+	chance = minf(chance * a.brain.aim_quality() * moving_target_mult(slot), 0.95)  # settled aim, still target: deadlier
 	var hit := level.has_los(from, pl.pos) and _rng.randf() < chance
 	var to := pl.pos
 	var caught := {}
@@ -530,12 +561,80 @@ func _pick_cover(a: Agent) -> Vector2:
 	return best
 
 
+## Where to wait for officers coming from the sound it heard in another room: a spot in its own room
+## that sees the way in (the first door on its path toward the sound) from 90..420 px, behind low
+## furniture when it can, near where it stands. [spot, look]: spot INF to stay put; look is just
+## inside that doorway (or the sound itself when there is no door between).
+func _pick_ambush(a: Agent) -> Array:
+	var room := level.room_at(a.pos)
+	var door := _first_door_on(a.pos, level.find_path(a.pos, a.brain.target_pos))
+	if room < 0 or door < 0:
+		return [Vector2.INF, a.brain.target_pos]
+	var r: Rect2 = level.rooms[room]["rect"]
+	var dc := level.door_rects[door].get_center()
+	var inside := dc + (r.get_center() - dc).normalized() * 24.0
+	var behind := float(_t["cover"]["behind_px"])
+	var cands: Array[Vector2] = [a.pos]
+	var lows: Array[Rect2] = []
+	for pr in level.props:
+		var kind: String = pr["cover"]
+		var pr_r: Rect2 = pr["rect"]
+		if (kind != "hard" and kind != "soft") or not r.intersects(pr_r):
+			continue
+		lows.append(pr_r)
+		var g := pr_r.grow(behind)
+		var c := g.get_center()
+		cands.append_array([Vector2(c.x, g.position.y), Vector2(c.x, g.end.y), Vector2(g.position.x, c.y), Vector2(g.end.x, c.y),
+				g.position, g.end, Vector2(g.end.x, g.position.y), Vector2(g.position.x, g.end.y)])
+	var inner := r.grow(-30.0)
+	cands.append_array([inner.position, inner.end, Vector2(inner.end.x, inner.position.y), Vector2(inner.position.x, inner.end.y)])
+	var best := Vector2.INF
+	var best_score := INF
+	for spot in cands:
+		var d := spot.distance_to(inside)
+		if level.room_at(spot) != room or d < 90.0 or d > 420.0 or (spot != a.pos and _spot_taken(a, spot)):
+			continue
+		var covered := false
+		for low in lows:
+			if Geom2D.segment_hits_rect(inside, spot, low.grow(-minf(6.0, minf(low.size.x, low.size.y) * 0.3))):
+				covered = true
+				break
+		var score := a.pos.distance_to(spot) * 0.5 + (0.0 if covered else 90.0) + absf(d - 200.0) * 0.3
+		if score >= best_score or not level.has_los(spot, inside):
+			continue
+		if spot != a.pos:
+			var path := level.find_path(a.pos, spot)
+			if path.is_empty() or path[path.size() - 1].distance_to(spot) > 24.0:
+				continue
+		best_score = score
+		best = spot
+	return [best, inside]
+
+
+## The first door a walk from `from` along `path` goes through, or -1.
+func _first_door_on(from: Vector2, path: PackedVector2Array) -> int:
+	var prev := from
+	for p in path:
+		var hit := -1
+		var hit_d := INF
+		for d in level.door_rects.size():
+			var dr := level.door_rects[d].grow(4.0)
+			if Geom2D.segment_hits_rect(prev, p, dr) and prev.distance_to(dr.get_center()) < hit_d:
+				hit = d
+				hit_d = prev.distance_to(dr.get_center())
+		if hit >= 0:
+			return hit
+		prev = p
+	return -1
+
+
 ## Someone else already crouches there, or is on the way.
 func _spot_taken(a: Agent, spot: Vector2) -> bool:
 	for o in agents:
 		if o == a or o.dormant or not o.brain.alive():
 			continue
-		if o.pos.distance_to(spot) < 26.0 or (o.brain.cover_target != Vector2.INF and o.brain.cover_target.distance_to(spot) < 26.0):
+		if o.pos.distance_to(spot) < 26.0 or (o.brain.cover_target != Vector2.INF and o.brain.cover_target.distance_to(spot) < 26.0) \
+				or (o.brain.ambush_spot != Vector2.INF and o.brain.ambush_spot.distance_to(spot) < 26.0):
 			return true
 	return false
 

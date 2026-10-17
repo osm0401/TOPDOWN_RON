@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Two-process online smoke test on one machine (localhost), Linux / CI version of net_smoke.ps1.
 # Usage: tests/net_smoke.sh [godot binary] [scenario ...]
-#   no scenario: the full play script plus the briefing, loadout, doors, shots, cover, result and
+#   no scenario: the full play script plus the briefing, loadout, doors, shots, cover, ambush, result and
 #   vote (retry) scenarios. Each run starts a scripted host and client and checks both print identical FINAL
 #   states (positions, doors, players, weapons, NPCs, mission, score, loadouts).
 # SHOTS=dir: run both with a display (xvfb-run) and save each side's screenshot there.
@@ -9,7 +9,7 @@ set -u
 GODOT="${1:-godot}"
 shift || true
 SCENARIOS=("$@")
-[ ${#SCENARIOS[@]} -eq 0 ] && SCENARIOS=("" briefing loadout doors shots cover result vote)
+[ ${#SCENARIOS[@]} -eq 0 ] && SCENARIOS=("" briefing loadout doors shots cover ambush result vote)
 PROJECT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${TMPDIR:-/tmp}/topdownron_net"
 mkdir -p "$OUT"

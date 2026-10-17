@@ -19,6 +19,7 @@ func _initialize() -> void:
 	await _test_level()
 	await _test_props()
 	await _test_cover()
+	await _test_tactics()
 	await _test_level_doors()
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
@@ -499,6 +500,129 @@ func _test_cover() -> void:
 	_free_world(w)
 
 
+## Enemy tactics: alert enemies react faster, aim settles and suffers from moving targets and
+## suppression, a lost officer's spot is held, sounds from another room set up an ambush at a spot
+## covering the way in, hurt enemies fall back once.
+func _test_tactics() -> void:
+	var E := NpcBrain.Role.ENEMY
+	var S := NpcBrain.State
+	var p := _brain_params()
+	# alertness: a gunshot heard earlier makes the reaction to a sighting quicker
+	var calm := _new_brain(E)
+	var keyed := _new_brain(E)
+	keyed.hear("gunshot", Vector2(400, 0), 0.3, false)
+	keyed.tick(0.05)
+	keyed.state = S.IDLE  # (heard it, calmed back to idle, still keyed up)
+	var times := []
+	for b: NpcBrain in [calm, keyed]:
+		var t := 0.0
+		while b.state != S.THREAT and t < 3.0:
+			b.see_player(Vector2(200, 0))
+			b.tick(0.05)
+			t += 0.05
+		times.append(t)
+	_check(keyed.alertness > 0.9 and times[1] < times[0] - 0.15, "a keyed-up enemy (heard a shot) raises its gun sooner (%.2f s vs %.2f s)" % [times[1], times[0]])
+	var fading := _new_brain(E)
+	fading.hear("gunshot", Vector2(400, 0), 0.3)
+	fading.tick(0.05)
+	fading.state = S.IDLE
+	_run_brain(fading, float(p["alert_decay_s"]) * 0.5)
+	_check(fading.alertness > 0.3 and fading.alertness < 0.7, "alertness fades over alert_decay_s (%.2f after half)" % fading.alertness)
+	# aim: poor at the first snap, steady after aim_settle_s, worse under fire
+	var aim := _new_brain(E)
+	var first := aim.aim_quality()
+	_run_brain(aim, float(p["aim_settle_s"]) + 0.1, Vector2(200, 0))
+	var steady := aim.aim_quality()
+	aim.on_threat_shot()
+	_check(is_equal_approx(first, float(p["aim_first_mult"])) and is_equal_approx(steady, float(p["aim_steady_mult"]))
+			and is_equal_approx(aim.aim_quality(), steady * float(p["aim_suppressed_mult"])),
+			"aim: %.2f at the first shot, %.2f once settled, less while being shot at" % [first, steady])
+	# ambush: a sound from another room, a sound in its own room
+	var amb := 0
+	var walk := 0
+	for seed_value in 40:
+		var b := _new_brain(E, "normal", false, seed_value)
+		b.hear("door", Vector2(400, 0), 0.5, true)
+		b.tick(0.05)
+		if b.needs_ambush:
+			amb += 1
+		var same := _new_brain(E, "normal", false, seed_value)
+		same.hear("door", Vector2(400, 0), 0.5, false)
+		same.tick(0.05)
+		if not same.needs_ambush and same.state == S.INVESTIGATE:
+			walk += 1
+	_check(amb > 8 and amb < 32 and walk == 40, "a sound from another room: some wait in ambush (%d/40), from its own room all go and look" % amb)
+	var ab := _new_brain(E)
+	p = _brain_params()
+	p["ambush_chance"] = 1.0
+	ab = NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	ab.hear("door", Vector2(400, 0), 0.5, true)
+	ab.tick(0.05)
+	ab.set_ambush(Vector2(50, 50), Vector2(300, 50))
+	var out := ab.tick(0.05)
+	_check(ab.state == S.INVESTIGATE and out["move_to"] == Vector2(50, 50) and out["run"] and ab.aiming, "ambush: runs to its spot, gun up")
+	ab.pos = Vector2(50, 50)
+	ab.arrived()
+	out = ab.tick(0.05)
+	_check(out["move_to"] == null and absf(angle_difference(ab.facing, 0.0)) < 0.01 and ab.aiming, "ambush: waits there covering the way in")
+	_run_brain(ab, float((p["ambush_s"] as Array)[1]) + 0.2)
+	out = ab.tick(0.05)
+	_check(ab.state == S.INVESTIGATE and not ab.aiming and out["move_to"] == Vector2(400, 0), "nobody came: leaves the ambush and goes to look")
+	var sb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	sb.hear("door", Vector2(400, 0), 0.5, true)
+	sb.tick(0.05)
+	sb.set_ambush(Vector2.INF, Vector2(300, 0))
+	sb.see_player(Vector2(300, 0))
+	sb.tick(0.05)
+	_check(sb.state == S.SPOTTED, "an officer coming through the door is spotted from the ambush")
+	# retreat: hurt but armed, it falls back once
+	p = _brain_params()
+	p["hurt_surrender_chance"] = 0.0
+	p["retreat_chance"] = 1.0
+	var rb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	rb.see_player(Vector2(200, 0))
+	_run_brain(rb, 1.4, Vector2(200, 0))
+	rb.on_hit(2, false, Vector2(200, 0))
+	_check(rb.state == S.FLEE and rb.armed and rb.needs_flee_target, "hurt and still armed: falls back")
+	rb.state = S.ATTACK
+	rb.on_hit(0, false, Vector2(200, 0))
+	rb.hp = 2
+	rb.on_hit(1, false, Vector2(200, 0))
+	_check(rb.state == S.ATTACK, "it falls back only once, then fights on")
+	# the director: an ambush spot in room B that sees the door to the corridor, behind cover if any
+	var w := await _make_world()
+	var d: NpcDirector = w["dir"]
+	var lv: Level = w["level"]
+	d._params["ambush_chance"] = 1.0
+	var e: NpcDirector.Agent = d.agents[0]  # in room B
+	d.on_sound(SoundProp.Kind.KICK, Vector2(820, 500), -1)
+	d.tick(0.1)
+	d.tick(0.1)  # the brain asks for a spot, the director answers on the next tick
+	var spot := e.brain.ambush_spot
+	var look := e.brain.ambush_look
+	_check(e.brain.state == S.INVESTIGATE and look != Vector2.INF and lv.room_at(look) == lv.room_at(e.pos)
+			and (spot == Vector2.INF or (lv.room_at(spot) == lv.room_at(e.pos) and lv.has_los(spot, look))),
+			"the ambush covers the doorway from inside its room (spot %s, door %s)" % [spot, look])
+	for i in 40:
+		d.tick(0.1)
+		await physics_frame
+	_check(lv.get_door_state(1) != Level.DoorState.OPEN and e.brain.aiming, "in ambush it does not open the door: it waits for it to open")
+	_free_world(w)
+	# a moving officer is harder to hit
+	w = await _make_world()
+	d = w["dir"]
+	var pls: Array[PlayerState] = w["players"]
+	for i in 10:
+		pls[0].pos += Vector2(22.0, 0.0)  # 220 px/s at 0.1 s
+		d.tick(0.1)
+	var moving := d.moving_target_mult(0)
+	for i in 30:
+		d.tick(0.1)
+	_check(moving < 0.75 and is_equal_approx(d.moving_target_mult(0), 1.0) or d.moving_target_mult(0) > 0.98,
+			"a running officer is harder to hit (x%.2f), a still one is not (x%.2f)" % [moving, d.moving_target_mult(0)])
+	_free_world(w)
+
+
 const S_HIDE := NpcBrain.State.HIDE
 
 
@@ -595,12 +719,16 @@ func _test_brain() -> void:
 			shot_seen = true
 	_check(shot_seen, "attacking enemy fires")
 	_run_brain(b, 2.5)
-	_check(b.state == S.INVESTIGATE or b.state == S.IDLE, "lost the target: searches then calms")
+	_check(b.state == S.ATTACK and b.aiming and absf(angle_difference(b.facing, 0.0)) < 0.01,
+			"lost the target: first keeps aiming at where the officer was (holding the angle)")
+	var hold_max: float = (_brain_params()["hold_s"] as Array)[1]
+	_run_brain(b, hold_max)
+	_check(b.state == S.INVESTIGATE or b.state == S.IDLE, "nobody came back: then searches and calms")
 
 	b = _new_brain(E)
 	b.see_player(Vector2(200, 0))
 	b.tick(0.05)
-	_run_brain(b, 3.6)
+	_run_brain(b, 3.6 + hold_max)
 	_check(b.state == S.INVESTIGATE or b.state == S.IDLE, "spotted but lost sight: aims at the last position, then investigates")
 
 	var p := _brain_params()
@@ -794,6 +922,7 @@ func _test_director() -> void:
 	var w := await _make_world()
 	var d: NpcDirector = w["dir"]
 	var lv: Level = w["level"]
+	d._params["ambush_chance"] = 0.0  # (the brains share these): this one walks to the sound
 	d.on_sound(SoundProp.Kind.KICK, Vector2(820, 500), -1)
 	d.tick(0.1)
 	_check(d.agents[0].brain.state == S.INVESTIGATE, "enemy hears a kick through a closed door")

@@ -36,6 +36,9 @@ var facing := 0.0
 var target_pos := Vector2.ZERO
 var flee_target := Vector2.ZERO
 var needs_flee_target := false
+var cover_target := Vector2.INF  ## where to crouch behind furniture (the director picks it when needs_cover)
+var needs_cover := false
+var in_cover := false             ## reached that spot: crouched behind it (shown, and harder to hit)
 var reason := ""
 var time_in_state := 0.0
 
@@ -181,6 +184,8 @@ func on_threat_shot() -> void:
 	if state == State.SPOTTED or state == State.THREAT or state == State.ATTACK:
 		if _rng.randf() < float(_p["threat_shot_surrender_chance"]) * float(_p["compliance_mult"]):
 			_surrender("위협 사격에 항복")
+		elif state == State.ATTACK and not in_cover and armed:
+			needs_cover = true  # shot at in the open: get behind something
 
 
 func restrainable() -> bool:
@@ -290,7 +295,8 @@ func _tick_enemy(delta: float, out: Dictionary) -> void:
 			_track_player(delta)
 			if _sees and _fire_cd <= 0.0:
 				out["shoot"] = _seen_pos
-				_fire_cd = float(_p["fire_interval_s"])
+				_fire_cd = float(_p["fire_interval_s"]) * (float(_p.get("cover_fire_mult", 1.0)) if in_cover else 1.0)  # in cover: rises to fire now and then
+			_take_cover(out)
 			if _lost >= float(_p["lose_target_s"]):
 				_go(State.INVESTIGATE, "목표를 놓침")
 		State.SURRENDER:
@@ -304,6 +310,7 @@ func _tick_enemy(delta: float, out: Dictionary) -> void:
 			_flee(delta, out)
 		State.HIDE:
 			_timer -= delta
+			_take_cover(out)
 			if armed and _sees:
 				_alert_target = _seen_pos
 				_go(State.SPOTTED, "엄폐 중 플레이어를 발견")
@@ -330,6 +337,7 @@ func _tick_civilian(delta: float, out: Dictionary) -> void:
 			if loud:
 				_timer = float(_p["hide_s"])
 			_timer -= delta
+			_take_cover(out)
 			if _timer <= 0.0:
 				_go(State.IDLE, "진정됨")
 		State.FLEE:
@@ -343,6 +351,29 @@ func _flee(delta: float, out: Dictionary) -> void:
 		out["run"] = true
 	if _arrived or _timer <= 0.0:
 		_go(State.HIDE, "도주 끝, 숨음")
+
+
+## The director's answer to needs_cover: where to crouch (Vector2.INF: nowhere, stay put).
+func set_cover(spot: Vector2) -> void:
+	cover_target = spot
+	needs_cover = false
+	in_cover = false
+	_arrived = false
+
+
+## Runs to the cover spot the director picked, then stays crouched there.
+func _take_cover(out: Dictionary) -> void:
+	if in_cover:
+		if not _sees and target_pos.distance_to(pos) > 1.0:
+			facing = (target_pos - pos).angle()  # crouched, watching where the threat was
+		return
+	if cover_target == Vector2.INF or needs_cover:
+		return
+	if _arrived:
+		in_cover = true
+		return
+	out["move_to"] = cover_target
+	out["run"] = true
 
 
 func _track_player(delta: float) -> void:
@@ -382,6 +413,9 @@ func _go(s: int, why: String) -> void:
 	time_in_state = 0.0
 	_arrived = false
 	_laser_t = 0.0
+	in_cover = false
+	cover_target = Vector2.INF
+	needs_cover = (s == State.ATTACK and armed) or s == State.HIDE
 	match s:
 		State.SPOTTED:
 			_timer = float(_p["react_time"])

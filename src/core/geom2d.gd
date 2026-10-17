@@ -29,6 +29,28 @@ static func segment_hits_rect(a: Vector2, b: Vector2, r: Rect2) -> bool:
 	return true
 
 
+## Liang-Barsky span of segment a-b inside rectangle r: Vector2(t_in, t_out) along the segment
+## (0..1); t_in > t_out when the segment misses it.
+static func segment_rect_span(a: Vector2, b: Vector2, r: Rect2) -> Vector2:
+	var t0 := 0.0
+	var t1 := 1.0
+	var d := b - a
+	var e := r.end
+	for i in 4:
+		var p := -d.x if i == 0 else (d.x if i == 1 else (-d.y if i == 2 else d.y))
+		var q := a.x - r.position.x if i == 0 else (e.x - a.x if i == 1 else (a.y - r.position.y if i == 2 else e.y - a.y))
+		if is_zero_approx(p):
+			if q < 0.0:
+				return Vector2(1.0, 0.0)
+		else:
+			var t := q / p
+			if p < 0.0:
+				t0 = maxf(t0, t)
+			else:
+				t1 = minf(t1, t)
+	return Vector2(t0, t1)
+
+
 ## Is p inside the cone (origin, aim angle, full fov in degrees, range)?
 static func cone_contains(origin: Vector2, aim: float, fov_deg: float, max_range: float, p: Vector2) -> bool:
 	var d := p - origin

@@ -9,6 +9,9 @@ extends Node3D
 ## this node reads that cache (view._vis, _cones, ...) and only draws. HUD, briefing and
 ## result screen stay 2D canvas layers.
 
+## A foot lands (walk cycle): at (px), speed (m/s), who (officer slot, or 2 + NPC index).
+signal footstep(at: Vector2, speed: float, who: int)
+
 const FOG := Color(0.02, 0.02, 0.03)
 const FAR := 5000.0
 const BEAM_Y := 1.2
@@ -85,8 +88,10 @@ func _ready() -> void:
 	_build_level()
 	for s in 2:
 		_players.append(_make_player(s))
+		_players[s]["who"] = s
 	for a in world.director.agents:
 		_npcs.append(_make_npc(a))
+		_npcs[_npcs.size() - 1]["who"] = 1 + _npcs.size()
 	world.mouse_world = _mouse_ground
 	if quality == "":
 		quality = str(_cfg["graphics"]["quality"])
@@ -902,6 +907,7 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
 	var muzzle := Vector3.INF
 	if not n.is_empty():
 		n["recoil"] = 1.0
+		n["pop"] = 0.55  # someone in cover stands up to shoot for a moment
 		muzzle = _gun_point(n["model"], "muzzle")
 		var aim := _gun_dir(n["model"])
 		if muzzle != Vector3.INF and aim != Vector3.ZERO:  # a short star of flame out of the barrel
@@ -1165,7 +1171,10 @@ func _update_npcs(delta: float) -> void:
 			n.erase("pos")  # next appearance snaps to the sim position (and lies or stands at once)
 			n.erase("walk_at")
 			n.erase("lie")
+			if not a.dormant and a.brain.alive() and not a.brain.state in [S.DOWN, S.HIDE, S.RESTRAINED]:
+				_unseen_steps(n, a.pos, delta)
 			continue
+		n.erase("unseen_at")
 		var sil := seen == LightModel.Seen.SILHOUETTE
 		var fresh := not n.has("pos")
 		root.position = _p3(_ease_pos(n, a.pos, delta))
@@ -1221,8 +1230,7 @@ func _update_npcs(delta: float) -> void:
 			elif not model_up.is_empty():
 				(model_up["node"] as Node3D).visible = false
 		var shapes := model.is_empty()  # the primitive figure: squashed, with boxes for gun, cap, band, cuffs
-		if not shapes:
-			_pose_npc(a, n, model_up if hands_up else model, delta)
+		_pose_npc(a, n, model_up if hands_up else model, delta)  # (the primitive figure: only its stride)
 		rig.scale = Vector3(1.0, 0.6 if st == S.HIDE and shapes else (0.65 if st == S.RESTRAINED and shapes else 1.0), 1.0)
 		(n["cap"] as Node3D).visible = a.clues.has("cap") and shapes
 		(n["band"] as Node3D).visible = a.clues.has("band") and shapes
@@ -1283,9 +1291,37 @@ func _stride(n: Dictionary, still: bool, delta: float) -> Dictionary:
 		var target := clampf(inverse_lerp(float(g["start_mps"]), float(g["full_mps"]), speed), 0.0, 1.0)
 		amount = lerpf(float(n.get("walk_amount", 0.0)), target, minf(delta * float(g["blend_rate"]), 1.0))
 	n["walk_amount"] = amount
-	var phase := fmod(float(n.get("walk_phase", 0.0)) + TAU * speed * delta / (float(g["stride_m"]) + float(g["stride_per_mps"]) * speed), TAU)
+	var before := float(n.get("walk_phase", 0.0))
+	var phase := fmod(before + TAU * speed * delta / (float(g["stride_m"]) + float(g["stride_per_mps"]) * speed), TAU)
 	n["walk_phase"] = phase
+	if amount > 0.35 and speed > float(g["start_mps"]) and foot_lands(before, phase):
+		footstep.emit(Vector2(at.x, at.z) / _k, speed, int(n.get("who", -1)))
 	return {"phase": phase, "amount": amount, "speed": speed, "t": _t, "dt": delta, "seed": float(n["root"].get_instance_id() % 97)}
+
+
+## Did a foot land between stride phases a and b (radians, wrapping at TAU)? A leg reaches
+## furthest forward, heel down, at PI / 2 and 3 PI / 2 (CharacterAnim swings the thigh with sin).
+static func foot_lands(a: float, b: float) -> bool:
+	for t: float in [PI * 0.5, PI * 1.5]:
+		if (a < t and t <= b) or (b < a and (t > a or t <= b)):
+			return true
+	return false
+
+
+## Steps of an NPC the officer cannot see (not drawn, so no walk cycle): the same stride from its
+## simulated position, so footsteps behind walls are heard all the same.
+func _unseen_steps(n: Dictionary, at: Vector2, delta: float) -> void:
+	var g: Dictionary = _cfg["characters"]["walk"]
+	var prev: Vector2 = n.get("unseen_at", at)
+	n["unseen_at"] = at
+	var speed := prev.distance_to(at) * _k / delta if delta > 0.0 and prev.distance_to(at) * _k < 1.0 else 0.0
+	if speed <= float(g["start_mps"]):
+		return
+	var before := float(n.get("walk_phase", 0.0))
+	var phase := fmod(before + TAU * speed * delta / (float(g["stride_m"]) + float(g["stride_per_mps"]) * speed), TAU)
+	n["walk_phase"] = phase
+	if foot_lands(before, phase):
+		footstep.emit(at, speed, int(n.get("who", -1)))
 
 
 ## How far a figure has fallen (0 standing .. 1 lying), moving toward `lying` over pose fall_s: it
@@ -1345,12 +1381,12 @@ func _fade(n: Dictionary, key: String, secs_key: String, delta: float) -> float:
 ## taking a knee to pick a lock, restrain or use the door camera, limp when dead.
 func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	var model: Dictionary = n["model"]
+	var dead := ps.dead()
+	var s := _stride(n, dead or ps.busy(), delta)  # (also for the plain figure: its footsteps)
 	if model.get("skeleton") == null:
 		return
 	var S := CharacterAnim.Stance
 	var H := CharacterAnim.Hold
-	var dead := ps.dead()
-	var s := _stride(n, dead or ps.busy(), delta)
 	s["vel"] = n["walk_v"]
 	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
 	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
@@ -1384,14 +1420,14 @@ func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 ## with the head covered, kneeling cuffed, face down with hands behind the head, limp when dead;
 ## the head turns to the nearest officer while it reacts to one. Clues (cap, armband) are worn.
 func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: float) -> void:
-	if model.get("skeleton") == null:
-		return
 	var S := NpcBrain.State
-	var CS := CharacterAnim.Stance
-	var H := CharacterAnim.Hold
 	var b := a.brain
 	var st: int = b.state
-	var s := _stride(n, st in [S.DOWN, S.DEAD, S.HIDE, S.RESTRAINED], delta)
+	var s := _stride(n, st in [S.DOWN, S.DEAD, S.HIDE, S.RESTRAINED], delta)  # (also for the plain figure: its footsteps)
+	if model.get("skeleton") == null:
+		return
+	var CS := CharacterAnim.Stance
+	var H := CharacterAnim.Hold
 	s["vel"] = n["walk_v"]
 	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
 	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
@@ -1423,6 +1459,9 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 			if b.armed:
 				slots["hand"] = "pistol"
 				s["hold"] = H.PISTOL_ONE if st in [S.THREAT, S.ATTACK] and to_officer != Vector3.ZERO else H.PISTOL_LOW
+				n["pop"] = maxf(float(n.get("pop", 0.0)) - delta, 0.0)
+				if b.in_cover and float(n["pop"]) <= 0.0:  # crouched behind furniture; rises to fire
+					s["stance"] = CS.CROUCH
 			elif st in [S.SPOTTED, S.THREAT, S.ATTACK]:
 				s["hold"] = H.STARTLED
 	if to_officer == Vector3.ZERO and st in [S.IDLE, S.INVESTIGATE]:  # glancing around; searching harder
@@ -1561,24 +1600,44 @@ func _shot_marks(n: Dictionary, muzzle: Vector3, to: Vector2, hit_npc: bool) -> 
 		var hit := _surface_hit(to)
 		if not hit.is_empty():
 			var nrm: Vector3 = hit["normal"]
-			var at := Vector3(to.x * _k, minf(muzzle.y if muzzle != Vector3.INF else BEAM_Y, _wall_h - 0.1), to.y * _k)
+			var at := Vector3(to.x * _k, minf(muzzle.y if muzzle != Vector3.INF else BEAM_Y, float(hit["top"]) - 0.08), to.y * _k)
 			_hole(at, nrm)
-			_burst(at + nrm * 0.03, nrm, _col(fx["dust"]), 7, 1.6, 0.6, 0.09, "dust")
-			_burst(at + nrm * 0.02, nrm, Color(1.0, 0.8, 0.4), 5, 4.5, 0.12, 0.02, "spark")
+			var debris := _col(fx["dust"])
+			match str(hit["what"]):
+				"soft":  # stuffing out of a sofa or a mattress
+					debris = Color(0.85, 0.8, 0.7)
+				"hard", "full":  # wood splinters
+					debris = Color(0.5, 0.34, 0.2)
+			_burst(at + nrm * 0.03, nrm, debris, 7, 1.6, 0.6, 0.09, "dust")
+			if str(hit["what"]) != "soft":
+				_burst(at + nrm * 0.02, nrm, Color(1.0, 0.8, 0.4), 5, 4.5, 0.12, 0.02, "spark")
 	if muzzle != Vector3.INF:
 		_burst(muzzle, Vector3.UP, Color(0.6, 0.6, 0.62, 0.5), 2, 0.25, 0.9, 0.12, "smoke")
 	if not n.is_empty():
 		_eject(n)
 
 
-## {normal (3D, out of the face hit)} when p lies on a wall or a shut door, else {}.
+## {normal (3D, out of the face hit), top (m: how high the thing hit stands), what ("wall",
+## "door", or the furniture's cover "full" / "hard" / "soft")} when p lies on a wall, a shut door
+## or a piece of furniture that gives cover, else {}.
 func _surface_hit(p: Vector2) -> Dictionary:
 	var lv := world.level
-	var rects: Array[Rect2] = lv.wall_rects.duplicate()
+	var rects: Array[Rect2] = []
+	var info: Array = []
+	for i in lv.props.size():  # furniture first: a bullet stopped by cover ends on it, next to a wall
+		var c: String = lv.props[i]["cover"]
+		if c != "":
+			rects.append(lv.props[i]["rect"])
+			info.append([c, float((_props[i]["node"] as Node3D).get_meta("h", 1.0)) if i < _props.size() else 1.0])
+	for r in lv.wall_rects:
+		rects.append(r)
+		info.append(["wall", _wall_h])
 	for i in lv.door_rects.size():
 		if lv.get_door_state(i) != Level.DoorState.OPEN:
 			rects.append(lv.door_collider_rect(i))
-	for r in rects:
+			info.append(["door", _wall_h * 0.9])
+	for ri in rects.size():
+		var r := rects[ri]
 		if not r.grow(3.0).has_point(p):
 			continue
 		var d := [p.x - r.position.x, r.end.x - p.x, p.y - r.position.y, r.end.y - p.y]
@@ -1587,7 +1646,7 @@ func _surface_hit(p: Vector2) -> Dictionary:
 		for k in 4:
 			if absf(d[k]) < absf(d[best]):
 				best = k
-		return {"normal": normals[best]}
+		return {"normal": normals[best], "what": info[ri][0], "top": info[ri][1]}
 	return {}
 
 

@@ -93,6 +93,9 @@
       "pistol": {"class": ["pistol"], "layer": "shot", "keep": 6},
       "pistol_far": {"class": ["pistol"], "layer": "far", "keep": 4, "pair": "pistol"},
       "reload": {"class": ["rifle", "smg", "pistol"], "layer": "reload", "keep": 3, "min_s": 0.8, "max_s": 3.5},
+      "mag_out": {"class": ["rifle"], "fallback_class": ["smg", "pistol"], "layer": "mag_out", "keep": 3, "max_s": 1.5},
+      "mag_in": {"class": ["rifle"], "fallback_class": ["smg", "pistol"], "layer": "mag_in", "keep": 3, "max_s": 1.5},
+      "bolt": {"class": ["rifle"], "fallback_class": ["smg", "pistol"], "layer": "bolt", "keep": 3, "max_s": 1.5},
       "taser": {"class": [], "layer": "taser", "keep": 2},
       "hit": {"class": [], "layer": "flesh_impact", "keep": 4}
     },

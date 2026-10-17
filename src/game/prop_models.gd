@@ -15,7 +15,7 @@ const DIR := "res://assets/props/"
 ## Kinds make() knows (anything else is drawn as a plain crate).
 const KINDS: Array[String] = ["sofa", "armchair", "coffee_table", "dining_table", "desk", "office_chair", "chair", "tv_stand",
 	"bookshelf", "wardrobe", "dresser", "bed", "nightstand", "plant", "floor_lamp", "picture", "whiteboard", "filing_cabinet",
-	"water_cooler", "printer_table", "fridge", "counter", "sink", "stove", "pantry", "trash_bin", "shelving", "crate", "pallet",
+	"water_cooler", "printer_table", "fridge", "counter", "island", "sink", "stove", "pantry", "trash_bin", "shelving", "crate", "pallet",
 	"workbench", "barrel", "cone", "rug", "police_car", "padlock", "street_lamp"]
 ## Pieces the view lowers with the walls when they stand between the camera and the officer:
 ## tall enough to hide a person, or hung on a wall.
@@ -404,7 +404,7 @@ static func _build(kind: String, w: float, d: float, key: String, lit: bool) -> 
 			h = 1.37
 		"fridge":
 			h = _fridge(b, w, d)
-		"counter", "sink", "stove":
+		"counter", "island", "sink", "stove":
 			h = _counter(b, w, d, kind)
 		"trash_bin":
 			b.cone(minf(w, d) * 0.42, minf(w, d) * 0.48, 0.6, "dark_grey", Vector3(0, 0.3, 0))
@@ -713,6 +713,13 @@ static func _counter(b: Builder, w: float, d: float, kind: String) -> float:
 		b.box(Vector3(dw - 0.012, h - 0.38, 0.012), "white", Vector3(x, 0.1 + (h - 0.38) * 0.5 + 0.02, d * 0.5 - 0.024))
 		b.box(Vector3(0.12, 0.012, 0.015), "chrome", Vector3(x, h - 0.15, d * 0.5 - 0.01))
 		b.box(Vector3(0.012, 0.12, 0.015), "chrome", Vector3(x + dw * 0.35, 0.55, d * 0.5 - 0.01))
+	if kind == "island":  # free-standing: the top overhangs the back for stools, a fruit bowl instead of a kettle
+		b.box(Vector3(w + 0.04, 0.04, d + 0.12), "stone", Vector3(0, h - 0.02, -0.06))
+		b.box(Vector3(0.3, 0.02, 0.22), "wood_light", Vector3(-w * 0.2, h + 0.01, 0.03), Vector3(0, 10, 0))  # cutting board
+		b.cone(0.07, 0.13, 0.07, "white", Vector3(w * 0.25, h + 0.035, -0.05))  # bowl
+		for i in 3:
+			b.ball(0.035, ["orange", "red", "orange"][i], Vector3(w * 0.25 + (i - 1) * 0.05, h + 0.08, -0.05 + (i % 2) * 0.03))
+		return h
 	b.box(Vector3(w, 0.04, d), "stone", Vector3(0, h - 0.02, 0))
 	b.box(Vector3(w, 0.5, 0.012), "white", Vector3(0, h + 0.25, -d * 0.5 + 0.006))  # splash-back tiles
 	if kind == "sink":

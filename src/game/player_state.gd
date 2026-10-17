@@ -19,6 +19,7 @@ var active := 0                       ## 0 primary, 1 secondary (pistol)
 var weapons: Array[WeaponState] = []
 var weapon_kinds: Array[String] = []  ## e.g. "rifle_lethal", "pistol"
 var tools: Array[String] = []
+var ammo := "fmj"                     ## lethal rifle rounds: "fmj" (goes through cover better) or "jhp" (hits harder)
 var taser_charges := 0
 var action := ACTION_NONE
 var action_t := 0.0

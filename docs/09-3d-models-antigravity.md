@@ -97,7 +97,7 @@
 - 종류 이름(파일 이름):
   - 거실·침실: `sofa`, `armchair`, `coffee_table`, `tv_stand`, `bookshelf`, `plant`, `floor_lamp`, `picture`, `rug`, `bed`, `nightstand`, `wardrobe`, `dresser`
   - 사무실: `desk`, `office_chair`, `filing_cabinet`, `water_cooler`, `whiteboard`, `printer_table`
-  - 부엌: `fridge`, `counter`, `sink`, `stove`, `dining_table`, `chair`, `pantry`, `trash_bin`
+  - 부엌: `fridge`, `counter`, `island`(가운데 아일랜드 식탁), `sink`, `stove`, `dining_table`, `chair`, `pantry`, `trash_bin`
   - 창고: `shelving`, `crate`, `pallet`, `workbench`, `barrel`
   - 바깥: `cone`, `street_lamp`, `police_car`
 - 원점: 바닥에 닿는 면(발자국)의 가운데. 앞면은 +Z(Blender −Y), 위는 +Y, 단위는 미터.

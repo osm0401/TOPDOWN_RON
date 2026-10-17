@@ -179,6 +179,146 @@ static func footstep(seed_: int) -> AudioStreamWAV:
 	return _stream(out, 1.0, 0.7)
 
 
+## Floors a footstep can sound like (GameAudio keys footstep_<surface>).
+const STEP_SURFACES: Array[String] = ["wood", "tile", "carpet", "concrete", "grass", "asphalt"]
+
+
+## Scales b so its loudest sample is `peak`, in place (layers mixed at known levels).
+static func _norm(b: PackedFloat32Array, peak: float) -> PackedFloat32Array:
+	var mx := 0.0001
+	for v in b:
+		mx = maxf(mx, absf(v))
+	var g := peak / mx
+	for i in b.size():
+		b[i] *= g
+	return b
+
+
+## Noise shaped by a rise and a fall (s): a scrape, a rustle.
+static func _swell(seconds: float, seed_: int, rise: float, fall: float) -> PackedFloat32Array:
+	var b := _white(seconds, seed_)
+	for i in b.size():
+		var t := float(i) / RATE
+		b[i] *= minf(t / rise, 1.0) * exp(-maxf(t - rise, 0.0) / fall)
+	return b
+
+
+## One boot step on `surface` (STEP_SURFACES): the heel strikes, then the sole rolls down and the
+## toe touches a few hundredths later; the floor gives it its colour. Variants by seed.
+static func step(seed_: int, surface: String) -> AudioStreamWAV:
+	var len_s := 0.3
+	var out := _buf(len_s)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_ * 7919 + surface.hash()
+	var toe := rng.randf_range(0.045, 0.075)  # heel to toe
+	var peak := 0.7
+	match surface:
+		"wood":  # hollow knock of boards on joists, a dry heel click, now and then a faint creak
+			for hit: Array in [[0.0, 1.0], [toe, 0.55]]:
+				var body := _resonate(_lowpass(_white(0.2, seed_ + int(hit[0] * 1000.0)), 1200.0), rng.randf_range(170.0, 240.0), 45.0)
+				_decay(body, 0.045)
+				var board := _resonate(_white(0.2, seed_ + 31), rng.randf_range(480.0, 620.0), 90.0)
+				_decay(board, 0.02)
+				var click := _highpass(_white(0.05, seed_ + 61), 2200.0)
+				_decay(click, 0.003)
+				_mix(out, _norm(body, 1.0), hit[0], hit[1])
+				_mix(out, _norm(board, 0.5), hit[0], hit[1])
+				_mix(out, _norm(click, 0.35), hit[0], hit[1])
+			if rng.randf() < 0.35:
+				var creak := _buf(0.12)
+				var ph := 0.0
+				for i in creak.size():
+					var t := float(i) / RATE
+					ph = fposmod(ph + (300.0 + 60.0 * sin(TAU * 9.0 * t)) / RATE, 1.0)
+					creak[i] = (ph * 2.0 - 1.0) * sin(PI * t / 0.12)
+				_mix(out, _norm(_lowpass(creak, 900.0), 0.18), toe + 0.02)
+			peak = 0.75
+		"tile":  # hard sharp heel click with a short glassy ring, the toe a lighter tap
+			for hit: Array in [[0.0, 1.0], [toe, 0.5]]:
+				var click := _highpass(_white(0.08, seed_ + int(hit[0] * 1000.0)), 3000.0)
+				_decay(click, 0.0035)
+				var ring := _resonate(_white(0.1, seed_ + 17), rng.randf_range(2300.0, 3100.0), 220.0)
+				_decay(ring, 0.012)
+				var thud := _lowpass(_white(0.1, seed_ + 23), 500.0)
+				_decay(thud, 0.02)
+				_mix(out, _norm(click, 1.0), hit[0], hit[1])
+				_mix(out, _norm(ring, 0.35), hit[0], hit[1])
+				_mix(out, _norm(thud, 0.7), hit[0], hit[1])
+			peak = 0.8
+		"carpet":  # a soft, muffled thud and the pile brushing the sole: no click
+			var thud := _lowpass(_lowpass(_white(0.2, seed_), 300.0), 300.0)
+			_decay(thud, 0.05)
+			var brush := _lowpass(_lowpass(_highpass(_swell(0.2, seed_ + 5, 0.02, 0.05), 900.0), 2500.0), 2500.0)
+			_mix(out, _norm(thud, 1.0), 0.0)
+			_mix(out, _norm(brush, 0.15), toe * 0.5)
+			_mix(out, _norm(_lowpass(_lowpass(_white(0.15, seed_ + 9), 260.0), 260.0), 0.4), toe)
+			peak = 0.4
+		"concrete", "asphalt":  # firm thump, a click, then grit crunching under the sole
+			for hit: Array in [[0.0, 1.0], [toe, 0.6]]:
+				var thud := _lowpass(_white(0.12, seed_ + int(hit[0] * 1000.0)), 650.0)
+				_decay(thud, 0.025)
+				var click := _highpass(_white(0.05, seed_ + 41), 1800.0)
+				_decay(click, 0.004)
+				_mix(out, _norm(thud, 1.0), hit[0], hit[1])
+				_mix(out, _norm(click, 0.55 if surface == "concrete" else 0.35), hit[0], hit[1])
+			var grit := _highpass(_swell(0.2, seed_ + 77, 0.01, 0.05 if surface == "concrete" else 0.08), 2500.0)
+			for i in grit.size():  # crackle: sparse little grains rather than a smooth hiss
+				grit[i] *= 1.0 if rng.randf() < 0.25 else 0.15
+			_mix(out, _norm(grit, 0.3 if surface == "concrete" else 0.5), 0.01)
+			peak = 0.7 if surface == "concrete" else 0.65
+		"grass":  # blades rustling and a soft thud of the earth under them
+			var rustle := _lowpass(_lowpass(_highpass(_swell(0.28, seed_, 0.03, 0.07), 1200.0), 4500.0), 4500.0)
+			for i in rustle.size():
+				rustle[i] *= 0.6 + 0.4 * sin(TAU * rng.randf_range(20.0, 40.0) * float(i) / RATE)
+			var thud := _lowpass(_lowpass(_white(0.15, seed_ + 3), 220.0), 220.0)
+			_decay(thud, 0.04)
+			_mix(out, _norm(rustle, 0.8), 0.0)
+			_mix(out, _norm(thud, 0.6), 0.005)
+			peak = 0.45
+	return _stream(out, 1.0, peak)
+
+
+## Magazine released and pulled out of the well: a latch click and a metal slide.
+static func mag_out(seed_: int) -> AudioStreamWAV:
+	var out := _buf(0.35)
+	var latch := _resonate(_highpass(_white(0.05, seed_), 2000.0), 3400.0, 400.0)
+	_decay(latch, 0.006)
+	_mix(out, _norm(latch, 1.0), 0.0)
+	var slide := _highpass(_lowpass(_swell(0.18, seed_ + 1, 0.04, 0.05), 5000.0), 900.0)
+	_mix(out, _norm(slide, 0.45), 0.03)
+	return _stream(out, 1.2, 0.6)
+
+
+## A full magazine seated in the well: a slide in, then a firm clack.
+static func mag_in(seed_: int) -> AudioStreamWAV:
+	var out := _buf(0.4)
+	var slide := _highpass(_lowpass(_swell(0.12, seed_, 0.06, 0.02), 4500.0), 900.0)
+	_mix(out, _norm(slide, 0.4), 0.0)
+	var clack := _highpass(_white(0.06, seed_ + 2), 1200.0)
+	_decay(clack, 0.008)
+	var ring := _resonate(_white(0.15, seed_ + 3), 2100.0, 160.0)
+	_decay(ring, 0.03)
+	_mix(out, _norm(clack, 1.0), 0.1)
+	_mix(out, _norm(ring, 0.4), 0.1)
+	_mix(out, _norm(_thump(0.12, 90.0, 150.0, 0.02, 0.035), 0.5), 0.1)
+	return _stream(out, 1.3, 0.75)
+
+
+## Bolt (or slide) pulled back and let go: a rasp and a hard snap forward.
+static func bolt(seed_: int) -> AudioStreamWAV:
+	var out := _buf(0.45)
+	var back := _highpass(_lowpass(_swell(0.1, seed_, 0.05, 0.02), 5000.0), 1200.0)
+	_mix(out, _norm(back, 0.5), 0.0)
+	var snap := _highpass(_white(0.06, seed_ + 4), 1500.0)
+	_decay(snap, 0.006)
+	var ring := _resonate(_white(0.2, seed_ + 5), 2800.0, 120.0)
+	_decay(ring, 0.04)
+	_mix(out, _norm(snap, 1.0), 0.14)
+	_mix(out, _norm(ring, 0.45), 0.14)
+	_mix(out, _norm(_thump(0.1, 110.0, 180.0, 0.015, 0.03), 0.4), 0.14)
+	return _stream(out, 1.4, 0.8)
+
+
 ## Creaking hinge swell with a latch click and a soft settle.
 static func door(seed_: int, seconds: float, peak: float) -> AudioStreamWAV:
 	var out := _buf(seconds)

@@ -65,6 +65,7 @@
     {"kind": "chair", "rect": [350, 708, 22, 20], "face": "n"},
     {"kind": "pantry", "rect": [774, 590, 24, 60], "face": "w"},
     {"kind": "trash_bin", "rect": [740, 804, 22, 22]},
+    {"kind": "island", "rect": [580, 680, 100, 40], "face": "s"},
 
     {"kind": "shelving", "rect": [850, 804, 104, 24], "face": "n"},
     {"kind": "shelving", "rect": [970, 804, 104, 24], "face": "n"},
@@ -73,6 +74,8 @@
     {"kind": "crate", "rect": [1252, 640, 34, 34]},
     {"kind": "pallet", "rect": [1290, 760, 64, 50]},
     {"kind": "workbench", "rect": [1350, 650, 28, 90], "face": "w"},
+    {"kind": "crate", "rect": [1170, 640, 40, 40]},
+    {"kind": "crate", "rect": [1214, 646, 34, 34]},
     {"kind": "barrel", "rect": [898, 596, 24, 24]},
     {"kind": "barrel", "rect": [924, 598, 22, 22]},
 

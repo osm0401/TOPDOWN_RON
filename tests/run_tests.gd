@@ -18,6 +18,7 @@ func _initialize() -> void:
 	_test_audition_model()
 	await _test_level()
 	await _test_props()
+	await _test_cover()
 	await _test_level_doors()
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
@@ -436,6 +437,69 @@ func _test_props() -> void:
 	body.free()
 	root.remove_child(lv)
 	lv.free()
+
+
+## Cover: tall furniture stops sight and shots like a wall; low furniture catches some of the shots
+## at someone close behind it (more when crouched, fewer with rounds that go through); enemies under
+## fire run behind furniture, away from the officer.
+func _test_cover() -> void:
+	var w := await _make_world()
+	var d: NpcDirector = w["dir"]
+	var lv: Level = w["level"]
+	var players: Array[PlayerState] = w["players"]
+	var find := func(kind: String) -> Dictionary: return lv.props.filter(func(p: Dictionary) -> bool: return p["kind"] == kind)[0]
+	var wardrobe: Rect2 = find.call("wardrobe")["rect"]
+	var y := wardrobe.get_center().y
+	_check(str(find.call("wardrobe")["cover"]) == "full" and not lv.has_los(Vector2(wardrobe.end.x + 30, y), Vector2(wardrobe.position.x - 1, y))
+			and not lv.has_los(Vector2(wardrobe.end.x + 30, y), Vector2(wardrobe.position.x + 2, y)), "a wardrobe blocks sight and shots like a wall")
+	var sofa: Rect2 = find.call("sofa")["rect"]
+	var across := lv.cover_between(Vector2(sofa.get_center().x, sofa.end.y + 80), Vector2(sofa.get_center().x, sofa.position.y - 10))
+	_check(across.size() == 1 and str(across[0]["cover"]) == "soft" and absf((across[0]["enter"] as Vector2).y - sofa.end.y) < 0.5,
+			"a shot across the sofa crosses soft cover, entering at its front")
+	_check(lv.cover_between(Vector2(sofa.get_center().x, sofa.end.y + 5), Vector2(sofa.get_center().x, sofa.position.y - 10)).is_empty(),
+			"leaning on cover, the shooter fires over it")
+	# someone crouched right behind the kitchen counter: some shots are caught, fewer with FMJ than JHP
+	var counter: Rect2 = find.call("counter")["rect"]
+	var a: NpcDirector.Agent = d.agents[0]
+	var behind := Vector2(counter.get_center().x, counter.end.y + 4.0)  # tucked behind it (south side)
+	var from := Vector2(counter.get_center().x, counter.position.y - 200.0)
+	var caught := {"fmj": 0, "jhp": 0}
+	for ammo: String in caught:
+		for k in 200:
+			a.pos = behind
+			a.brain.state = S_HIDE
+			a.brain.hp = 99
+			var res := d.resolve_player_shot(0, from, behind + Vector2(0, 40), 0, false, _tuning()["ammo"][ammo]["cover"])
+			if int(res["cover"]) >= 0:
+				caught[ammo] += 1
+	_check(caught["fmj"] > 40 and caught["jhp"] > caught["fmj"] + 20 and caught["jhp"] < 200, "low cover catches some shots; FMJ goes through more often (%s)" % caught)
+	# an enemy shot at in the open in the kitchen runs behind the island counter, the counter between
+	# it and the officer
+	var island: Rect2 = find.call("island")["rect"]
+	var e: NpcDirector.Agent = d.agents[0]
+	e.pos = Vector2(island.end.x + 30, island.position.y - 30)
+	e.brain.pos = e.pos
+	e.brain.state = NpcBrain.State.ATTACK
+	e.brain.armed = true
+	players[0].pos = Vector2(island.get_center().x, island.position.y - 90)
+	players[0].flash = true  # the kitchen is dark: the light keeps the officer seen from behind the counter
+	players[1].pos = Vector2(100, 480)
+	e.brain.target_pos = players[0].pos
+	var spot := d._pick_cover(e)
+	_check(spot != Vector2.INF and spot.distance_to(players[0].pos) > 90.0 and Geom2D.segment_hits_rect(players[0].pos, spot, island),
+			"an enemy under fire finds a spot with the counter between it and the officer (%s)" % spot)
+	_check(spot != Vector2.INF and not lv.find_path(e.pos, spot).is_empty(), "the cover spot can be reached")
+	e.brain.cover_target = Vector2.INF
+	e.brain.needs_cover = true
+	for i in 30:
+		d.tick(0.1)
+		await physics_frame
+	_check(e.brain.in_cover and e.pos.distance_to(spot) < 30.0 and e.brain.state == NpcBrain.State.ATTACK,
+			"the enemy runs there, crouches and keeps watching the officer (in cover at %s, state %d)" % [e.pos, e.brain.state])
+	_free_world(w)
+
+
+const S_HIDE := NpcBrain.State.HIDE
 
 
 func _tuning() -> Dictionary:

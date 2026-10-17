@@ -387,6 +387,8 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 	var gun_up := b.armed and b.state != S.DOWN and b.state != S.HIDE
 	if gun_up:
 		draw_line(p, p + Vector2.from_angle(b.facing) * 26.0, Color.WHITE, 3.0)
+		if b.aiming:  # holding an angle / in ambush: a faint line along its aim
+			draw_line(p + Vector2.from_angle(b.facing) * 28.0, p + Vector2.from_angle(b.facing) * 90.0, Color(1.0, 0.5, 0.3, 0.35), 1.5)
 	_draw_dropped(a)
 	var pulse := 1.0 + 0.25 * sin(Time.get_ticks_msec() / 80.0)
 	match b.state:

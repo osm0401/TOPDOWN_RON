@@ -25,7 +25,11 @@
     "share_radius": 450.0, "feign_s": 2.0, "feign_threat_s": 0.5, "hit_falloff": 0.5,
     "restrain_range": 50.0, "threat_shot_radius": 70.0, "hit_radius": 14.0,
     "civilian_flee_chance": 0.4, "hurt_surrender_chance": 0.4, "threat_shot_surrender_chance": 0.35,
-    "cover_fire_mult": 2.0
+    "cover_fire_mult": 2.0,
+    "_tactics": "적 전술(임시값, 난이도 tactics가 곱해짐): 경계(alert)는 총성 등으로 올라가 alert_decay_s 동안 줄고, 경계 중에 경찰을 보면 반응·위협 시간이 alert_react_mult배. 조준은 aim_settle_s 동안 aim_first_mult→aim_steady_mult로 좋아지고, 위협 사격을 받는 중 ×aim_suppressed_mult, 움직이는 경찰은 ×aim_move_mult(최고 속도일 때). 놓친 뒤 hold_s초 더 겨눔. 다른 방 소리에 ambush_chance로 매복(ambush_s초). 다치면 retreat_chance로 한 번 후퇴.",
+    "alert_decay_s": 30.0, "alert_react_mult": 0.5,
+    "aim_settle_s": 1.2, "aim_first_mult": 0.6, "aim_steady_mult": 1.25, "aim_suppressed_mult": 0.6, "aim_move_mult": 0.65,
+    "hold_s": [2.0, 6.0], "ambush_chance": 0.5, "ambush_s": [6.0, 14.0], "retreat_chance": 0.5
   },
   "reinforcement": {
     "min_warning_s": 8.0, "min_lead_after_noise_s": 2.0, "alarm_mult": 2.0,

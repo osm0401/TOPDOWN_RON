@@ -1438,7 +1438,9 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		slots["band"] = "band"
 	var to_officer := Vector3.ZERO
 	var near := _nearest_officer(a.pos)
-	if near != Vector2.INF and st in [S.SPOTTED, S.THREAT, S.ATTACK, S.SURRENDER, S.FLEE]:
+	if b.aiming:  # holding an angle / waiting in ambush: along where it looks, not at an officer it cannot see
+		to_officer = _to_model(model, _p3(Vector2.from_angle(b.facing) * 50.0, 0.0), false)
+	elif near != Vector2.INF and st in [S.SPOTTED, S.THREAT, S.ATTACK, S.SURRENDER, S.FLEE]:
 		to_officer = _to_model(model, _p3(near - a.pos, 0.0), false)
 	match st:
 		S.DEAD:
@@ -1449,6 +1451,9 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		S.HIDE:
 			s["stance"] = CS.CROUCH
 			s["hold"] = H.COVER
+			if b.armed:  # an enemy that fell back: crouched, gun ready
+				s["hold"] = H.PISTOL_LOW
+				slots["hand"] = "pistol"
 		S.RESTRAINED:
 			s["stance"] = CS.KNEEL
 			s["hold"] = H.CUFFED
@@ -1458,13 +1463,13 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		_:
 			if b.armed:
 				slots["hand"] = "pistol"
-				s["hold"] = H.PISTOL_ONE if st in [S.THREAT, S.ATTACK] and to_officer != Vector3.ZERO else H.PISTOL_LOW
+				s["hold"] = H.PISTOL_ONE if (st in [S.THREAT, S.ATTACK] or b.aiming) and to_officer != Vector3.ZERO else H.PISTOL_LOW
 				n["pop"] = maxf(float(n.get("pop", 0.0)) - delta, 0.0)
 				if b.in_cover and float(n["pop"]) <= 0.0:  # crouched behind furniture; rises to fire
 					s["stance"] = CS.CROUCH
 			elif st in [S.SPOTTED, S.THREAT, S.ATTACK]:
 				s["hold"] = H.STARTLED
-	if to_officer == Vector3.ZERO and st in [S.IDLE, S.INVESTIGATE]:  # glancing around; searching harder
+	if to_officer == Vector3.ZERO and st in [S.IDLE, S.INVESTIGATE] and not b.aiming:  # glancing around; searching harder
 		var wide := 0.8 if st == S.INVESTIGATE else 0.45
 		var turn := sin(_t * (0.9 if st == S.INVESTIGATE else 0.35) + float(s["seed"])) * wide
 		s["look"] = Vector3(sin(turn), 0.0, cos(turn))

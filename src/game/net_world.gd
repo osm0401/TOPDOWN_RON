@@ -69,6 +69,10 @@ const SCENARIOS := {
 				[2.1, "fire", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.7, "final": 3.5,
 	},
+	"ambush": {  # a look at an ambush: a kick by room B's door, the enemy inside takes a spot covering it; then the door opens
+		"events": {"host": [[0.1, "ready", 0], [0.2, "ambush_demo", 0], [3.0, "open_b", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 3.4, "final": 4.5,
+	},
 	"outside": {  # a look at the street: the host stays at the spawn by the police car
 		"events": {"host": [[0.1, "ready", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.2, "final": 2.5,
@@ -1093,6 +1097,16 @@ func _auto_do(name: String, arg: int) -> void:
 			var at := players[0].pos + Vector2(-45.0, 40.0)
 			_bodies[1].position = at
 			players[1].pos = at
+		"ambush_demo":  # test aid: the host by room B's door, light on, kicks the air; the enemy inside sets an ambush
+			_bodies[0].position = Vector2(800, 505)
+			players[0].pos = Vector2(800, 505)
+			players[0].flash = true
+			_auto_aim = deg_to_rad(-75.0)
+			director._params["ambush_chance"] = 1.0
+			_emit_sound(SoundProp.Kind.KICK, players[0].pos + Vector2(0, -20))
+		"open_b":  # test aid: room B's door swings open (the host's doing)
+			level.set_door_state(1, Level.DoorState.OPEN, 1)
+			_push_state()
 		"aim":  # test aid: turn the host to arg degrees (0 east, 90 south)
 			_auto_aim = deg_to_rad(float(arg))
 		"aim_suspect":  # test aid: turn the host toward the suspect

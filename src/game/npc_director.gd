@@ -86,12 +86,21 @@ func tick(delta: float) -> void:
 
 # ---- player actions on NPCs --------------------------------------------------
 
-## Resolves a bullet fired along from->to. Returns {"end": Vector2, "npc": int}.
-func resolve_player_shot(slot: int, from: Vector2, to: Vector2, damage: int, stun: bool) -> Dictionary:
+## Resolves a bullet fired along from->to. Low cover just in front of the NPC it would hit may
+## catch it (cover_mult: {"hard", "soft"} scales the cover's chance, from the round used).
+## Returns {"end": Vector2, "npc": int, "cover": prop index that stopped it or -1}.
+func resolve_player_shot(slot: int, from: Vector2, to: Vector2, damage: int, stun: bool, cover_mult: Dictionary = {}) -> Dictionary:
 	var hit := _nearest_on_segment(from, to)
 	var end := to
+	var stopped := -1
 	if hit >= 0:
 		end = Geometry2D.get_closest_point_to_segment(agents[hit].pos, from, to)
+		var c := _cover_catch(from, end, agents[hit].brain.state in [NpcBrain.State.HIDE, NpcBrain.State.DOWN] or agents[hit].brain.in_cover, cover_mult)
+		if not c.is_empty():
+			stopped = int(c["i"])
+			end = c["enter"]
+			hit = -1
+	if hit >= 0:
 		var was_alive: bool = agents[hit].brain.alive()
 		agents[hit].brain.on_hit(damage, stun, players[slot].pos)
 		if was_alive and not agents[hit].brain.alive():
@@ -104,7 +113,22 @@ func resolve_player_shot(slot: int, from: Vector2, to: Vector2, damage: int, stu
 		var closest := Geometry2D.get_closest_point_to_segment(a.pos, from, end)
 		if closest.distance_to(a.pos) <= radius and level.has_los(from, a.pos):
 			a.brain.on_threat_shot()
-	return {"end": end, "npc": hit}
+	return {"end": end, "npc": hit, "cover": stopped}
+
+
+## The low cover that catches a bullet flying from `from` to someone at `at`, or {}: a piece the
+## line crosses within reach_px before `at` stops it with its chance (hard / soft, times
+## crouch_mult when the target is crouched or lying behind it, times the round's cover_mult).
+func _cover_catch(from: Vector2, at: Vector2, low: bool, cover_mult: Dictionary) -> Dictionary:
+	var cc: Dictionary = _t["cover"]
+	for c in level.cover_between(from, at):
+		if (c["exit"] as Vector2).distance_to(at) > float(cc["reach_px"]):
+			continue
+		var kind: String = c["cover"]
+		var chance := float(cc["block"][kind]) * float(cover_mult.get(kind, 1.0)) * (float(cc["crouch_mult"]) if low else 1.0)
+		if _rng.randf() < minf(chance, 0.95):
+			return c
+	return {}
 
 
 ## Taser dart: stuns the nearest NPC on the line. Returns its index or -1.
@@ -194,7 +218,7 @@ func pack() -> Array:
 		ps.append(a.pos)
 		face.append(b.facing)
 		data.append(b.state | (16 if b.armed else 0) | (32 if b.feigning else 0) | (64 if b.had_weapon else 0) \
-			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0))
+			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0) | (131072 if b.in_cover else 0))
 	return [ps, data, face]
 
 
@@ -211,6 +235,7 @@ func unpack(ps: PackedVector2Array, data: PackedInt32Array, face: PackedFloat32A
 		b.feigning = (d & 32) != 0
 		b.hp = (d >> 8) & 255
 		a.dormant = (d & 65536) != 0
+		b.in_cover = (d & 131072) != 0
 
 
 # ---- per-agent tick ------------------------------------------------------------
@@ -224,6 +249,8 @@ func _tick_agent(i: int, delta: float, sounds: Array[Dictionary], alerts: Array[
 	if b.needs_flee_target:
 		b.flee_target = _pick_flee_target(a)
 		b.needs_flee_target = false
+	if b.needs_cover:
+		b.set_cover(_pick_cover(a))
 	_hear(i, a, sounds)
 	if b.role == NpcBrain.Role.ENEMY:
 		_see(a)
@@ -336,7 +363,13 @@ func _npc_shoot(i: int, a: Agent) -> void:
 	var chance := float(_diff["accuracy"]) * (1.0 - float(_np["hit_falloff"]) * clampf(dist / float(_diff["detect_range"]), 0.0, 1.0))
 	var hit := level.has_los(from, pl.pos) and _rng.randf() < chance
 	var to := pl.pos
-	if not hit:
+	var caught := {}
+	if hit:  # the officer may stand behind low cover too
+		caught = _cover_catch(from, pl.pos, false, {})
+		if not caught.is_empty():
+			hit = false
+			to = caught["enter"]
+	if not hit and caught.is_empty():
 		var side := 1.0 if _rng.randf() < 0.5 else -1.0
 		to = pl.pos + dir.orthogonal() * side * (25.0 + _rng.randf() * 35.0)
 		var wall := level.ray_hit(from, to)
@@ -453,6 +486,58 @@ func _open_doors_near(i: int, a: Agent) -> void:
 			level.set_door_state(d, Level.DoorState.OPEN, 0)
 			_emit(SoundProp.Kind.DOOR, level.door_rects[d].get_center(), i)
 			doors_changed.emit()
+
+
+## A spot crouched behind furniture, out of the nearest officer's line, within search_px: one of
+## the points just round a piece (its sides and corners, behind_px out) with the piece between it
+## and the officer, reachable and in the same room. The nearest such spot wins (hard cover before
+## soft). Vector2.INF when there is none.
+func _pick_cover(a: Agent) -> Vector2:
+	var cc: Dictionary = _t["cover"]
+	var threat := a.brain.target_pos
+	var near := _nearest_alive(a.pos)
+	if near >= 0:
+		threat = players[near].pos
+	var room := level.room_at(a.pos)
+	var best := Vector2.INF
+	var best_score := INF
+	for pr in level.props:
+		var kind: String = pr["cover"]
+		if kind == "":
+			continue
+		var r: Rect2 = pr["rect"]
+		if r.get_center().distance_to(a.pos) > float(cc["npc_search_px"]):
+			continue
+		var g := r.grow(float(cc["behind_px"]))
+		var c := g.get_center()
+		var core := r.grow(-minf(10.0, minf(r.size.x, r.size.y) * 0.3))  # the line must cross it well, not clip a corner
+		for spot: Vector2 in [Vector2(c.x, g.position.y), Vector2(c.x, g.end.y), Vector2(g.position.x, c.y), Vector2(g.end.x, c.y),
+				g.position, g.end, Vector2(g.end.x, g.position.y), Vector2(g.position.x, g.end.y)]:
+			if spot.distance_to(threat) < float(cc["min_threat_px"]) or not Geom2D.segment_hits_rect(threat, spot, core):
+				continue
+			if room >= 0 and level.room_at(spot) != room:
+				continue  # stay in the room: crossing doorways under fire is not taking cover
+			if _spot_taken(a, spot):
+				continue
+			var score := a.pos.distance_to(spot) + (60.0 if kind == "soft" else 0.0)
+			if score >= best_score:
+				continue
+			var path := level.find_path(a.pos, spot)
+			if path.is_empty() or path[path.size() - 1].distance_to(spot) > 24.0:
+				continue
+			best_score = score
+			best = spot
+	return best
+
+
+## Someone else already crouches there, or is on the way.
+func _spot_taken(a: Agent, spot: Vector2) -> bool:
+	for o in agents:
+		if o == a or o.dormant or not o.brain.alive():
+			continue
+		if o.pos.distance_to(spot) < 26.0 or (o.brain.cover_target != Vector2.INF and o.brain.cover_target.distance_to(spot) < 26.0):
+			return true
+	return false
 
 
 func _pick_flee_target(a: Agent) -> Vector2:

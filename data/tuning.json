@@ -24,17 +24,28 @@
     "close_detect_range": 60.0, "laser_see_range": 500.0, "laser_escalate_s": 2.0,
     "share_radius": 450.0, "feign_s": 2.0, "feign_threat_s": 0.5, "hit_falloff": 0.5,
     "restrain_range": 50.0, "threat_shot_radius": 70.0, "hit_radius": 14.0,
-    "civilian_flee_chance": 0.4, "hurt_surrender_chance": 0.4, "threat_shot_surrender_chance": 0.35
+    "civilian_flee_chance": 0.4, "hurt_surrender_chance": 0.4, "threat_shot_surrender_chance": 0.35,
+    "cover_fire_mult": 2.0
   },
   "reinforcement": {
     "min_warning_s": 8.0, "min_lead_after_noise_s": 2.0, "alarm_mult": 2.0,
     "target": [110, 500], "siren_at": [30, 500],
     "noise_s": {"gunshot": 4.0, "kick": 8.0, "scream": 3.0, "taser": 2.0}
   },
+  "cover": {
+    "_note": "엄폐: 낮은 가구(hard: 싱크대·상자·책상·경찰차, soft: 소파·침대)가 바로 뒤(reach_px 안)에 있는 사람을 맞힐 총알을 막을 확률. 웅크리거나 엎드리면 crouch_mult배. 키 큰 가구(옷장·책장·냉장고·선반·서류함)는 벽처럼 다 막는다. NPC는 search_px 안의 가구 뒤(가구 너머 behind_px)로 숨고, 경찰에게 min_threat_px보다 가까운 자리는 고르지 않는다.",
+    "reach_px": 70.0, "block": {"hard": 0.7, "soft": 0.4}, "crouch_mult": 1.3,
+    "npc_search_px": 260.0, "behind_px": 22.0, "min_threat_px": 90.0
+  },
+  "ammo": {
+    "_note": "살상 소총 탄 종류(장비 화면에서 고름). fmj: 일반탄(관통이 좋아 엄폐물에 덜 막힘), jhp: 확장탄(한 발이 세지만 엄폐물에 더 막힘). cover: 엄폐 확률 배율.",
+    "fmj": {"damage": 2, "cover": {"hard": 0.75, "soft": 0.4}},
+    "jhp": {"damage": 3, "cover": {"hard": 1.0, "soft": 1.3}}
+  },
   "vote": {"round_s": 15.0, "max_rounds": 2},
   "weapons": {
     "pistol": {"mag_size": 12, "spare_mags": 3, "fire_interval_s": 0.25, "reload_s": 1.6, "range": 900.0, "damage": 1, "stun": false},
     "rifle_lethal": {"mag_size": 30, "spare_mags": 3, "fire_interval_s": 0.12, "reload_s": 2.2, "range": 1100.0, "damage": 2, "stun": false},
-    "rifle_nonlethal": {"mag_size": 20, "spare_mags": 3, "fire_interval_s": 0.2, "reload_s": 2.2, "range": 700.0, "damage": 0, "stun": true}
+    "rifle_nonlethal": {"mag_size": 20, "spare_mags": 3, "fire_interval_s": 0.2, "reload_s": 2.2, "range": 700.0, "damage": 0, "stun": true, "cover": {"hard": 1.2, "soft": 1.5}}
   }
 }

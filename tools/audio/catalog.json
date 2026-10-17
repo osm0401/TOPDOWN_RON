@@ -162,6 +162,30 @@
       "prompt": "rifle magazine ejected and a new magazine inserted, metal clicks and a bolt slide, dry foley, realistic sound effect",
       "takes": 12
     },
+    "mag_out": {
+      "kind": "foley",
+      "seconds": 1.0,
+      "takes": 8,
+      "keep": 3,
+      "tail_s": 0.6,
+      "prompt": "rifle magazine release click and the magazine pulled out of the gun, metal, dry foley, realistic sound effect"
+    },
+    "mag_in": {
+      "kind": "foley",
+      "seconds": 1.0,
+      "takes": 8,
+      "keep": 3,
+      "tail_s": 0.6,
+      "prompt": "rifle magazine inserted and seated into the gun with a firm metal clack, dry foley, realistic sound effect"
+    },
+    "bolt": {
+      "kind": "foley",
+      "seconds": 1.0,
+      "takes": 8,
+      "keep": 3,
+      "tail_s": 0.7,
+      "prompt": "rifle charging handle pulled back and released, the bolt snapping forward, metal, dry foley, realistic sound effect"
+    },
     "hit": {
       "kind": "impact",
       "seconds": 1.0,

@@ -54,6 +54,11 @@ const SCENARIOS := {
 				[1.1, "aim", -75], [1.3, "fire", 0], [1.6, "aim_suspect", 0], [1.8, "fire", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 4.0, "final": 5.0,
 	},
+	"cover": {  # a look at cover: an enemy in the kitchen runs behind the island counter and crouches, shots hit the counter
+		"events": {"host": [[0.1, "ready", 0], [0.2, "cover_demo", 0], [1.6, "aim_cover", 0], [1.8, "fire", 0],
+				[2.1, "fire", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 1.7, "final": 3.5,
+	},
 	"outside": {  # a look at the street: the host stays at the spawn by the police car
 		"events": {"host": [[0.1, "ready", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.2, "final": 2.5,
@@ -189,6 +194,7 @@ func apply_loadout(lo: Dictionary) -> void:
 					float(st["fire_interval_s"]), float(st["reload_s"])))
 			ps.weapon_kinds.append(kind)
 		ps.tools.assign(entry["tools"])
+		ps.ammo = str(entry.get("ammo", "fmj"))
 		ps.taser_charges = int(tuning["taser_charges"]) if ps.has_tool("taser") else 0
 		ps.max_hp = int(tuning["player_hp"])
 		ps.hp = ps.max_hp
@@ -633,14 +639,20 @@ func _host_fire(slot: int, angle: float) -> void:
 		return
 	if not ps.weapons[ps.active].try_fire():
 		return
-	var st: Dictionary = tuning["weapons"][ps.weapon_kinds[ps.active]]
+	var kind := ps.weapon_kinds[ps.active]
+	var st: Dictionary = tuning["weapons"][kind]
+	var damage := int(st["damage"])
+	var cover_mult: Dictionary = st.get("cover", {})
+	if kind == "rifle_lethal" and (tuning["ammo"] as Dictionary).has(ps.ammo):  # the round chosen in the loadout
+		damage = int(tuning["ammo"][ps.ammo]["damage"])
+		cover_mult = tuning["ammo"][ps.ammo]["cover"]
 	var dir := Vector2.from_angle(angle)
 	var from := ps.pos + dir * 20.0
 	var to := from + dir * float(st["range"])
 	var wall := level.ray_hit(from, to)
 	if not wall.is_empty():
 		to = wall["position"]
-	var res := director.resolve_player_shot(slot, from, to, int(st["damage"]), bool(st["stun"]))
+	var res := director.resolve_player_shot(slot, from, to, damage, bool(st["stun"]), cover_mult)
 	to = res["end"]
 	var hit_npc := int(res["npc"]) >= 0
 	_apply_shot(slot, from, to, hit_npc)
@@ -970,6 +982,21 @@ func _auto_do(name: String, arg: int) -> void:
 			level.set_door_state(0, Level.DoorState.OPEN, 1)
 			level.set_door_state(1, Level.DoorState.AJAR, 2)
 			level.set_door_state(4, Level.DoorState.OPEN, 0)
+		"cover_demo":  # test aid: the host in the kitchen with the light on, an armed enemy in the open by the island
+			_bodies[0].position = Vector2(630, 600)
+			players[0].pos = Vector2(630, 600)
+			players[0].flash = true
+			players[0].hp = 99
+			var e: NpcDirector.Agent = director.agents[0]
+			e.pos = Vector2(710, 650)
+			e.brain.pos = e.pos
+			e.brain.facing = (players[0].pos - e.pos).angle()
+			e.brain.see_player(players[0].pos)
+			e.brain._go(NpcBrain.State.ATTACK, "test")
+			_auto_aim = (e.pos - players[0].pos).angle()
+		"aim_cover":  # test aid: aim at the enemy behind the counter
+			var e: NpcDirector.Agent = director.agents[0]
+			_auto_aim = (e.pos - players[0].pos).angle()
 		"teleport_dark":  # test aid: put the host inside dark room B to look at the darkness cues
 			_bodies[0].position = Vector2(700, 330)
 			players[0].pos = Vector2(700, 330)

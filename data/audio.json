@@ -4,6 +4,13 @@
   "ambient_db": -30.0,
   "muffle_hz": 700.0,
   "own_footstep_db": -9.0,
+  "_steps": "발소리: 바닥 이름(방의 floor, 바깥 ground의 surface, 깔개 rug) -> 발소리 종류(footstep_<종류>_<번호>.wav). 걸을 때 walk_db, 뛸 때 run_db를 더한다(속도 m/s 사이는 섞음).",
+  "step_surfaces": {
+    "wood": "wood", "carpet": "carpet", "rug": "carpet", "office": "tile", "kitchen": "tile", "corridor": "tile",
+    "concrete": "concrete", "building": "tile", "sidewalk": "concrete", "curb": "concrete", "paint": "asphalt",
+    "asphalt": "asphalt", "grass": "grass", "_default": "concrete"
+  },
+  "steps": {"walk_mps": 1.5, "run_mps": 3.5, "walk_db": -3.0, "run_db": 2.0},
   "min_loudness": 0.03,
   "_files": "assets/audio/<소리>_<번호>.wav 가 있으면 같은 이름의 합성음 대신 쓴다(번호 0~15, 없으면 합성음). <소리>_far 는 멀리서 작게 들릴 때 쓰는 별도 세트. 녹음 대사는 voice_<명령>_<줄>_<테이크>.wav. assets/audio는 git 제외(라이선스 확인 전).",
   "px_per_m": 50.0,

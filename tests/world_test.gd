@@ -611,6 +611,40 @@ func _character_model_tests() -> void:
 		v3._update_npcs(0.016)
 		stepping = stepping or not sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L).is_equal_approx(rest)
 	_check(stepping, "3D view: the legs swing while it walks")
+	# footsteps fall on the walk cycle: two per stride, each when a leg is at full stride
+	var steps: Array = []
+	var on_step := func(at: Vector2, speed: float, who: int) -> void: steps.append([at, speed, who, float(n["walk_phase"])])
+	v3.footstep.connect(on_step)
+	var walked_from := _agent(i).pos
+	for f in 60:
+		_agent(i).pos += Vector2(90.0 * 0.016, 0.0)
+		_agent(i).home = _agent(i).pos
+		v3._update_npcs(0.016)
+	var gait: Dictionary = v3._cfg["characters"]["walk"]
+	var stride_m := float(gait["stride_m"]) + float(gait["stride_per_mps"]) * 1.8
+	var want := 2.0 * (_agent(i).pos.x - walked_from.x) * v3._k / stride_m
+	_check(steps.size() > 0 and absf(steps.size() - want) <= 1.0 and steps.all(func(e: Array) -> bool: return int(e[2]) == 2 + i),
+			"3D view: an NPC walking 1.7 m takes two steps per stride (%d steps, %.1f expected)" % [steps.size(), want])
+	_check(steps.all(func(e: Array) -> bool: return absf(sin(float(e[3]))) > 0.9 and (e[0] as Vector2).distance_to(_agent(i).pos) < 120.0),
+			"3D view: each footstep lands with a leg at full stride, where the NPC is")
+	# out of sight it is not drawn, yet its steps are still heard
+	steps.clear()
+	var seen_before: Array[int] = v3.view._npc_seen.duplicate()
+	if v3.view._npc_seen.size() <= i:
+		v3.view._npc_seen.resize(i + 1)
+	v3.view._npc_seen[i] = LightModel.Seen.NONE
+	for f in 60:
+		_agent(i).pos += Vector2(90.0 * 0.016, 0.0)
+		_agent(i).home = _agent(i).pos
+		v3._update_npcs(0.016)
+	_check(not (n["root"] as Node3D).visible and absf(steps.size() - want) <= 1.0, "3D view: an NPC out of sight still makes its footsteps (%d)" % steps.size())
+	v3.view._npc_seen = seen_before
+	v3.footstep.disconnect(on_step)
+	_agent(i).pos = from + Vector2(90.0 * 0.016 * 50, 0.0)
+	for f in 3:
+		v3._update_npcs(0.016)
+	_check(WorldView3D.foot_lands(1.5, 1.6) and WorldView3D.foot_lands(6.2, 4.8) and not WorldView3D.foot_lands(1.6, 4.7) and not WorldView3D.foot_lands(6.0, 0.3),
+			"foot plants at a quarter and three quarters of the stride, across the wrap too")
 	for f in 90:
 		v3._update_npcs(0.016)
 	_check(float(n["walk_amount"]) < 0.01 and sk.get_bone_pose_rotation(CharacterModels.Bone.THIGH_L).is_equal_approx(rest), "3D view: standing still it settles back to the rest pose")
@@ -1163,6 +1197,31 @@ func _audio_extra_tests() -> void:
 	var missing := GameAudio.SAMPLE_KEYS.filter(func(k: String) -> bool: return not k.ends_with("_far") and not GameAudio.SYNTH_KEYS.has(k))
 	_check(missing.is_empty(), "every sound a file can replace has a stand-in (missing: %s)" % [missing])
 	_check(not GameAudio.has_samples("no_such_sound"), "no file: the stand-in is the one that plays")
+	# footsteps sound like the floor: rug, room floors, the doorway, outside
+	var lv := _w.level
+	var rug: Rect2 = lv.props.filter(func(p: Dictionary) -> bool: return p["kind"] == "rug")[0]["rect"]
+	_check(lv.floor_at(rug.get_center()) == "rug" and lv.floor_at(Vector2(700, 650)) == "kitchen" and lv.floor_at(Vector2(700, 500)) == "corridor"
+			and lv.floor_at(Vector2(80, 500)) == "asphalt" and lv.floor_at(Vector2(190, 500)) == "sidewalk" and lv.floor_at(Vector2(1480, 980)) == "grass",
+			"the floor under a step: rug, kitchen, corridor, street, pavement, grass (%s %s %s %s %s %s)" % [lv.floor_at(rug.get_center()),
+			lv.floor_at(Vector2(700, 650)), lv.floor_at(Vector2(700, 500)), lv.floor_at(Vector2(80, 500)), lv.floor_at(Vector2(190, 500)), lv.floor_at(Vector2(1480, 980))])
+	_check(au.step_key("wood") == "footstep_wood" and au.step_key("rug") == "footstep_carpet" and au.step_key("kitchen") == "footstep_tile"
+			and au.step_key("asphalt") == "footstep_asphalt" and au.step_key("no_such_floor") == "footstep_concrete", "each floor picks its step sound")
+	var files_before: Dictionary = GameAudio._files.duplicate()
+	GameAudio._files = {"footstep": true}
+	_check(au.step_key("wood") == "footstep", "recorded plain footsteps beat the synthesized floor sounds")
+	GameAudio._files = {"footstep": true, "footstep_wood": true}
+	_check(au.step_key("wood") == "footstep_wood" and au.step_key("grass") == "footstep", "a floor's own recordings beat the plain ones")
+	GameAudio._files = {"reload": true}
+	_check(au.whole_reload(), "only a full reload recording: it plays whole")
+	GameAudio._files = {"reload": true, "mag_in": true}
+	_check(not au.whole_reload(), "recorded reload parts: the parts play")
+	GameAudio._files = files_before
+	_check(GameAudio.reload_parts_between(0.0, 0.5) == ["mag_out"] and GameAudio.reload_parts_between(0.5, 0.95) == ["mag_in", "bolt"]
+			and GameAudio.reload_parts_between(0.22, 0.5).is_empty(), "reload parts sound as the hands get there: magazine out, magazine in, bolt")
+	var parts := GameAudio.synthesize(["footstep_carpet", "footstep_tile", "mag_out"])
+	_check((parts["footstep_carpet"] as Array).size() == 4 and (parts["footstep_carpet"][0] as AudioStreamWAV).data != (parts["footstep_tile"][0] as AudioStreamWAV).data
+			and (parts["footstep_carpet"][0] as AudioStreamWAV).data != (parts["footstep_carpet"][1] as AudioStreamWAV).data and (parts["mag_out"] as Array).size() == 2,
+			"each floor has four different synthesized steps; reload parts have their own sounds")
 	_check(GameAudio.wait_prepared().is_empty(), "headless: no background synthesis was started")
 	# recorded voice lines: file names follow commands.json order
 	var lines := JsonData.load_dict("res://data/commands.json")

@@ -4,8 +4,12 @@ extends Node2D
 ## (closed / ajar / open + locked), rooms with lighting, sound blockers, rays, fog polygon
 ## and an A* grid for NPCs. Closed doors block movement and rays; an ajar door leaves a
 ## narrow slit (rays pass, bodies do not); open doors block nothing.
-## Furniture (props) stops people (player bodies, NPC paths) but not rays: sight, shots and
-## sound pass over it. Rooms and outdoor ground carry the surface styles the 3D view draws.
+## Furniture (props) stops people (player bodies, NPC paths). As cover: tall pieces ("full":
+## wardrobes, shelves, fridges) stop sight and shots like walls; low solid pieces ("hard": counters,
+## crates, desks, the police car; "soft": sofas, beds) let sight and shots pass over them but may
+## catch a bullet meant for someone crouched right behind (cover_between; NpcDirector rolls the
+## chance); the rest is no cover at all. Sound passes all furniture. Rooms and outdoor ground carry
+## the surface styles the 3D view draws.
 
 enum DoorState { CLOSED, AJAR, OPEN }
 
@@ -13,6 +17,13 @@ const WALL_LAYER := 1
 const PROP_LAYER := 4  ## solid furniture: player bodies collide with it, rays (WALL_LAYER only) do not
 ## Furniture that never stops anyone (flat or on a wall); a map entry's "solid" overrides.
 const FLAT_PROPS: Array[String] = ["rug", "picture", "whiteboard", "cone"]
+## Cover each kind gives (a map entry's "cover" overrides); kinds not listed give none.
+const COVER_KINDS := {
+	"full": ["wardrobe", "bookshelf", "fridge", "pantry", "shelving", "filing_cabinet"],
+	"hard": ["counter", "island", "sink", "stove", "crate", "barrel", "pallet", "workbench", "dresser", "desk", "tv_stand",
+			"nightstand", "water_cooler", "police_car"],
+	"soft": ["sofa", "armchair", "bed"],
+}
 const RAY_EPS := 0.0001
 const ARC_RAYS := 24
 const FRAME_THICKNESS := 50.0
@@ -28,7 +39,7 @@ var wall_rects: Array[Rect2] = []
 var door_rects: Array[Rect2] = []
 var door_actor: Array[int] = []        ## who touched the door last: 0 nobody/NPC, 1 host, 2 client
 var rooms: Array[Dictionary] = []      ## {name, rect, dark, floor, wall} (floor / wall: surface styles for the 3D view)
-var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid}
+var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid, cover ("full" / "hard" / "soft" / "")}
 var ground: Array[Dictionary] = []     ## outdoor surfaces in drawing order {rect, surface, h (m, raised kerbs)}
 var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns}
 
@@ -60,12 +71,21 @@ func load_map(path: String) -> bool:
 		ground.append({"rect": _rect(g["rect"]), "surface": str(g["surface"]), "h": float(g.get("h", 0.0))})
 	for pd in d.get("props", []):
 		var kind := str(pd["kind"])
+		var cover := ""
+		for c: String in COVER_KINDS:
+			if (COVER_KINDS[c] as Array).has(kind):
+				cover = c
 		var pr := {"kind": kind, "rect": _rect(pd["rect"]), "face": str(pd.get("face", "s")),
-				"solid": bool(pd.get("solid", not FLAT_PROPS.has(kind)))}
+				"solid": bool(pd.get("solid", not FLAT_PROPS.has(kind))), "cover": str(pd.get("cover", cover))}
+		if not pr["solid"]:
+			pr["cover"] = ""
 		props.append(pr)
 		if pr["solid"]:
 			var cs := _add_body(pr["rect"])
-			(cs.get_parent() as StaticBody2D).collision_layer = PROP_LAYER
+			# tall furniture is a wall to rays (sight, shots, light polygons); the rest only to bodies
+			(cs.get_parent() as StaticBody2D).collision_layer = PROP_LAYER | (WALL_LAYER if pr["cover"] == "full" else 0)
+			if pr["cover"] == "full":
+				_corners.append_array(Geom2D.rect_corners(pr["rect"]))
 	for n in d["npcs"]:
 		npc_defs.append({
 			"role": str(n["role"]),
@@ -204,6 +224,23 @@ func room_at(p: Vector2) -> int:
 	return -1
 
 
+## What the floor at p is: "rug" on a rug, the room's floor style inside a room, "building" in a
+## doorway, else the topmost outdoor ground surface ("" off the map).
+func floor_at(p: Vector2) -> String:
+	for pr in props:
+		if pr["kind"] == "rug" and (pr["rect"] as Rect2).has_point(p):
+			return "rug"
+	var i := room_at(p)
+	if i >= 0:
+		return str(rooms[i].get("floor", "building"))
+	if building.has_point(p):
+		return "building"
+	for k in range(ground.size() - 1, -1, -1):  # drawn last = on top
+		if (ground[k]["rect"] as Rect2).has_point(p):
+			return str(ground[k]["surface"])
+	return ""
+
+
 func is_dark(p: Vector2) -> bool:
 	var i := room_at(p)
 	return i >= 0 and bool(rooms[i]["dark"])
@@ -335,6 +372,30 @@ func _cell_blocked(c: Vector2i) -> bool:
 		if pr["solid"] and (pr["rect"] as Rect2).grow(NAV_INFLATE).has_point(center):
 			return true
 	return false
+
+
+## Low cover the segment from-to crosses, nearest first: [{i (prop index), cover ("hard" /
+## "soft"), enter, exit (points where the segment goes in and out of it)}]. Pieces within `skip` px
+## of `from` are left out: a shooter leaning on cover fires over it.
+func cover_between(from: Vector2, to: Vector2, skip := 30.0) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	var box := Rect2(from, Vector2.ZERO).expand(to)
+	for i in props.size():
+		var c: String = props[i]["cover"]
+		if c != "hard" and c != "soft":
+			continue
+		var r: Rect2 = props[i]["rect"]
+		if not box.grow(1.0).intersects(r):
+			continue
+		var t := Geom2D.segment_rect_span(from, to, r)
+		if t.x > t.y:
+			continue
+		var enter := from.lerp(to, t.x)
+		if enter.distance_to(from) < skip or r.grow(skip).has_point(from):
+			continue
+		out.append({"i": i, "cover": c, "enter": enter, "exit": from.lerp(to, t.y), "t": t.x})
+	out.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return float(a["t"]) < float(b["t"]))
+	return out
 
 
 ## Surface style `key` ("floor" / "wall") of the room holding p; "" outside every room.

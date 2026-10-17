@@ -6,6 +6,9 @@ extends Node
 ## Loudness uses the same SoundProp rules as the NPC hearing (distance, walls, closed and ajar
 ## doors); duller buses for far or walled-off sounds, room reverb from where the listener stands,
 ## ear ringing after a loud bang next to you. F6 mutes, F7 opens the sound audition panel.
+## Footsteps sound like the floor they land on (footstep_<surface>); with the 3D view on they fall
+## on the walk cycle's foot plants (WorldView3D.footstep), NPCs' too. A reload plays its parts
+## (magazine out, magazine in, bolt) as the hands get there, unless only a full "reload" file exists.
 ## Presentation only: it reads world state and signals.
 
 const BUS_SFX := "Sfx"  ## clear sounds; also holds the ear low-pass and the room reverb
@@ -19,13 +22,21 @@ const MAX_VARIANTS := 16  ## files <key>_0.wav .. <key>_15.wav
 const MAX_TAKES := 4  ## voice_<command>_<line>_0.wav .. _3.wav (different voices or takes)
 ## Keys a file can replace; <key>_far is an optional set used for faint, distant sounds.
 const SAMPLE_KEYS: Array[String] = ["rifle", "rifle_far", "pistol", "pistol_far", "footstep", "door",
-		"door_ajar", "kick", "taser", "reload", "hit", "hurt", "siren", "scream", "radio", "heart", "hum"]
+		"door_ajar", "kick", "taser", "reload", "hit", "hurt", "siren", "scream", "radio", "heart", "hum",
+		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
+		"mag_out", "mag_in", "bolt"]
+## Where in a reload (0..1 of its time) each part sounds: the support hand reaches the magazine
+## well, comes back with the new one, then works the bolt (CharacterAnim's reload hand timeline).
+const RELOAD_PARTS: Array = [["mag_out", 0.22], ["mag_in", 0.78], ["bolt", 0.92]]
 const SCREAM_LINE := "꺄악!"
 ## Every key that has a synthesized stand-in (the far sets only exist as files).
 const SYNTH_KEYS: Array[String] = ["rifle", "pistol", "footstep", "door", "door_ajar", "kick", "voice", "scream",
-		"taser", "siren", "reload", "hit", "hurt", "radio", "heart", "hum", "ring"]
+		"taser", "siren", "reload", "hit", "hurt", "radio", "heart", "hum", "ring",
+		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
+		"mag_out", "mag_in", "bolt"]
 
 static var _cache: Dictionary = {}  ## synthesized / loaded once per process
+static var _files: Dictionary = {}  ## keys whose sounds come from files (not stand-ins)
 static var _voice_cache: Dictionary = {}  ## spoken text -> recorded takes
 static var _voice_built := false
 static var _synth_task := -1  ## WorkerThreadPool task of prepare(), -1 when none is running
@@ -34,6 +45,7 @@ static var _synth: Dictionary = {}  ## its result: key -> synthesized stand-ins
 var world: NetWorld
 var audition_reverb: Dictionary = {}  ## set by the audition panel; overrides the room reverb
 var use_far_sets := true  ## false: faint sounds are only treated by the distance buses (F in the audition panel)
+var steps_from_view := false  ## the 3D view plays footsteps on its walk cycle: the simulation's step events stay silent
 
 var _cfg: Dictionary = {}
 var _bank: Dictionary = {}
@@ -41,6 +53,7 @@ var _enabled := DisplayServer.get_name() != "headless"
 var _listener: AudioListener2D
 var _rng := RandomNumberGenerator.new()
 var _reloading: Array[bool] = [false, false]
+var _reload_t: Array[float] = [0.0, 0.0]
 var _ear := 0.0  ## 0..1: how deafened the local officer is right now
 var _ear_gap := 0.0
 var _ring_player: AudioStreamPlayer
@@ -94,16 +107,67 @@ func _process(delta: float) -> void:
 		return
 	_voice_quiet = maxf(_voice_quiet - delta, 0.0)
 	_update_room_and_ears(me, delta)
-	var extra: Dictionary = _cfg["extra"]["reload"]
 	for s in 2:
-		var ps := world.players[s]
-		if not ps.present or ps.weapons.size() <= ps.active:
-			continue
-		var r := ps.weapons[ps.active].reloading
-		if r and not _reloading[s]:
-			_play("reload", world.display_pos(s), float(extra["radius"]), float(extra["db"]))
-		_reloading[s] = r
+		_update_reload(s, delta)
 	_update_alerts(delta)
+
+
+## Reload sounds for officer `slot`: the parts as the hands get there, or one full take when only
+## a full "reload" file exists (its own timing).
+func _update_reload(slot: int, delta: float) -> void:
+	var ps := world.players[slot]
+	if not ps.present or ps.weapons.size() <= ps.active:
+		return
+	var w := ps.weapons[ps.active]
+	var extra: Dictionary = _cfg["extra"]["reload"]
+	var at := world.display_pos(slot)
+	if w.reloading and not _reloading[slot]:
+		_reload_t[slot] = 0.0
+		if whole_reload():
+			_play("reload", at, float(extra["radius"]), float(extra["db"]))
+	_reloading[slot] = w.reloading
+	if not w.reloading or whole_reload():
+		return
+	var rt := maxf(w.reload_time, 0.1)
+	var before := _reload_t[slot] / rt
+	_reload_t[slot] += delta
+	for part in reload_parts_between(before, _reload_t[slot] / rt):
+		_play(part, at, float(extra["radius"]), float(extra["db"]))
+
+
+## The reload parts that sound between fractions a (excluded) and b of a reload.
+static func reload_parts_between(a: float, b: float) -> Array[String]:
+	var out: Array[String] = []
+	for part: Array in RELOAD_PARTS:
+		if a < float(part[1]) and float(part[1]) <= b:
+			out.append(str(part[0]))
+	return out
+
+
+## A recorded full reload and no recorded parts: play it whole (parts would mix file and stand-in).
+func whole_reload() -> bool:
+	return _files.has("reload") and not (_files.has("mag_out") or _files.has("mag_in") or _files.has("bolt"))
+
+
+## The bank key for a step on `floor` (a Level.floor_at name): that surface's files, else a
+## recorded plain footstep set, else the surface's stand-in.
+func step_key(floor: String) -> String:
+	var surf: Dictionary = _cfg["step_surfaces"]
+	var key := "footstep_" + str(surf.get(floor, surf["_default"]))
+	if not _files.has(key) and _files.has("footstep"):
+		return "footstep"
+	return key
+
+
+## One footstep at `at` (px) by someone moving at speed_mps; who: officer slot, or 2 + NPC index.
+## Running lands harder; your own steps sit under the room.
+func play_step(at: Vector2, speed_mps: float, who: int) -> void:
+	var st: Dictionary = _cfg["steps"]
+	var db := float(_cfg["kind_db"]["footstep"]) + lerpf(float(st["walk_db"]), float(st["run_db"]),
+			clampf(inverse_lerp(float(st["walk_mps"]), float(st["run_mps"]), speed_mps), 0.0, 1.0))
+	if who == world.my_slot:
+		db += float(_cfg["own_footstep_db"])
+	_play(step_key(world.level.floor_at(at)), at, float(world.tuning["sound_radius"]["footstep"]), db)
 
 
 ## Radio squelch when the reinforcement warning goes out, heartbeat while badly hurt.
@@ -171,6 +235,7 @@ func _build_bank() -> void:
 					for f in files:
 						loop_whole(f)
 				_cache[key] = files
+				_files[key] = true
 				print("[audio] %s: using %d file(s)" % [key, files.size()])
 	if not _voice_built:
 		_voice_cache = voice_lines(JsonData.load_dict("res://data/commands.json"))
@@ -223,6 +288,13 @@ static func synthesize(keys: Array[String]) -> Dictionary:
 			"heart": out[key] = [SfxSynth.heart()]
 			"hum": out[key] = [SfxSynth.hum()]
 			"ring": out[key] = [SfxSynth.ringing()]
+			"mag_out": out[key] = [SfxSynth.mag_out(111), SfxSynth.mag_out(112)]
+			"mag_in": out[key] = [SfxSynth.mag_in(113), SfxSynth.mag_in(114)]
+			"bolt": out[key] = [SfxSynth.bolt(115), SfxSynth.bolt(116)]
+			_:
+				if key.begins_with("footstep_"):  # one floor: four steps
+					var surf := key.trim_prefix("footstep_")
+					out[key] = [SfxSynth.step(120, surf), SfxSynth.step(121, surf), SfxSynth.step(122, surf), SfxSynth.step(123, surf)]
 	return out
 
 
@@ -441,6 +513,10 @@ func base_db_for(key: String) -> float:
 	var nm := key.trim_suffix("_far")
 	if nm == "rifle" or nm == "pistol":
 		nm = "gunshot"
+	elif nm.begins_with("footstep"):
+		nm = "footstep"
+	elif nm in ["reload", "mag_out", "mag_in", "bolt"]:
+		return float(_cfg["extra"]["reload"]["db"])
 	return float(_cfg["kind_db"].get(nm, 0.0))
 
 
@@ -472,8 +548,12 @@ func _on_sound(kind: int, pos: Vector2) -> void:
 		var me := world.display_pos(world.my_slot)
 		if pos.distance_to(me) > 30.0:  # someone else's shot right next to you; your own do not deafen
 			_deafen(float(hearing(pos, me, float(world.tuning["sound_radius"][nm]))["loud"]))
-	elif kind == SoundProp.Kind.FOOTSTEP and pos.distance_to(world.display_pos(world.my_slot)) < 24.0:
-		db += float(_cfg["own_footstep_db"])  # your own steps sit under the room
+	elif kind == SoundProp.Kind.FOOTSTEP:
+		if steps_from_view:
+			return  # the 3D view plays them on the walk cycle
+		if pos.distance_to(world.display_pos(world.my_slot)) < 24.0:
+			db += float(_cfg["own_footstep_db"])  # your own steps sit under the room
+		key = step_key(world.level.floor_at(pos))
 	_play(key, pos, float(world.tuning["sound_radius"][nm]), db)
 
 

@@ -235,6 +235,10 @@ with tempfile.TemporaryDirectory() as tmp:
     check(len(list(audio.glob("pistol_*.wav"))) - len(list(audio.glob("pistol_far_*.wav"))) == 3, "pistol: three takes")
     reload = json.loads(process.MANIFEST.read_text(encoding="utf-8"))["reload"]
     check(len(reload) == 1 and "MagOut" in reload[0]["origin"] and "BoltRelease" in reload[0]["origin"], "a full reload is put together from its parts")
+    manifest = json.loads(process.MANIFEST.read_text(encoding="utf-8"))
+    check("MagOut" in manifest.get("mag_out", [{}])[0].get("origin", "") and "BoltRelease" in manifest.get("bolt", [{}])[0].get("origin", "")
+          and (audio / "mag_out_0.wav").exists() and (audio / "bolt_0.wav").exists(),
+          "the reload parts are also kept on their own (mag_out, bolt) for the timed reload")
     dec = json.loads((ac.PICK / "decisions.json").read_text(encoding="utf-8"))
     check(sorted(k for k, v in dec.items() if k.startswith("rifle/")) == [f"rifle/ron_ARN180_Shot_Close_{k:02d}.wav" for k in range(1, 5)],
           "the take-picking tool shows the chosen rifle takes as 'use'")

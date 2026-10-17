@@ -29,6 +29,7 @@ static var use_3d := _start_3d()
 var world: NetWorld
 
 var _view3d: WorldView3D
+var _audio: GameAudio
 var _ripples: Array[Dictionary] = []
 var _tracers: Array[Dictionary] = []
 var _bubbles: Array[Dictionary] = []
@@ -92,9 +93,9 @@ func _ready() -> void:
 	_notice.size = Vector2(600, 40)
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer.add_child(_notice)
-	var audio := GameAudio.new()
-	audio.world = world
-	add_child(audio)
+	_audio = GameAudio.new()
+	_audio.world = world
+	add_child(_audio)
 	_set_3d(use_3d)
 
 
@@ -118,9 +119,11 @@ func _set_3d(on: bool) -> void:
 		_view3d.world = world
 		_view3d.view = self
 		add_child(_view3d)
+		_view3d.footstep.connect(_audio.play_step)
 	elif not on and _view3d != null:
 		_view3d.queue_free()
 		_view3d = null
+	_audio.steps_from_view = _view3d != null  # the 3D walk cycle places the steps; the 2D view uses the simulation's
 
 
 # ---- events -------------------------------------------------------------------

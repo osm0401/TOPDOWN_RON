@@ -555,7 +555,9 @@ func _test_tactics() -> void:
 	var ab := _new_brain(E)
 	p = _brain_params()
 	p["ambush_chance"] = 1.0
-	ab = NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded := RandomNumberGenerator.new()
+	seeded.seed = 11  # (the roll is capped at 95 %: a fixed seed keeps the test from failing now and then)
+	ab = NpcBrain.new(E, p, seeded, false)
 	ab.hear("door", Vector2(400, 0), 0.5, true)
 	ab.tick(0.05)
 	ab.set_ambush(Vector2(50, 50), Vector2(300, 50))
@@ -568,7 +570,9 @@ func _test_tactics() -> void:
 	_run_brain(ab, float((p["ambush_s"] as Array)[1]) + 0.2)
 	out = ab.tick(0.05)
 	_check(ab.state == S.INVESTIGATE and not ab.aiming and out["move_to"] == Vector2(400, 0), "nobody came: leaves the ambush and goes to look")
-	var sb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded2 := RandomNumberGenerator.new()
+	seeded2.seed = 11
+	var sb := NpcBrain.new(E, p, seeded2, false)
 	sb.hear("door", Vector2(400, 0), 0.5, true)
 	sb.tick(0.05)
 	sb.set_ambush(Vector2.INF, Vector2(300, 0))
@@ -579,7 +583,9 @@ func _test_tactics() -> void:
 	p = _brain_params()
 	p["hurt_surrender_chance"] = 0.0
 	p["retreat_chance"] = 1.0
-	var rb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded3 := RandomNumberGenerator.new()
+	seeded3.seed = 11
+	var rb := NpcBrain.new(E, p, seeded3, false)
 	rb.see_player(Vector2(200, 0))
 	_run_brain(rb, 1.4, Vector2(200, 0))
 	rb.on_hit(2, false, Vector2(200, 0))

@@ -13,6 +13,7 @@ extends RefCounted
 ## failed to compile every script that named it.
 
 const DIR := "res://assets/characters/"
+const LOOK := preload("res://src/game/character.gdshader")
 ## Bones of the auto-rig, in Skeleton3D order. The model faces +Z, so its left side is +X.
 enum Bone { HIPS, SPINE, CHEST, HEAD, THIGH_L, SHIN_L, FOOT_L, THIGH_R, SHIN_R, FOOT_R, UPPER_ARM_L, FOREARM_L, UPPER_ARM_R, FOREARM_R }
 const BONE_NAMES: Array[String] = ["hips", "spine", "chest", "head", "thigh_l", "shin_l", "foot_l", "thigh_r", "shin_r", "foot_r",
@@ -49,6 +50,21 @@ static func make(name: String, cfg: Dictionary, dir := "") -> Dictionary:
 		if not m.is_empty():
 			return m
 	return _make(base + name + ".glb", name, cfg)
+
+
+## The model names of `kind` that exist: kind itself, then kind_2, kind_3 ... (up to kind_9), from
+## the model set's folder or the folder itself.
+static func variants(kind: String, cfg: Dictionary, dir := "") -> Array[String]:
+	var base := dir if dir != "" else folder
+	var set_name := str(cfg.get("set", ""))
+	var out: Array[String] = [kind]
+	for k in range(2, 10):
+		var nm := "%s_%d" % [kind, k]
+		for path in ([base + set_name + "/" + nm + ".glb"] if set_name != "" else []) + [base + nm + ".glb"]:
+			if ResourceLoader.exists(path) or FileAccess.file_exists(path):
+				out.append(nm)
+				break
+	return out
 
 
 static func _make(path: String, name: String, cfg: Dictionary) -> Dictionary:
@@ -256,6 +272,10 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 	var smooth: PackedVector3Array = g["nrm"]
 	var weld: PackedInt32Array = g["weld"]
 	var hands := [Vector3.ZERO, Vector3.ZERO, 0.0, 0.0]  # sums of hand points left / right, and their counts
+	var keys := _cloth_keys(parts, h, j["gx"])
+	var prof := _profile(pts, h, j["gx"])
+	keys["head"] = Vector3(float(prof["head_top"]), float(prof["face_z"]), float(prof["head_back"])) / h
+	var looks := {}  # source material -> its look ShaderMaterial (shared by the surfaces using it)
 	for part in parts:
 		var am := ArrayMesh.new()
 		for i in (part[1] as Array).size():
@@ -272,8 +292,15 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 				if part[3][i] == Mesh.PRIMITIVE_TRIANGLES:
 					_unbridge(arr, j)
 			base += (arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).size()
-			am.add_surface_from_arrays(part[3][i], arr)
-			am.surface_set_material(i, part[2][i])
+			var rest := PackedFloat32Array()  # CUSTOM0: rest position / height, for the look shader's masks
+			for v: Vector3 in arr[Mesh.ARRAY_VERTEX]:
+				rest.append_array([v.x / h, v.y / h, v.z / h, 0.0])
+			arr[Mesh.ARRAY_CUSTOM0] = rest
+			am.add_surface_from_arrays(part[3][i], arr, [], {}, Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT)
+			var src: Material = part[2][i]
+			if not looks.has(src):
+				looks[src] = _look_material(src, keys)
+			am.surface_set_material(i, looks[src])
 		var mi := MeshInstance3D.new()
 		mi.mesh = am
 		mi.skin = skin
@@ -282,7 +309,177 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 	for side in 2:
 		var fallback := at[Bone.FOREARM_L if side == 0 else Bone.FOREARM_R] - Vector3(0.0, 0.17 * h, 0.0)
 		sk.set_meta("hand_l" if side == 0 else "hand_r", hands[side] / hands[side + 2] if hands[side + 2] > 0.0 else fallback)
+	sk.set_meta("profile", prof)
+	sk.set_meta("keys", keys)
 	return sk
+
+
+## The colours the garments were made in: the upper garment (front of the chest, 0.6..0.76 of the
+## height) and the trousers (thighs, 0.3..0.44), read from the texture under those vertices. Each
+## is the mean of the samples near their first mean (seams, logos and hands left out). Also
+## "top_low": how far down the front of the body the top goes (a shirt tucked in at the belt, a
+## hoodie lower), and "gx": the body's middle (x), both as shares of the height.
+static func _cloth_keys(parts: Array, h: float, gx: float) -> Dictionary:
+	var top: Array[Color] = []
+	var bottom: Array[Color] = []
+	var column: Array = []  # [height share, colour] down the front of the waist
+	for part in parts:
+		for i in (part[1] as Array).size():
+			var arr: Array = part[1][i]
+			var mat := part[2][i] as BaseMaterial3D
+			var uvs: Variant = arr[Mesh.ARRAY_TEX_UV]
+			if mat == null or uvs == null:
+				continue
+			var img: Image = null
+			if mat.albedo_texture != null:
+				img = mat.albedo_texture.get_image()
+				if img != null and img.is_compressed():
+					img = img.duplicate()
+					img.decompress()
+			var verts: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+			for k in verts.size():
+				var p := verts[k] / h
+				var front := absf(p.x - gx / h) < 0.07 and p.z > 0.0
+				var in_top := p.y > 0.6 and p.y < 0.76 and front
+				var in_bottom := p.y > 0.3 and p.y < 0.44
+				var in_waist := p.y > 0.4 and p.y <= 0.6 and absf(p.x - gx / h) < 0.05 and p.z > 0.0
+				if not (in_top or in_bottom or in_waist):
+					continue
+				var c := mat.albedo_color
+				if img != null and not img.is_empty():
+					var uv: Vector2 = (uvs as PackedVector2Array)[k]
+					c *= img.get_pixel(int(fposmod(uv.x, 1.0) * img.get_width()) % img.get_width(), int(fposmod(uv.y, 1.0) * img.get_height()) % img.get_height())
+				if in_top:
+					top.append(c)
+				if in_bottom:
+					bottom.append(c)
+				if in_top or in_waist:
+					column.append([p.y, c])
+	var keys := {"top": _robust_mean(top, Color(0.5, 0.5, 0.5)), "bottom": _robust_mean(bottom, Color(0.2, 0.2, 0.2))}
+	# where the top ends at the front of the waist: a shirt tucked in at the belt, a hoodie lower
+	var low := 1.0
+	var tk: Color = keys["top"]
+	var bk: Color = keys["bottom"]
+	var hue := func(a: Color) -> Vector3:  # colour direction, brightness left out (lit or in a fold alike)
+		var g := Vector3(sqrt(a.r), sqrt(a.g), sqrt(a.b))
+		return g / maxf(g.x + g.y + g.z, 0.001)
+	var bright := func(a: Color) -> float: return sqrt(a.r) + sqrt(a.g) + sqrt(a.b)
+	var as_top := func(c: Color) -> bool:  # nearer the top's colour than the trousers' (hue, then brightness)
+		var dt: float = (hue.call(c) as Vector3).distance_to(hue.call(tk)) + absf(bright.call(c) - bright.call(tk)) * 0.08
+		var db: float = (hue.call(c) as Vector3).distance_to(hue.call(bk)) + absf(bright.call(c) - bright.call(bk)) * 0.08
+		return dt < db
+	column.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
+	var misses := 0
+	for e in column:
+		if as_top.call(e[1]):
+			low = minf(low, float(e[0]))
+			misses = 0
+		elif float(e[0]) < low - 0.015:
+			misses += 1
+			if misses >= 3:
+				break  # past the waistband
+	keys["top_low"] = clampf(low, 0.42, 0.6)
+	keys["gx"] = gx / h
+	return keys
+
+
+static func _robust_mean(cs: Array[Color], fallback: Color) -> Color:
+	if cs.is_empty():
+		return fallback
+	var m := Color(0, 0, 0)
+	for c in cs:
+		m += c
+	m /= float(cs.size())
+	var near := Color(0, 0, 0)
+	var n := 0
+	for c in cs:
+		if Vector3(c.r - m.r, c.g - m.g, c.b - m.b).length() < 0.15:
+			near += c
+			n += 1
+	return Color(near.r / n, near.g / n, near.b / n) if n > 0 else m
+
+
+## The look ShaderMaterial (character.gdshader) standing in for a model's material: its texture,
+## colour, roughness and normal map, plus the garment colours `keys`.
+static func _look_material(src: Material, keys: Dictionary) -> ShaderMaterial:
+	var m := ShaderMaterial.new()
+	m.shader = LOOK
+	var bm := src as BaseMaterial3D
+	if bm != null:
+		m.set_shader_parameter("albedo", bm.albedo_color)
+		m.set_shader_parameter("has_tex", bm.albedo_texture != null)
+		if bm.albedo_texture != null:
+			m.set_shader_parameter("albedo_tex", bm.albedo_texture)
+		m.set_shader_parameter("roughness", bm.roughness)
+		m.set_shader_parameter("metallic", bm.metallic)
+		if bm.normal_enabled and bm.normal_texture != null:
+			m.set_shader_parameter("has_normal", true)
+			m.set_shader_parameter("normal_tex", bm.normal_texture)
+	else:
+		m.set_shader_parameter("has_tex", false)
+	m.set_shader_parameter("top_key", keys["top"])
+	m.set_shader_parameter("bottom_key", keys["bottom"])
+	m.set_shader_parameter("top_low", keys["top_low"])
+	m.set_shader_parameter("mid_x", keys["gx"])
+	m.set_shader_parameter("head", keys["head"])
+	return m
+
+
+## Body outline for things put on it (wounds, accessories), in rest space (meters, the model faces
+## +Z): per 2 % of the height from 0.44 to 0.86, the torso's front and back (near the middle) and
+## its sides; and the head: top, face front and back of the head at eye level (0.93), half width.
+static func _profile(pts: PackedVector3Array, h: float, gx: float) -> Dictionary:
+	var y0 := 0.44
+	var dy := 0.02
+	var n := int((0.86 - y0) / dy) + 1
+	var front := PackedFloat32Array()
+	var back := PackedFloat32Array()
+	var left := PackedFloat32Array()
+	var right := PackedFloat32Array()
+	for arr in [front, back, left, right]:
+		arr.resize(n)
+	for k in n:
+		front[k] = -INF
+		back[k] = INF
+		left[k] = -INF
+		right[k] = INF
+	var head := {"top": 0.0, "face": -INF, "back": INF, "half": 0.0}
+	var lo := Vector3(INF, INF, INF)  # the whole mesh, for rows a sparse mesh has no points in
+	var hi := -lo
+	for p in pts:
+		lo = lo.min(p)
+		hi = hi.max(p)
+		var y := p.y / h
+		if y >= y0 and y < y0 + dy * n:
+			var k := int((y - y0) / dy)
+			if absf(p.x - gx) < 0.05 * h:
+				front[k] = maxf(front[k], p.z)
+				back[k] = minf(back[k], p.z)
+			if absf(p.z) < 0.04 * h and absf(p.x - gx) < 0.14 * h:  # the arms hang further out
+				left[k] = maxf(left[k], p.x)
+				right[k] = minf(right[k], p.x)
+		if y > 0.88:
+			head["top"] = maxf(float(head["top"]), p.y)
+			if absf(p.x - gx) < 0.035 * h and absf(y - 0.93) < 0.015:
+				head["face"] = maxf(float(head["face"]), p.z)
+				head["back"] = minf(float(head["back"]), p.z)
+			if absf(y - 0.93) < 0.02:
+				head["half"] = maxf(float(head["half"]), absf(p.x - gx))
+	var outer := [hi.z, lo.z, hi.x, lo.x]  # front, back, left, right of the whole mesh
+	var sides := [front, back, left, right]
+	for k in n:  # rows the scan missed take the neighbour's value (the first one the mesh's extent)
+		for j in 4:
+			if absf(float(sides[j][k])) == INF:
+				sides[j][k] = sides[j][k - 1] if k > 0 else float(outer[j])
+	front = sides[0]
+	back = sides[1]
+	left = sides[2]
+	right = sides[3]
+	if absf(float(head["face"])) == INF:
+		head["face"] = 0.06 * h
+		head["back"] = -0.06 * h
+	return {"y0": y0, "dy": dy, "front": front, "back": back, "left": left, "right": right, "gx": gx,
+			"head_top": head["top"], "face_z": head["face"], "head_back": head["back"], "head_half": head["half"]}
 
 
 ## Surface arrays with positions, normals and tangents moved by xf.

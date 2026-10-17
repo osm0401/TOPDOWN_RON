@@ -25,6 +25,7 @@ enum Hold { NONE, RIFLE, PISTOL, PISTOL_ONE, PISTOL_LOW, WORK, CUFFED, COVER, HA
 ## - "stance" (Stance), "hold" (Hold), "aim" (unit direction a PISTOL_ONE arm points, model space)
 ## - "look": unit direction the head turns to (model space; ZERO: straight ahead)
 ## - "flinch" / "recoil": 0..1, fading after a hit / a shot; "reload": 0..1 through a reload, < 0 none
+## - "tremble": 0..1, fear: quicker, shallower breaths and a shaking upper body and head
 ## - "dt": seconds since the last pose: a new stance or hold blends in over pose blend_s from the
 ##   pose shown last (without "dt" it switches at once)
 ## Gear goes in model["gear"]: {"hand": gun or camera in the hands, "back": slung rifle, "holster":
@@ -66,7 +67,9 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	var fwd := dir.z * amount * sin(phase)
 	var lean := _gait(gait, "lean_deg", run) * amount
 	var twist := _gait(gait, "twist_deg", run) * fwd * (0.2 if aiming else 1.0)
-	var breath := sin(t * TAU * float(pc["breath_hz"])) * deg_to_rad(float(pc["breath_deg"]))
+	var tremble := float(s.get("tremble", 0.0))  # frightened: quick shallow breaths, a shaking upper body
+	var breath := sin(t * TAU * float(pc["breath_hz"]) * (1.0 + 1.6 * tremble)) * deg_to_rad(float(pc["breath_deg"])) * (1.0 + 0.5 * tremble)
+	var shake := (sin(t * 37.0) * 0.6 + sin(t * 23.0 + 1.3) * 0.4) * deg_to_rad(1.4) * tremble
 	var back := deg_to_rad(float(pc["flinch_deg"])) * flinch + deg_to_rad(float(pc["recoil_deg"])) * recoil
 	var bend := 0.0  # forward bend of the upper body for the stance
 	match stance:
@@ -82,8 +85,8 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	elif hold == Hold.PISTOL:
 		blade = -deg_to_rad(6.0)
 	q[CM.Bone.SPINE] = Quaternion(Vector3.UP, twist * 0.5) * Quaternion(swing, -lean) * Quaternion(Vector3.RIGHT, bend * 0.5 - back * 0.6)
-	q[CM.Bone.CHEST] = Quaternion(Vector3.UP, twist * 0.5 + blade + deg_to_rad(4.0) * flinch) \
-			* Quaternion(Vector3.RIGHT, bend * 0.5 + breath - back * 0.4)
+	q[CM.Bone.CHEST] = Quaternion(Vector3.UP, twist * 0.5 + blade + deg_to_rad(4.0) * flinch + shake) \
+			* Quaternion(Vector3.RIGHT, bend * 0.5 + breath - back * 0.4 + shake * 0.5)
 	var gr: Array[Quaternion] = []
 	var gp: Array[Vector3] = []
 	_fk(r, q, hip_off, gr, gp)
@@ -104,7 +107,8 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 			head_g = Quaternion(Vector3.UP, deg_to_rad(55.0))  # face turned to the side on the floor
 		Stance.DEAD:
 			head_g = Quaternion(Vector3.UP, deg_to_rad(-35.0)) * Quaternion(Vector3.FORWARD, deg_to_rad(10.0))
-	head_g = head_g * Quaternion(Vector3.RIGHT, -deg_to_rad(float(pc["flinch_deg"])) * 0.6 * flinch)
+	head_g = head_g * Quaternion(Vector3.RIGHT, -deg_to_rad(float(pc["flinch_deg"])) * 0.6 * flinch) \
+			* Quaternion(Vector3.UP, shake * 1.5)
 	q[CM.Bone.HEAD] = gr[CM.Bone.CHEST].inverse() * head_g
 	_fk(r, q, hip_off, gr, gp)
 
@@ -171,7 +175,8 @@ static func _rig_info(sk: Skeleton3D) -> Dictionary:
 		parent.append(sk.get_bone_parent(b))
 		rest.append(off[b] + (rest[parent[b]] if parent[b] >= 0 else Vector3.ZERO))
 	var r := {"off": off, "rest": rest, "parent": parent, "h": float(sk.get_meta("h", 1.75)),
-			"leg_len": float(sk.get_meta("leg_len", 0.9)), "arms": bool(sk.get_meta("arms", false))}
+			"leg_len": float(sk.get_meta("leg_len", 0.9)), "arms": bool(sk.get_meta("arms", false)),
+			"profile": sk.get_meta("profile", {})}
 	var arms: Array[Dictionary] = []
 	for side in 2:  # 0 left (+X), 1 right
 		var a := CM.Bone.UPPER_ARM_L if side == 0 else CM.Bone.UPPER_ARM_R
@@ -278,7 +283,7 @@ static func _legs(r: Dictionary, q: Array[Quaternion], stance: int, amount: floa
 				q[leg["f"]] = (q[leg["a"]] * q[leg["b"]]).inverse().slerp(Quaternion.IDENTITY, 0.25)  # soles mostly flat
 			# hips drop as the legs spread (the planted foot stays down) and sway a little standing
 			var drop := float(r["leg_len"]) * (1.0 - cos(thigh)) * float(gait["hip_drop"])
-			var sway := sin(t * 0.7) * 0.004 * h * (1.0 - amount)
+			var sway := (sin(t * 0.7) * 0.007 + sin(t * 0.23) * 0.004) * h * (1.0 - amount)  # shifting weight from foot to foot
 			return Vector3(sway, -drop, 0.0)
 		Stance.CROUCH, Stance.KNEEL, Stance.WORK:
 			var leg_len: float = legs[0]["la"]
@@ -448,7 +453,10 @@ static func _in_hand(r: Dictionary, gr: Array[Quaternion], gp: Array[Vector3], s
 
 
 ## Gear worn on the body: slung rifle (back, or in front while working), holstered pistol on the
-## right thigh, cuffs between the wrists, cap on the head, armband on the left upper arm.
+## right thigh, cuffs between the wrists, cap on the head, armband on the left upper arm; and what
+## people wear (sized from the body profile found at load): "hat" (beanie), "eyes" (glasses),
+## "mask" (bandana) on the head, "pack" (backpack) on the back, "radio" on the chest, "patch" on the
+## right upper arm.
 static func _place_worn(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], gp: Array[Vector3], h: float, hold: int) -> void:
 	var rest: Array[Vector3] = r["rest"]
 	var chest := Transform3D(Basis(gr[CM.Bone.CHEST]), gp[CM.Bone.CHEST])
@@ -487,3 +495,44 @@ static func _place_worn(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], 
 		else:  # hands-up model: its left upper arm rises from the shoulder, out and up
 			band.transform = chest * Transform3D(Basis(_arc(Vector3.UP, Vector3(0.35, 1.0, 0.0).normalized())),
 					rest[c["a"]] - chest_rest + Vector3(0.025, 0.06, 0.0) * h)
+	_place_wear(r, gear, gr, gp, h, chest)
+
+
+## Hat, glasses and bandana are built to a unit head: here scaled to this head (its width,
+## height and depth from the profile) and carried by the head bone; the backpack and radio by the
+## chest, the patch by the right upper arm.
+static func _place_wear(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], gp: Array[Vector3], h: float, chest: Transform3D) -> void:
+	var prof: Dictionary = r["profile"]
+	if prof.is_empty():
+		return
+	var rest: Array[Vector3] = r["rest"]
+	var gx := float(prof["gx"])
+	var head_bone := Transform3D(Basis(gr[CM.Bone.HEAD]), gp[CM.Bone.HEAD]) * Transform3D(Basis.IDENTITY, -rest[CM.Bone.HEAD])
+	var size := Vector3(maxf(float(prof["head_half"]) * 2.0, 0.08 * h), 0.135 * h, maxf(float(prof["face_z"]) - float(prof["head_back"]), 0.1 * h))
+	var head := head_bone * Transform3D(Basis.from_scale(size),
+			Vector3(gx, float(prof["head_top"]) - size.y * 0.5, (float(prof["face_z"]) + float(prof["head_back"])) * 0.5))
+	for slot: String in ["hat", "mask"]:
+		var g := gear.get(slot) as Node3D
+		if g != null:
+			g.transform = head
+	var eyes := gear.get("eyes") as Node3D
+	if eyes != null:
+		eyes.transform = head * Transform3D(Basis.IDENTITY, Vector3(0.0, 0.07, 0.43))  # on the nose bridge (the nose tip is at 0.5)
+	var torso := func(y: float, side: String) -> float:  # the profile's front / back z at height y (share of h)
+		var arr: PackedFloat32Array = prof[side]
+		return arr[clampi(int((y - float(prof["y0"])) / float(prof["dy"])), 0, arr.size() - 1)]
+	var chest_bone := chest * Transform3D(Basis.IDENTITY, -rest[CM.Bone.CHEST])
+	var pack := gear.get("pack") as Node3D
+	if pack != null:
+		pack.transform = chest_bone * Transform3D(Basis.IDENTITY, Vector3(gx, 0.66 * h, torso.call(0.66, "back") + 0.015 * h))  # snug: into the cloth a little
+	var radio := gear.get("radio") as Node3D
+	if radio != null:
+		radio.transform = chest_bone * Transform3D(Basis(Vector3.BACK, deg_to_rad(-8.0)), Vector3(gx - 0.075 * h, 0.755 * h, torso.call(0.755, "front") + 0.012 * h))
+	var patch := gear.get("patch") as Node3D
+	if patch != null and r["arms"]:
+		var c: Dictionary = (r["arm"] as Array)[1]  # the right arm (the officer model wears its own badge on the left)
+		var ra: Vector3 = c["ra"]
+		var out := ra.cross(Vector3.BACK).normalized()  # away from the body, square to the arm
+		var at: Vector3 = rest[c["a"]] + ra * float(c["la"]) * 0.32 + out * 0.03 * h
+		var basis := Basis.looking_at(-out, -ra)  # its face (+Z) outward, its top up the arm
+		patch.transform = Transform3D(Basis(gr[c["a"]]) * basis, gp[c["a"]] + gr[c["a"]] * (at - rest[c["a"]]))

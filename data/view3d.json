@@ -10,6 +10,185 @@
   "actor_h": 1.7,
   "aim_height_m": 1.1,
   "fog_y": 0.03,
+  "people": {
+    "_note": "사람마다 다른 겉모습(PeopleLooks). 같은 번호의 사람은 호스트와 클라이언트에서 같게 보인다. tops / bottoms: 윗옷·바지를 다시 칠할 색(keep_*: 모델 원래 색을 그대로 둘 확률). skins: 피부색에 곱하는 색. height / width: 키·몸 너비 배율 범위. wear: 부위별 [착용물, 가중치] (\"\"는 없음). colors: 착용물 색. 단서와 헷갈리지 않게 빨간 모자·노란 옷은 넣지 않는다.",
+    "skins": [
+      "#ffffff",
+      "#f3e9e2",
+      "#e0cbbd",
+      "#c9ab96",
+      "#a7826b",
+      "#7f5f4c"
+    ],
+    "enemy": {
+      "keep_top": 0.15,
+      "keep_bottom": 0.3,
+      "tops": [
+        "#17181b",
+        "#2a2e35",
+        "#3a4630",
+        "#46292c",
+        "#1d2840",
+        "#54463a",
+        "#6a6d72",
+        "#2f3b3f"
+      ],
+      "bottoms": [
+        "#121214",
+        "#1d2738",
+        "#2c3a52",
+        "#38393c",
+        "#463f30"
+      ],
+      "height": [
+        0.95,
+        1.06
+      ],
+      "width": [
+        0.96,
+        1.1
+      ],
+      "wear": {
+        "hat": [
+          [
+            "",
+            0.6
+          ],
+          [
+            "beanie",
+            0.4
+          ]
+        ],
+        "mask": [
+          [
+            "",
+            0.8
+          ],
+          [
+            "bandana",
+            0.2
+          ]
+        ],
+        "eyes": [
+          [
+            "",
+            0.8
+          ],
+          [
+            "sunglasses",
+            0.2
+          ]
+        ],
+        "pack": [
+          [
+            "",
+            0.85
+          ],
+          [
+            "backpack",
+            0.15
+          ]
+        ]
+      },
+      "hair_chance": 0.35
+    },
+    "civilian": {
+      "keep_top": 0.15,
+      "keep_bottom": 0.2,
+      "tops": [
+        "#dfe6ee",
+        "#f2f2ef",
+        "#9fb7cf",
+        "#b9cdb0",
+        "#d9b8b8",
+        "#cdbfa4",
+        "#4b5a6e",
+        "#7a5b6e",
+        "#3f5f4f"
+      ],
+      "bottoms": [
+        "#c9bba0",
+        "#2a3550",
+        "#3d4f6e",
+        "#505257",
+        "#1c1c1f",
+        "#6b5a44"
+      ],
+      "height": [
+        0.93,
+        1.05
+      ],
+      "width": [
+        0.94,
+        1.08
+      ],
+      "wear": {
+        "hat": [
+          [
+            "",
+            0.88
+          ],
+          [
+            "beanie",
+            0.12
+          ]
+        ],
+        "eyes": [
+          [
+            "",
+            0.7
+          ],
+          [
+            "glasses",
+            0.3
+          ]
+        ],
+        "pack": [
+          [
+            "",
+            0.8
+          ],
+          [
+            "backpack",
+            0.2
+          ]
+        ]
+      },
+      "hair_chance": 0.75
+    },
+    "colors": {
+      "hair": [
+        "#16110d",
+        "#2b1d14",
+        "#4a3220",
+        "#6b4b2e",
+        "#8f8a85",
+        "#8f7d62",
+        "#0c0c0c"
+      ],
+      "beanie": [
+        "#1b1b1d",
+        "#2d3340",
+        "#3b4232",
+        "#4a4a4d",
+        "#1f2b3a"
+      ],
+      "bandana": [
+        "#141416",
+        "#1f2a40",
+        "#3b3f45",
+        "#2f3a2a"
+      ],
+      "backpack": [
+        "#1b1d22",
+        "#2d3a4f",
+        "#4a2f2f",
+        "#3c4a3a",
+        "#5a5a5e",
+        "#6b4f2f"
+      ]
+    }
+  },
   "characters": {
     "_note": "assets/characters/<이름>.glb가 있으면 도형 대신 모델을 쓴다: officer(경찰), enemy(용의자), civilian(민간인), enemy_up / civilian_up(항복, 손 든 자세: surrender_model이 true일 때만 쓰고, false면 서 있는 모델이 뼈대로 손을 든다). height_m 키로 맞추고 바닥에 세운다(손 든 모델은 손끝까지 up_height_m). yaw_deg: 모델이 +Z(glTF 기본 정면)를 보면 90, 다른 쪽을 보면 바꾼다. player_tint / player_rim: 두 경찰을 구분하는 색. 몸 전체에 고르게 덧칠하는 정도와 윤곽(가장자리)에 비치는 정도(0~1). 어두운 방에서도 보이고 옷과 장비도 보이게 윤곽 위주로.",
     "set": "gemini",
@@ -83,6 +262,7 @@
   },
   "effects": {"_note": "총알 자국(holes_max개까지), 바닥 핏자국(stains_max), 탄피(casings_max, 튀어나가는 속도 eject_mps m/s), 시신 밑 피 웅덩이(pool_m 크기까지 pool_s초 동안 번짐). 색은 RGB 0~1.",
     "holes_max": 80, "stains_max": 40, "casings_max": 150, "eject_mps": 2.4, "pool_m": 1.1, "pool_s": 6.0,
+    "wound": {"radius": 0.035, "spread_per_s": 0.004, "max_radius": 0.085, "_note": "맞은 자리 옷에 스미는 피: 크기(키에 대한 비율), 쓰러진 뒤 번지는 속도와 최대 크기"},
     "dust": [0.66, 0.63, 0.58], "blood": [0.42, 0.02, 0.02]},
   "wear": {"_note": "생활 흔적(매번 같은 자리): 바닥 1 m²당 때 얼룩 수, 방마다 벽 금·얼룩 수, 바닥 종류별 흩어진 종이 수, 바깥 벽 빗물 자국 수, 아스팔트 기름 얼룩 수.",
     "grime_per_m2": 0.12, "cracks_per_room": 2, "papers": {"office": 7, "corridor": 3, "wood": 2, "concrete": 2}, "streaks_outside": 10, "oil_on_street": 5},

@@ -22,6 +22,7 @@ const CharacterModels := preload("res://src/game/character_models.gd")
 const CharacterAnim := preload("res://src/game/character_anim.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
 const PropModels := preload("res://src/game/prop_models.gd")
+const PeopleLooks := preload("res://src/game/people_looks.gd")
 
 static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
 static var tex_folder := "res://assets/textures/"  ## where surface pictures are looked for (tests point it elsewhere)
@@ -46,6 +47,7 @@ var _fog_origin := Vector2.INF
 var _ring := TorusMesh.new()
 var _cam_ring: MeshInstance3D
 var _sil_ring: MeshInstance3D  ## outline range around the local officer in a dark room
+var _last_npc_shot := Vector2.INF  ## where the latest NPC shot came from (the officer it hit bleeds on that side)
 var _walls: Array[MeshInstance3D] = []
 var _wall_cut: Array[float] = []  ## per-wall height factor, lowered while it hides the local player
 var _doors: Array[Dictionary] = []
@@ -89,9 +91,9 @@ func _ready() -> void:
 	for s in 2:
 		_players.append(_make_player(s))
 		_players[s]["who"] = s
-	for a in world.director.agents:
-		_npcs.append(_make_npc(a))
-		_npcs[_npcs.size() - 1]["who"] = 1 + _npcs.size()
+	for i in world.director.agents.size():
+		_npcs.append(_make_npc(world.director.agents[i], i))
+		_npcs[i]["who"] = 2 + i
 	world.mouse_world = _mouse_ground
 	if quality == "":
 		quality = str(_cfg["graphics"]["quality"])
@@ -749,6 +751,7 @@ func _make_player(slot: int) -> Dictionary:
 	if not model.is_empty():
 		for mi in CharacterModels.meshes(model["node"]):
 			mi.layers = 2  # people take no decals (bullet holes, blood on the floor)
+		model["look"] = {"tints": {"patch": WorldView.PLAYER_COLORS[slot]}}  # shoulder patch in the player's colour
 	var rim: ShaderMaterial = null
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
@@ -792,19 +795,27 @@ func _make_player(slot: int) -> Dictionary:
 		"dot": _add(_sphere(0.05), _mat(Color(1.0, 0.2, 0.2), true))}
 
 
-func _make_npc(a: NpcDirector.Agent) -> Dictionary:
+## NPC number `index`: its own look (clothes, skin, build, what it wears; PeopleLooks) on one of the
+## model files of its kind (enemy, enemy_2, enemy_3 ... when they exist).
+func _make_npc(a: NpcDirector.Agent, index: int) -> Dictionary:
 	var root := Node3D.new()
 	add_child(root)
 	var rig := Node3D.new()
 	root.add_child(rig)
 	var mat := _mat(WorldView.ENEMY_COLOR)
 	var kind := "enemy" if a.brain.role == NpcBrain.Role.ENEMY else "civilian"
-	var model := CharacterModels.make(kind, _cfg["characters"])
+	var look := PeopleLooks.pick(kind, index, _cfg.get("people", {}))
+	var names := CharacterModels.variants(kind, _cfg["characters"])
+	var model_name: String = names[int(look["variant"]) % names.size()]
+	var model := CharacterModels.make(model_name, _cfg["characters"])
 	if not model.is_empty():
 		for mi in CharacterModels.meshes(model["node"]):
 			mi.layers = 2  # people take no decals (bullet holes, blood on the floor)
+		PeopleLooks.apply(model, look)
 	var separate_up := bool(_cfg["characters"]["surrender_model"])  # else the model itself raises its hands
-	var model_up := CharacterModels.make(kind + "_up", _cfg["characters"]) if separate_up and not model.is_empty() else {}
+	var model_up := CharacterModels.make(model_name + "_up", _cfg["characters"]) if separate_up and not model.is_empty() else {}
+	if not model_up.is_empty():
+		PeopleLooks.apply(model_up, look)
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
 		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
@@ -900,6 +911,7 @@ func _on_sound(kind: int, pos: Vector2) -> void:
 
 
 func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
+	_wound_from_shot(shooter, from, to, _hit_npc)
 	var m := _mat(Color(1.0, 0.35, 0.3) if shooter >= 2 else Color(1.0, 0.95, 0.5), true)
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var mi := _add(_box(Vector3(0.04, 0.04, 1.0)), m)
@@ -1213,7 +1225,9 @@ func _update_npcs(delta: float) -> void:
 		var model_up: Dictionary = n["model_up"]
 		var hands_up := st == S.SURRENDER and not model_up.is_empty()
 		if lying:  # a model lies face down (hands behind its head) when down, on its back when dead
-			n["prone"] = st == S.DOWN and not model.is_empty()
+			# down: face down, hands behind the head; dead: on its back, or on its face when the shot came
+			# from behind (it falls away from the shooter)
+			n["prone"] = not model.is_empty() and (st == S.DOWN or (st == S.DEAD and float(n.get("hit_from_z", 1.0)) < -0.25))
 		var prone: bool = n.get("prone", false)
 		var lie := _fall(n, lying, delta)
 		rig.basis = Basis(Vector3.BACK, (-PI * 0.5 if prone else PI * 0.5) * lie)
@@ -1351,6 +1365,7 @@ func _gear(model: Dictionary, kind: String) -> Node3D:
 		var g := GearModels.make(kind)
 		g.layers = 2
 		g.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+		PeopleLooks.tint(g, kind, model.get("look", {}))  # this person's hair, beanie, bag colour; the officer's patch
 		(model["skeleton"] as Skeleton3D).add_child(g)
 		have[kind] = g
 	return have[kind]
@@ -1407,6 +1422,8 @@ func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	else:
 		s["hold"] = H.PISTOL
 		slots = {"hand": "pistol", "back": rifle}
+	slots["patch"] = "patch"
+	slots["radio"] = "radio"
 	var w: WeaponState = ps.weapons[ps.active] if ps.active < ps.weapons.size() else null
 	if w != null and w.reloading and not dead and not ps.busy():
 		n["reload_t"] = float(n.get("reload_t", 0.0)) + delta
@@ -1428,12 +1445,20 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		return
 	var CS := CharacterAnim.Stance
 	var H := CharacterAnim.Hold
+	var scared := 0.0  # civilians shake when they give up or hide; a surrendered enemy a little
+	if st in [S.SURRENDER, S.HIDE, S.DOWN, S.RESTRAINED]:
+		scared = 1.0 if b.role == NpcBrain.Role.CIVILIAN else (0.35 if not b.armed else 0.0)
+	s["tremble"] = lerpf(float(n.get("tremble", 0.0)), scared, minf(delta * 2.0, 1.0))
+	n["tremble"] = s["tremble"]
 	s["vel"] = n["walk_v"]
 	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
 	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
 	var slots := {}
+	for slot: String in ((model.get("look", {}) as Dictionary).get("acc", {}) as Dictionary):  # what this person wears
+		slots[slot] = model["look"]["acc"][slot]
 	if a.clues.has("cap"):
 		slots["cap"] = "cap"
+		slots.erase("hat")  # the red cap is the clue: nothing else on the head
 	if a.clues.has("band"):
 		slots["band"] = "band"
 	var to_officer := Vector3.ZERO
@@ -1507,6 +1532,41 @@ func _gun_dir(model: Dictionary) -> Vector3:
 func _on_damaged(slot: int) -> void:
 	if slot >= 0 and slot < _players.size():
 		_players[slot]["flinch"] = 1.0
+		var model: Dictionary = _players[slot]["model"]
+		if not model.is_empty() and _last_npc_shot != Vector2.INF:  # blood on the officer's side facing the shooter
+			var ps: PlayerState = world.players[slot]
+			PeopleLooks.add_wound(model, _to_model(model, _p3(_last_npc_shot - world.display_pos(slot), 0.0)),
+					randf_range(0.55, 0.8), float(_cfg["effects"]["wound"]["radius"]), randf_range(-1.0, 1.0))
+
+
+## A shot that hit an NPC leaves a wound on it (on the side toward the shooter); a less-lethal round
+## leaves none. NPC shots are remembered for the officer they may hit (_on_damaged).
+func _wound_from_shot(shooter: int, from: Vector2, to: Vector2, hit_npc: bool) -> void:
+	if shooter >= 2:
+		_last_npc_shot = from
+		return
+	if not hit_npc or shooter < 0 or shooter >= world.players.size():
+		return
+	var ps: PlayerState = world.players[shooter]
+	if ps.weapon_kinds.size() > ps.active and ps.weapon_kinds[ps.active] == "rifle_nonlethal":
+		return
+	var best := -1
+	var best_d := 40.0
+	for i in mini(_npcs.size(), world.director.agents.size()):
+		var d := world.director.agents[i].pos.distance_to(to)
+		if d < best_d:
+			best = i
+			best_d = d
+	if best < 0:
+		return
+	var model: Dictionary = _npcs[best]["model"]
+	if model.is_empty():
+		return
+	var at := world.director.agents[best].pos
+	var toward := _to_model(model, _p3(from - at, 0.0))
+	if world.director.agents[best].brain.alive():
+		_npcs[best]["hit_from_z"] = toward.z  # (a killing shot from behind drops it on its face)
+	PeopleLooks.add_wound(model, toward, randf_range(0.52, 0.8), float(_cfg["effects"]["wound"]["radius"]), randf_range(-1.0, 1.0))
 
 
 ## Tint laid over an NPC model: white flash when hit, grey when dead, darker while down, hiding
@@ -1774,6 +1834,8 @@ func _update_casings(delta: float) -> void:
 ## A dead body bleeds a pool that spreads under its chest over pool_s.
 func _pool(n: Dictionary, a: NpcDirector.Agent, delta: float) -> void:
 	var fx: Dictionary = _cfg["effects"]
+	if not (n["model"] as Dictionary).is_empty():  # the clothes soak up more as it lies there
+		PeopleLooks.spread_wounds(n["model"], delta * float(fx["wound"]["spread_per_s"]), float(fx["wound"]["max_radius"]))
 	if not n.has("pool"):
 		var chest := a.pos + Vector2(-0.8 / _k, 0.0).rotated(a.brain.facing)  # lying on its back, head behind it
 		n["pool"] = {"decal": _stain(chest, 0.2), "age": 0.0}

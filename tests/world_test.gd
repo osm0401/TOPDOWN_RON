@@ -7,6 +7,7 @@ extends Node
 const CharacterModels := preload("res://src/game/character_models.gd")
 const CharacterAnim := preload("res://src/game/character_anim.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
+const PeopleLooks := preload("res://src/game/people_looks.gd")
 
 var _failed := 0
 var _w: NetWorld
@@ -544,10 +545,57 @@ func _character_model_tests() -> void:
 		_check(again["node"] != m["node"] and again["overlay"] != m["overlay"], "every figure gets its own copy and tint")
 		var meshes := CharacterModels.meshes(m["node"])
 		_check(not meshes.is_empty() and meshes.all(func(mi: MeshInstance3D) -> bool: return mi.material_overlay == m["overlay"]), "the tint covers every surface")
-		var mat := meshes[0].mesh.surface_get_material(0) as BaseMaterial3D
-		_check(mat != null and is_zero_approx(mat.metallic), "a metallic 1.0 left by the generator (no metallic texture) is made non-metallic")
+		var mat := meshes[0].mesh.surface_get_material(0) as ShaderMaterial  # the look shader stands in for the file's material
+		_check(mat != null and is_zero_approx(float(mat.get_shader_parameter("metallic"))), "a metallic 1.0 left by the generator (no metallic texture) is made non-metallic")
+		var custom := meshes[0].mesh.surface_get_arrays(0)[Mesh.ARRAY_CUSTOM0] as PackedFloat32Array
+		var verts := meshes[0].mesh.surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array
+		_check(custom != null and custom.size() == verts.size() * 4 and absf(custom[1] - verts[0].y / 1.75) < 0.001,
+				"every vertex carries its rest position / height for the look shader's masks")
+		var sk: Skeleton3D = m["skeleton"]
+		var prof: Dictionary = sk.get_meta("profile", {})
+		_check(not prof.is_empty() and float(prof["face_z"]) > float(prof["head_back"]) and float(prof["head_top"]) > 1.6
+				and (prof["front"] as PackedFloat32Array)[10] > (prof["back"] as PackedFloat32Array)[10], "the body profile (torso front / back, head) is read at load")
+		# a person's own look: per-instance colours, build, wounds on the side toward the shooter
+		var look := {"top": Color(0.1, 0.2, 0.3, 1.0), "bottom": Color(0.2, 0.2, 0.2, 1.0), "skin": Color(0.8, 0.7, 0.6, 1.0), "hair": Color(0.1, 0.05, 0.0, 1.0),
+				"scale": Vector3(1.05, 0.95, 1.05), "acc": {}, "tints": {}, "variant": 0}
+		PeopleLooks.apply(m, look)
+		_check((m["node"] as Node3D).scale == Vector3(1.05, 0.95, 1.05) and meshes[0].get_instance_shader_parameter("top_tint") == look["top"],
+				"a look sets the build and the per-instance clothes colours")
+		var w := PeopleLooks.add_wound(m, Vector3(0, 0, 1), 0.7, 0.04, 0.0)
+		var wb := PeopleLooks.add_wound(m, Vector3(0, 0, -1), 0.7, 0.04, 0.0)
+		_check(w.z > 0.0 and wb.z < 0.0 and absf(w.y - 0.7) < 0.001 and meshes[0].get_instance_shader_parameter("wound1") == wb,
+				"a shot from the front wounds the chest, from behind the back")
+		for i in 5:
+			PeopleLooks.add_wound(m, Vector3(1, 0, 0), 0.6, 0.03, 0.0)
+		_check((m["wounds"] as Array).size() == PeopleLooks.MAX_WOUNDS, "only the newest wounds are kept")
+		PeopleLooks.spread_wounds(m, 1.0, 0.07)
+		_check(is_equal_approx(((m["wounds"] as Array)[0] as Vector4).w, 0.07), "blood spreads on a body lying still, up to a limit")
 		(m["node"] as Node).free()
 		(again["node"] as Node).free()
+	# variants: enemy_2.glb next to enemy.glb makes a second kind of enemy
+	_check(CharacterModels.variants("enemy", {}, dir) == ["enemy"], "one model file: one kind")
+	DirAccess.copy_absolute(ProjectSettings.globalize_path(dir + "enemy.glb"), ProjectSettings.globalize_path(dir + "enemy_2.glb"))
+	_check(CharacterModels.variants("enemy", {}, dir) == ["enemy", "enemy_2"], "enemy_2.glb is picked up as a second enemy model")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + "enemy_2.glb"))
+	# looks: the same person every time (host and client agree), different people differ, clue colours stay out
+	var people: Dictionary = JsonData.load_dict("res://data/view3d.json")["people"]
+	_check(PeopleLooks.pick("enemy", 3, people) == PeopleLooks.pick("enemy", 3, people), "the same NPC always gets the same look")
+	var tops := {}
+	var builds := {}
+	var worn := 0
+	for i in 12:
+		var lk := PeopleLooks.pick("civilian", i, people)
+		tops[(lk["top"] as Color).to_html()] = true
+		builds[snappedf((lk["scale"] as Vector3).y, 0.01)] = true
+		worn += (lk["acc"] as Dictionary).size()
+	_check(tops.size() >= 5 and builds.size() >= 6 and worn >= 4, "twelve civilians: %d shirts, %d heights, %d things worn" % [tops.size(), builds.size(), worn])
+	var clue_like := false
+	for kind: String in ["enemy", "civilian"]:
+		for c: String in people[kind]["tops"]:
+			var col := Color(c)
+			if col.h > 0.11 and col.h < 0.19 and col.s > 0.5 and col.v > 0.6:  # bright yellow: the armband clue
+				clue_like = true
+	_check(not clue_like and not (people["colors"] as Dictionary).has("cap"), "no yellow tops and no caps in the palettes: the clues stay the only ones")
 	_check(CharacterModels.make("nobody", cfg, dir).is_empty(), "no file: no model (the primitive figure stays)")
 	var up := CharacterModels.make("enemy_up", {"height_m": 1.75, "up_height_m": 2.05, "yaw_deg": 90.0}, dir)
 	_check(absf(CharacterModels.bounds(up["node"]).size.y - 2.05) < 0.01, "a hands-up model is fitted fingertips included (2.05 m)")

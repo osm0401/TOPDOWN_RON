@@ -20,6 +20,7 @@ func _ready() -> void:
 	await _mission_tests()
 	await _solo_tests()
 	await _solo_selection_test()
+	await _loadout_tests()
 	await _stage5_tests()
 	await _view3d_tests()
 	await _character_model_tests()
@@ -1166,6 +1167,67 @@ func _solo_selection_test() -> void:
 	await _boot(false)
 	_check(_w.players[0].weapon_kinds[0] == "rifle_nonlethal", "solo uses the non-lethal rifle when the lobby selects it")
 	Session.solo_loadout["primary"] = "rifle_lethal"
+	Session.leave()
+
+
+## Briefing gear picks: checked against the choices, only before ready, the host's word for the
+## client, and the chosen rounds set the rifle's damage.
+func _loadout_tests() -> void:
+	var ch: Dictionary = JsonData.load_dict("res://data/loadout.json")["choices"]
+	_check(NetWorld.clean_loadout({"primary": "rifle_lethal", "ammo": "jhp", "tools": ["taser", "taser"]}, ch)
+			== {"primary": "rifle_lethal", "ammo": "jhp", "tools": ["taser", "taser"]}
+			and NetWorld.clean_loadout({"primary": "rifle_nonlethal", "tools": ["camera", "lockpick"]}, ch)["ammo"] == "fmj",
+			"a loadout of known gear is taken (rounds default to FMJ)")
+	_check(NetWorld.clean_loadout({"primary": "rocket", "tools": ["camera", "lockpick"]}, ch).is_empty()
+			and NetWorld.clean_loadout({"primary": "rifle_lethal", "tools": ["camera"]}, ch).is_empty()
+			and NetWorld.clean_loadout({"primary": "rifle_lethal", "tools": ["camera", "drone"]}, ch).is_empty()
+			and NetWorld.clean_loadout({"primary": "rifle_lethal", "ammo": "ap", "tools": ["camera", "taser"]}, ch).is_empty()
+			and NetWorld.clean_loadout({"primary": "rifle_lethal", "tools": "camera"}, ch).is_empty(),
+			"unknown weapons, rounds or tools and the wrong number of tools are refused")
+	# host (online): own picks at once, the client's through the host's check
+	Session.host(true)
+	await _boot(false)
+	var changed := [0]
+	_w.loadout_changed.connect(func() -> void: changed[0] += 1)
+	_w.choose_loadout({"primary": "rifle_nonlethal", "ammo": "fmj", "tools": ["lockpick", "lockpick"]})
+	_check(_w.players[0].weapon_kinds[0] == "rifle_nonlethal" and _w.players[0].tools == ["lockpick", "lockpick"] and changed[0] == 1
+			and Session.my_loadout["primary"] == "rifle_nonlethal", "in the briefing the host's pick is applied at once (and kept for the next round)")
+	_check(_w._set_loadout(1, {"primary": "rifle_lethal", "ammo": "jhp", "tools": ["taser", "camera"]})
+			and _w.players[1].ammo == "jhp" and _w.players[1].taser_charges == int(_w.tuning["taser_charges"]),
+			"the client's pick is checked and applied by the host")
+	_check(not _w._set_loadout(1, {"primary": "rifle_lethal", "ammo": "jhp", "tools": ["taser", "bazooka"]}) and _w.loadout["client"]["tools"] == ["taser", "camera"],
+			"a bad pick from the client is refused and the old one stays")
+	_w.mission.mark_ready(1)
+	_check(not _w._set_loadout(1, {"primary": "rifle_nonlethal", "ammo": "fmj", "tools": ["camera", "camera"]}) and _w.players[1].weapon_kinds[0] == "rifle_lethal",
+			"after ready the client's gear is locked")
+	_w.mission.mark_ready(0)
+	_w.choose_loadout({"primary": "rifle_lethal", "ammo": "fmj", "tools": ["camera", "taser"]})
+	_check(_w.players[0].weapon_kinds[0] == "rifle_nonlethal" and _w.mission.phase != MissionState.Phase.BRIEFING, "once the mission starts nobody changes gear")
+	# a new round (retry) starts from this PC's last picks
+	await _boot(false)
+	_check(_w.players[0].weapon_kinds[0] == "rifle_nonlethal" and _w.players[0].tools == ["lockpick", "lockpick"], "a retry keeps the host's picks")
+	Session.my_loadout = {}
+	# JHP rounds hit harder in the open
+	_w._set_loadout(1, {"primary": "rifle_lethal", "ammo": "fmj", "tools": ["camera", "lockpick"]})
+	_w.mission.mark_ready(0)
+	_w.mission.mark_ready(1)
+	var shooter := _w.players[1]
+	shooter.pos = Vector2(560, 500)
+	shooter.active = 0
+	var target := _agent(0)
+	var drop := {}
+	for ammo: String in ["fmj", "jhp"]:
+		shooter.ammo = ammo
+		target.pos = Vector2(640, 500)
+		target.brain.pos = target.pos
+		target.brain.state = NpcBrain.State.IDLE
+		target.brain.hp = 10
+		shooter.weapons[0].reloading = false
+		shooter.weapons[0]._cooldown = 0.0
+		_w._host_fire(1, 0.0)
+		drop[ammo] = 10 - target.brain.hp
+	_check(drop["fmj"] == int(_w.tuning["ammo"]["fmj"]["damage"]) and drop["jhp"] == int(_w.tuning["ammo"]["jhp"]["damage"]) and drop["jhp"] > drop["fmj"],
+			"the chosen rounds set the rifle's damage in the open (%s)" % drop)
 	Session.leave()
 
 

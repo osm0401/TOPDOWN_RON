@@ -170,6 +170,8 @@ func _leave_to_lobby(msg: String) -> void:
 		_world = null
 	_lobby.show()
 	_show_status(msg)
+	if _auto_role != "":  # scripted test run: the host finished first, nothing more to do
+		get_tree().quit()
 
 
 func _run_auto() -> void:

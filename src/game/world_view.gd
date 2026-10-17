@@ -251,6 +251,13 @@ func _draw() -> void:
 	var lv := world.level
 	draw_rect(lv.bounds, Color(0.09, 0.09, 0.1), true)
 	draw_rect(lv.building, Color(0.17, 0.17, 0.18), true)
+	for pr in lv.props:  # furniture: solid pieces filled, rugs and wall pieces faint
+		var r: Rect2 = pr["rect"]
+		if pr["solid"]:
+			draw_rect(r, Color(0.3, 0.26, 0.22), true)
+			draw_rect(r, Color(0.48, 0.42, 0.34), false, 1.0)
+		else:
+			draw_rect(r, Color(0.32, 0.24, 0.22, 0.5), true)
 	for rm in lv.rooms:
 		if rm["dark"]:
 			draw_rect(rm["rect"], Color(0, 0, 0, 0.7), true)

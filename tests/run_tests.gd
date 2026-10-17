@@ -17,6 +17,7 @@ func _initialize() -> void:
 	_test_sfx()
 	_test_audition_model()
 	await _test_level()
+	await _test_props()
 	await _test_level_doors()
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
@@ -388,6 +389,49 @@ func _test_level() -> void:
 		body.move_and_slide()
 		await physics_frame
 	_check(body.position.x > 230.0, "open entrance door lets the player in (x=%.1f)" % body.position.x)
+	root.remove_child(body)
+	body.free()
+	root.remove_child(lv)
+	lv.free()
+
+
+## Furniture stops bodies (its own physics layer) and NPC paths but not rays; rooms and the ground
+## outside carry the surface styles the 3D view paints.
+func _test_props() -> void:
+	var lv := Level.new()
+	lv.load_map("res://data/map_01.json")
+	root.add_child(lv)
+	await physics_frame
+	await physics_frame
+	var solid := lv.props.filter(func(p: Dictionary) -> bool: return p["solid"])
+	_check(lv.props.size() > 40 and solid.size() > 30 and lv.props.any(func(p: Dictionary) -> bool: return p["kind"] == "rug" and not p["solid"]),
+			"map furniture loads; rugs stop nobody")
+	_check(str(lv.rooms[0]["floor"]) == "wood" and str(lv.rooms[0]["wall"]) == "warm" and lv.ground.size() >= 3, "rooms and the ground outside carry surface styles")
+	_check(lv.room_style(Vector2(400, 300), "floor") == "wood" and lv.room_style(Vector2(100, 100), "floor") == "", "room_style: the room's style, none outside")
+	var bed: Rect2 = (lv.props.filter(func(p: Dictionary) -> bool: return p["kind"] == "bed")[0] as Dictionary)["rect"]
+	var y := bed.position.y + 50.0
+	_check(lv.has_los(Vector2(bed.position.x - 30, y), Vector2(bed.end.x + 30, y)), "sight and shots pass over furniture")
+	var path := lv.find_path(Vector2(bed.position.x - 40, y), Vector2(bed.end.x + 40, y))
+	var through := false
+	for p in path:
+		through = through or bed.grow(4.0).has_point(p)
+	_check(not path.is_empty() and not through, "NPC paths go round furniture")
+	var body := CharacterBody2D.new()
+	body.collision_layer = 2
+	body.collision_mask = Level.WALL_LAYER | Level.PROP_LAYER
+	body.motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
+	body.position = Vector2(bed.position.x - 40, y)
+	var cs := CollisionShape2D.new()
+	var shape := CircleShape2D.new()
+	shape.radius = PLAYER_R
+	cs.shape = shape
+	body.add_child(cs)
+	root.add_child(body)
+	for i in 30:
+		body.velocity = Vector2(220, 0)
+		body.move_and_slide()
+		await physics_frame
+	_check(body.position.x <= bed.position.x - PLAYER_R + 1.0, "an officer cannot walk through the bed (x=%.1f)" % body.position.x)
 	root.remove_child(body)
 	body.free()
 	root.remove_child(lv)

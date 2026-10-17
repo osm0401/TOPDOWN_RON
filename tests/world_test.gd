@@ -954,9 +954,77 @@ func _view3d_tests() -> void:
 		if ch is MeshInstance3D and (ch as MeshInstance3D).cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY:
 			casters += 1
 	_check(casters >= _w.level.wall_rects.size() + _w.level.door_rects.size(), "every wall and door has a shadow caster")
+	await _scenery_tests(v3, k)
 	_w.remove_child(v3)
 	v3.free()
 	_check(not _w.mouse_world.is_valid(), "removing the 3D view releases the aim hook")
+
+
+## 3D scenery: furniture, the police car and street lamps, painted walls, swinging doors, and what
+## shots leave (holes, blood, spent cases, the pool under a body), each kind capped.
+func _scenery_tests(v3: WorldView3D, k: float) -> void:
+	var lv := _w.level
+	_check(v3._props.size() == lv.props.size(), "every piece of furniture is in the 3D view (%d)" % v3._props.size())
+	_check(v3._police.size() == 1 and (v3._police[0]["lights"] as Array).size() == 2, "the police car has a red and a blue light")
+	var lamps := v3._props.filter(func(p: Dictionary) -> bool: return (p["node"] as Node3D).has_meta("lamp")).size()
+	_check(lamps == 2 and v3._lights.size() >= 8, "two street lamps by the entrance, each with its light")
+	var surfaces := (v3._walls[0].mesh as ArrayMesh).get_surface_count()
+	_check(surfaces >= 3, "a wall has a dark cap, paint inside, brick outside (%d surfaces)" % surfaces)
+	var bed: Dictionary = v3._props.filter(func(p: Dictionary) -> bool: return p["kind"] == "bed")[0]
+	var bed_node: Node3D = bed["node"]
+	_check(bed_node.position.distance_to(Vector3((bed["rect"] as Rect2).get_center().x * k, 0, (bed["rect"] as Rect2).get_center().y * k)) < 0.01,
+			"furniture stands on its map rectangle")
+	# doors: open swings flat beside the opening, ajar turns a few degrees, both on hinges
+	lv.set_door_state(0, Level.DoorState.OPEN, 1)
+	lv.set_door_state(1, Level.DoorState.AJAR, 2)
+	for f in 60:
+		v3._update_level(0.016)
+	var d0: Dictionary = v3._doors[0]
+	var d1: Dictionary = v3._doors[1]
+	_check(is_equal_approx(float(d0["angle"]), float(d0["open_deg"])) and float(d0["open_deg"]) >= 90.0, "an open door swings all the way (%.0f degrees)" % float(d0["angle"]))
+	_check(is_equal_approx(float(d1["angle"]), float(d1["ajar_deg"])) and float(d1["ajar_deg"]) > 3.0 and float(d1["ajar_deg"]) < 20.0,
+			"an ajar door turns a few degrees (%.1f)" % float(d1["angle"]))
+	var leaf: MeshInstance3D = d0["leaf"]
+	var leaf_mid := leaf.global_transform * leaf.mesh.get_aabb().get_center()
+	_check(leaf_mid.x / k < lv.door_rects[0].position.x + 2.0, "the open leaf lies beside the opening, not in it (x %.0f)" % (leaf_mid.x / k))
+	lv.set_door_state(0, Level.DoorState.CLOSED, 0)
+	lv.set_door_state(1, Level.DoorState.CLOSED, 0)
+	for f in 60:
+		v3._update_level(0.016)
+	_check(is_zero_approx(float(d0["angle"])) and is_zero_approx(float(d1["angle"])), "closed doors swing back shut")
+	# shot marks
+	_place(0, Vector2(300, 500))
+	v3._update_players(0.016)
+	var holes := v3._holes.size()
+	var cases := v3._casings.size()
+	v3._on_shot(0, Vector2(300, 500), Vector2(300, 450), false)  # up into the wall between room A and the corridor
+	_check(v3._holes.size() == holes + 1, "a shot into a wall leaves a hole")
+	var hole: Decal = v3._holes.back()
+	_check(absf(hole.position.z - 450.0 * k) < 0.01 and hole.basis.y.normalized().dot(Vector3.BACK) > 0.99, "the hole sits on the wall face, facing the shooter")
+	_check(v3._casings.size() == cases + 1, "the officer's gun throws out a spent case")
+	for f in 150:
+		v3._update_fx(0.016)
+	var case_node: Node3D = v3._casings.back()["node"]
+	_check(v3._casings.back()["rest"] and case_node.position.y < 0.03, "the case falls, bounces and lies on the floor")
+	var stains := v3._stains.size()
+	v3._on_shot(0, Vector2(300, 500), Vector2(400, 300), true)
+	_check(v3._stains.size() == stains + 1, "a hit leaves blood on the floor")
+	for i in int(v3._cfg["effects"]["holes_max"]) + 5:
+		v3._hole(Vector3(6.0, 1.2, 9.0), Vector3.BACK)
+	_check(v3._holes.size() == int(v3._cfg["effects"]["holes_max"]), "old holes give way to new ones (capped)")
+	# a dead body bleeds a spreading pool
+	var i := 0
+	while _agent(i).dormant:
+		i += 1
+	_agent(i).brain.state = NpcBrain.State.DEAD
+	v3._update_npcs(0.016)
+	var n: Dictionary = v3._npcs[i]
+	_check(n.has("pool"), "a dead body gets a pool of blood")
+	var first: float = (n["pool"]["decal"] as Decal).size.x
+	for f in 120:
+		v3._update_npcs(0.05)
+	_check((n["pool"]["decal"] as Decal).size.x > first + 0.4, "the pool spreads (%.2f -> %.2f m)" % [first, (n["pool"]["decal"] as Decal).size.x])
+	await _frames(1)
 
 
 ## Sound hearing for the local officer: same SoundProp rules as NPC hearing, muffled behind solids.

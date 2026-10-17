@@ -4,10 +4,15 @@ extends Node2D
 ## (closed / ajar / open + locked), rooms with lighting, sound blockers, rays, fog polygon
 ## and an A* grid for NPCs. Closed doors block movement and rays; an ajar door leaves a
 ## narrow slit (rays pass, bodies do not); open doors block nothing.
+## Furniture (props) stops people (player bodies, NPC paths) but not rays: sight, shots and
+## sound pass over it. Rooms and outdoor ground carry the surface styles the 3D view draws.
 
 enum DoorState { CLOSED, AJAR, OPEN }
 
 const WALL_LAYER := 1
+const PROP_LAYER := 4  ## solid furniture: player bodies collide with it, rays (WALL_LAYER only) do not
+## Furniture that never stops anyone (flat or on a wall); a map entry's "solid" overrides.
+const FLAT_PROPS: Array[String] = ["rug", "picture", "whiteboard", "cone"]
 const RAY_EPS := 0.0001
 const ARC_RAYS := 24
 const FRAME_THICKNESS := 50.0
@@ -22,7 +27,9 @@ var spawns: Array[Vector2] = []
 var wall_rects: Array[Rect2] = []
 var door_rects: Array[Rect2] = []
 var door_actor: Array[int] = []        ## who touched the door last: 0 nobody/NPC, 1 host, 2 client
-var rooms: Array[Dictionary] = []      ## {name, rect, dark}
+var rooms: Array[Dictionary] = []      ## {name, rect, dark, floor, wall} (floor / wall: surface styles for the 3D view)
+var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid}
+var ground: Array[Dictionary] = []     ## outdoor surfaces in drawing order {rect, surface, h (m, raised kerbs)}
 var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns}
 
 var _door_state: Array[int] = []
@@ -47,7 +54,18 @@ func load_map(path: String) -> bool:
 	for s in d["spawns"]:
 		spawns.append(_vec(s))
 	for rm in d["rooms"]:
-		rooms.append({"name": str(rm["name"]), "rect": _rect(rm["rect"]), "dark": bool(rm["dark"])})
+		rooms.append({"name": str(rm["name"]), "rect": _rect(rm["rect"]), "dark": bool(rm["dark"]),
+				"floor": str(rm.get("floor", "")), "wall": str(rm.get("wall", ""))})
+	for g in d.get("ground", []):
+		ground.append({"rect": _rect(g["rect"]), "surface": str(g["surface"]), "h": float(g.get("h", 0.0))})
+	for pd in d.get("props", []):
+		var kind := str(pd["kind"])
+		var pr := {"kind": kind, "rect": _rect(pd["rect"]), "face": str(pd.get("face", "s")),
+				"solid": bool(pd.get("solid", not FLAT_PROPS.has(kind)))}
+		props.append(pr)
+		if pr["solid"]:
+			var cs := _add_body(pr["rect"])
+			(cs.get_parent() as StaticBody2D).collision_layer = PROP_LAYER
 	for n in d["npcs"]:
 		npc_defs.append({
 			"role": str(n["role"]),
@@ -313,7 +331,16 @@ func _cell_blocked(c: Vector2i) -> bool:
 	for i in door_rects.size():
 		if _door_locked[i] and _door_state[i] != DoorState.OPEN and door_rects[i].grow(NAV_INFLATE).has_point(center):
 			return true
+	for pr in props:
+		if pr["solid"] and (pr["rect"] as Rect2).grow(NAV_INFLATE).has_point(center):
+			return true
 	return false
+
+
+## Surface style `key` ("floor" / "wall") of the room holding p; "" outside every room.
+func room_style(p: Vector2, key: String) -> String:
+	var i := room_at(p)
+	return str(rooms[i][key]) if i >= 0 else ""
 
 
 func _refresh_door_cells(i: int) -> void:

@@ -1,8 +1,11 @@
 shader_type spatial;
-// PLACEHOLDER procedural PBR surfaces (no texture files): plaster/concrete/asphalt (mode 0),
-// floor tiles with joints (mode 1), wood planks (mode 2). The pattern is projected in world
-// space (meters) along the dominant normal axis, so any box or plane tiles without stretching.
-// Swap for real scanned texture sets later; the parameters come from data/view3d.json.
+// PLACEHOLDER procedural PBR surfaces (no texture files): plaster/concrete/asphalt/grass/fabric
+// (mode 0), floor tiles with joints (mode 1), wood planks (mode 2, end joints every plank_len m
+// when > 0), checkerboard tiles (mode 3), bricks in running bond (mode 4: tile_m long, half as
+// tall). The pattern is projected in world space (meters) along the dominant normal axis, so any
+// box or plane tiles without stretching; object_space projects in the mesh's own space instead
+// (furniture and door leaves that move keep their grain). The parameters come from
+// data/view3d.json "surfaces" (furniture: PropModels).
 
 uniform int mode = 0;
 uniform vec3 color_a : source_color = vec3(0.5);
@@ -15,6 +18,8 @@ uniform float rough_min = 0.6;
 uniform float rough_max = 0.95;
 uniform float bump = 0.05;
 uniform float grime_m = 0.0;    // height of the dirty band at the foot of vertical surfaces
+uniform float plank_len = 0.0;  // wood: plank length in meters (0: endless planks)
+uniform bool object_space = false;
 
 varying vec3 wpos;
 varying vec3 wnrm;
@@ -45,8 +50,13 @@ float fbm(vec2 p) {
 }
 
 void vertex() {
-	wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	wnrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	if (object_space) {
+		wpos = VERTEX;
+		wnrm = NORMAL;
+	} else {
+		wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+		wnrm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
+	}
 }
 
 void fragment() {
@@ -78,11 +88,42 @@ void fragment() {
 	} else if (mode == 2) {
 		float px = uv.x / tile_m;
 		float plank = floor(px);
-		float grain = fbm(vec2(uv.x * 14.0 + hash(vec2(plank, 1.0)) * 40.0, uv.y * 1.2));
-		float seam = 1.0 - smoothstep(0.004 - aa, 0.004 + aa, min(fract(px), 1.0 - fract(px)) * tile_m);
-		col = mix(mix(color_a, color_b, grain), grout, seam);
+		float along = uv.y;
+		float piece = 0.0;
+		float seam_end = 0.0;
+		if (plank_len > 0.0) {
+			float py = (uv.y + hash(vec2(plank, 7.0)) * plank_len) / plank_len;
+			piece = floor(py);
+			seam_end = 1.0 - smoothstep(0.003 - aa, 0.003 + aa, min(fract(py), 1.0 - fract(py)) * plank_len);
+		}
+		float grain = fbm(vec2(uv.x * 14.0 + hash(vec2(plank, 1.0 + piece)) * 40.0, along * 1.2));
+		float seam = max(1.0 - smoothstep(0.004 - aa, 0.004 + aa, min(fract(px), 1.0 - fract(px)) * tile_m), seam_end);
+		float tone = hash(vec2(plank, 3.0 + piece)) * 0.35;  // every board a little lighter or darker
+		col = mix(mix(color_a, color_b, clamp(grain + tone - 0.15, 0.0, 1.0)), grout, seam);
 		h = grain * 0.3 - seam * 0.5;
 		rough = mix(rough_min, rough_max, grain);
+	} else if (mode == 3) {
+		vec2 g = uv / tile_m;
+		vec2 id = floor(g);
+		vec2 f = fract(g);
+		float edge = min(min(f.x, 1.0 - f.x), min(f.y, 1.0 - f.y)) * tile_m;
+		float joint = 1.0 - smoothstep(0.003 - aa, 0.003 + aa, edge);
+		float check = mod(id.x + id.y, 2.0);
+		vec3 tile = mix(color_a, color_b, check) * (0.92 + 0.16 * n);
+		col = mix(tile, grout, joint);
+		h = (1.0 - joint) * 0.6 + fine * 0.05;
+		rough = mix(rough_min, rough_max, clamp(n * 0.6 + joint, 0.0, 1.0));
+	} else if (mode == 4) {
+		float bh = tile_m * 0.5;  // brick course height
+		float row = floor(uv.y / bh);
+		float bx = uv.x / tile_m + (mod(row, 2.0) * 0.5);
+		vec2 f = vec2(fract(bx), fract(uv.y / bh));
+		float edge = min(min(f.x, 1.0 - f.x) * tile_m, min(f.y, 1.0 - f.y) * bh);
+		float joint = 1.0 - smoothstep(0.006 - aa, 0.006 + aa, edge);
+		vec3 brick = mix(color_a, color_b, clamp(hash(vec2(floor(bx), row)) * 0.9 + n * 0.3, 0.0, 1.0));
+		col = mix(brick * (0.85 + 0.3 * fine), grout, joint);
+		h = (1.0 - joint) * 0.7 + fine * 0.15;
+		rough = mix(rough_min, rough_max, clamp(fine + joint, 0.0, 1.0));
 	} else {
 		col = mix(color_a, color_b, n) * (0.85 + 0.3 * fine);
 		h = n * 0.7 + fine * 0.3;

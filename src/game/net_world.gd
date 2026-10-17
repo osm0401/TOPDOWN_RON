@@ -45,6 +45,19 @@ const SCENARIOS := {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_dark", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.0, "final": 3.0,
 	},
+	"doors": {  # a look at the doors: the host in the corridor, one door open, one ajar, one closed
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_hall", 0], [0.3, "doors_demo", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 1.6, "final": 3.0,
+	},
+	"shots": {  # a look at what shots leave: holes in the north wall, then the suspect shot (blood, casings)
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0], [0.3, "aim", -100], [0.5, "fire", 0], [0.8, "fire", 0],
+				[1.1, "aim", -75], [1.3, "fire", 0], [1.6, "aim_suspect", 0], [1.8, "fire", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 4.0, "final": 5.0,
+	},
+	"outside": {  # a look at the street: the host stays at the spawn by the police car
+		"events": {"host": [[0.1, "ready", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 1.2, "final": 2.5,
+	},
 	"result": {
 		"events": {"host": [[0.1, "ready", 0], [2.0, "kill_suspect", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 3.5, "final": 5.0,
@@ -64,6 +77,7 @@ const SCENARIOS := {
 }
 
 var auto_role := ""
+var _auto_aim := 0.0  ## test runs: where the host aims (scenario "aim" events turn it)
 var scenario := ""
 var generation := 0  ## how many times the mission was restarted by a vote
 var shot_path := ""
@@ -208,7 +222,7 @@ func _active() -> bool:
 func _make_body(at: Vector2) -> CharacterBody2D:
 	var b := CharacterBody2D.new()
 	b.collision_layer = 2
-	b.collision_mask = Level.WALL_LAYER
+	b.collision_mask = Level.WALL_LAYER | Level.PROP_LAYER  # walls and furniture stop the officers
 	b.motion_mode = CharacterBody2D.MOTION_MODE_FLOATING
 	b.position = at
 	var cs := CollisionShape2D.new()
@@ -266,7 +280,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _local_input() -> Dictionary:
 	if auto_role != "":
-		return {"move": _auto_move(), "aim": 0.0}
+		return {"move": _auto_move(), "aim": _auto_aim}
 	var m := Vector2(
 		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
 		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
@@ -942,6 +956,20 @@ func _auto_do(name: String, arg: int) -> void:
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)
 			players[0].aim = 0.0
+		"aim":  # test aid: turn the host to arg degrees (0 east, 90 south)
+			_auto_aim = deg_to_rad(float(arg))
+		"aim_suspect":  # test aid: turn the host toward the suspect
+			for a in director.agents:
+				if a.suspect:
+					_auto_aim = (a.pos - players[0].pos).angle()
+		"teleport_hall":  # test aid: put the host in the corridor between doors A and B
+			_bodies[0].position = Vector2(620, 520)
+			players[0].pos = Vector2(620, 520)
+			_auto_aim = -PI * 0.5
+		"doors_demo":  # test aid: door A open (host), door B ajar (client), door E open
+			level.set_door_state(0, Level.DoorState.OPEN, 1)
+			level.set_door_state(1, Level.DoorState.AJAR, 2)
+			level.set_door_state(4, Level.DoorState.OPEN, 0)
 		"teleport_dark":  # test aid: put the host inside dark room B to look at the darkness cues
 			_bodies[0].position = Vector2(700, 330)
 			players[0].pos = Vector2(700, 330)

@@ -8,6 +8,7 @@
 - 만들 것:
   - 인물 3개: `assets/characters/gemini/officer.glb`, `enemy.glb`, `civilian.glb`
   - 장비 7개: `assets/gear/gemini/rifle_lethal.glb`, `rifle_nonlethal.glb`, `pistol.glb`, `camera.glb`, `cuffs.glb`, `cap.glb`, `band.glb`
+  - (선택) 가구: `assets/props/gemini/<종류>.glb` — [3-1](#3-1-가구와-경찰차-선택-인물과-장비-다음에)
   - 만든 방법: `tools/models/gemini/` (예: Blender 파이썬 스크립트). 나중에 고칠 수 있게 **반드시 저장**한다.
 - 게임은 `data/view3d.json`의 `characters.set`이 `"gemini"`라서 이 폴더를 먼저 읽고, 폴더에 없는 파일은 기존 모델(장비는 코드로 만든 모양)을 쓴다. 그래서 하나씩 넣어도 된다.
 - 다 만들면 [5. 확인](#5-확인-반드시)의 검사 도구에서 **FAIL이 0개**가 될 때까지 고친다.
@@ -84,6 +85,23 @@
 
 크기가 많이 다르면(센티미터로 만든 경우 등) 게임이 코드 모양의 크기로 맞추고 경고를 낸다.
 
+## 3-1. 가구와 경찰차 (선택, 인물과 장비 다음에)
+
+맵의 가구는 지금 코드로 만든 모양(`src/game/prop_models.gd`)이에요. `assets/props/gemini/<종류>.glb`를 넣으면 그 종류는 파일 모양으로 바뀌어요.
+
+- 종류 이름(파일 이름):
+  - 거실·침실: `sofa`, `armchair`, `coffee_table`, `tv_stand`, `bookshelf`, `plant`, `floor_lamp`, `picture`, `rug`, `bed`, `nightstand`, `wardrobe`, `dresser`
+  - 사무실: `desk`, `office_chair`, `filing_cabinet`, `water_cooler`, `whiteboard`, `printer_table`
+  - 부엌: `fridge`, `counter`, `sink`, `stove`, `dining_table`, `chair`, `pantry`, `trash_bin`
+  - 창고: `shelving`, `crate`, `pallet`, `workbench`, `barrel`
+  - 바깥: `cone`, `street_lamp`, `police_car`
+- 원점: 바닥에 닿는 면(발자국)의 가운데. 앞면은 +Z(Blender −Y), 위는 +Y, 단위는 미터.
+- 크기: 실제 크기로 만든다. 게임이 맵의 사각형에 맞게 비율을 지켜 줄이거나 키운다. 크기 참고: `data/map_01.json` props의 rect(px, 50 px = 1 m).
+- 벽에 거는 것(`picture`, `whiteboard`): 뒷면을 −Z 쪽에 붙이고, 바닥에서 1.15 m 높이 언저리에 둔다.
+- 경찰차: 앞이 +Z. 경광등은 지붕 위 가운데(게임이 빨강·파랑 불빛을 그 자리에 단다).
+- 삼각형: 가구 하나 4,000개 이하, 경찰차 15,000개 이하.
+- 문은 경첩으로 도는 움직임이 있어서 지금은 코드로 만든다(파일로 바꾸지 않음).
+
 ## 4. 만드는 방법 (권장)
 
 - Blender(무료)를 설치하고 모델마다 파이썬 스크립트를 `tools/models/gemini/<이름>.py`로 만든다. `blender --background --python tools/models/gemini/<이름>.py` 한 번으로 `.glb`가 나오게 하면 다시 만들기 쉽다. 다른 도구를 써도 되지만 스크립트는 남긴다.
@@ -123,6 +141,7 @@
 2. 새로 만든 것만 커밋한다:
    - `assets/characters/gemini/*.glb`
    - `assets/gear/gemini/*.glb`
+   - (가구를 만들었다면) `assets/props/gemini/*.glb`
    - `tools/models/gemini/*`
    - Godot가 만드는 `*.import`와 추출된 텍스처는 `.gitignore`가 거른다.
 3. `git push -u origin gemini/models`

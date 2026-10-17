@@ -13,11 +13,13 @@ signal notice_emitted(text: String)
 signal damaged(slot: int)
 signal restart_requested  ## the vote chose a retry: Main rebuilds the world
 signal lobby_requested    ## the vote chose the main lobby
+signal loadout_changed    ## someone's gear changed (briefing picks)
 
 enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY, VOTE_RETRY, VOTE_LOBBY }
 
 const SLOT_HOST := 0
 const SLOT_CLIENT := 1
+const LOADOUT_KEYS: Array[String] = ["host", "client"]
 const PLAYER_RADIUS := 14.0
 const SCENARIOS := {
 	"": {
@@ -33,6 +35,14 @@ const SCENARIOS := {
 		"events": {"host": [[4.0, "ready", 0]], "client": [[4.0, "ready", 0]]},
 		"shot": 2.0, "final": 5.0,
 	},
+	# loadout: both pick gear in the briefing (the host JHP rounds and a lockpick, the client the
+	# lethal rifle and a taser in the same frame: the second pick keeps the first), the client
+	# tries to change after ready (refused), then the mission
+	"loadout": {
+		"events": {"host": [[0.5, "pick_ammo", 1], [0.7, "pick_tool1", 1], [2.0, "ready", 0]],
+				"client": [[0.6, "pick_primary", 0], [0.6, "pick_tool0", 2], [1.5, "ready", 0], [1.7, "pick_tool1", 0]]},
+		"shot": 1.2, "final": 3.0,
+	},
 	"clues": {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 0.6, "final": 3.0,
@@ -46,16 +56,16 @@ const SCENARIOS := {
 		"shot": 1.0, "final": 3.0,
 	},
 	"doors": {  # a look at the doors: the host in the corridor, one door open, one ajar, one closed
-		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_hall", 0], [0.3, "doors_demo", 0]], "client": [[0.1, "ready", 0]]},
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_hall", 0], [0.25, "bring_partner", 0], [0.3, "doors_demo", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.6, "final": 3.0,
 	},
 	"shots": {  # a look at what shots leave: holes in the north wall, then the suspect shot (blood, casings)
-		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0], [0.3, "aim", -100], [0.5, "fire", 0], [0.8, "fire", 0],
+		"events": {"host": [[0.1, "ready", 0], [0.2, "teleport_c", 0], [0.25, "bring_partner", 0], [0.3, "aim", -100], [0.5, "fire", 0], [0.8, "fire", 0],
 				[1.1, "aim", -75], [1.3, "fire", 0], [1.6, "aim_suspect", 0], [1.8, "fire", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 4.0, "final": 5.0,
 	},
 	"cover": {  # a look at cover: an enemy in the kitchen runs behind the island counter and crouches, shots hit the counter
-		"events": {"host": [[0.1, "ready", 0], [0.2, "cover_demo", 0], [1.6, "aim_cover", 0], [1.8, "fire", 0],
+		"events": {"host": [[0.1, "ready", 0], [0.2, "cover_demo", 0], [0.25, "bring_partner", 0], [1.6, "aim_cover", 0], [1.8, "fire", 0],
 				[2.1, "fire", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.7, "final": 3.5,
 	},
@@ -100,6 +110,7 @@ var vote: VoteState
 var is_host := false
 var solo := false
 var my_slot := 0
+var loadout: Dictionary = {}  ## {"host": entry, "client": entry}, entry {primary, ammo, tools: [2]}; the host's word
 var running := false
 var rtt_ms := -1
 
@@ -122,6 +133,9 @@ var _ping_accum := 0.0
 var _snap_count := 0
 var _auto_done: Dictionary = {}
 var _voice := RandomNumberGenerator.new()
+var _choices: Dictionary = {}  ## data/loadout.json choices
+var _client_at_end := false  ## (test runs, host) the client reached its last scripted moment
+var _final_ack := false  ## (test runs, client) the host wrote its FINAL
 
 
 func _ready() -> void:
@@ -147,10 +161,7 @@ func _ready() -> void:
 		ps.pos = level.spawns[s]
 		players.append(ps)
 		shown.append(ps.pos)
-	var lo := JsonData.load_dict("res://data/loadout.json")
-	if solo:
-		lo["host"] = Session.solo_loadout
-	apply_loadout(lo)
+	_init_loadout()
 	if solo:
 		players[SLOT_CLIENT].present = false
 		players[SLOT_CLIENT].hp = 0
@@ -178,7 +189,73 @@ func _ready() -> void:
 	view.world = self
 	add_child(view)
 	if not is_host:
-		rpc_client_ready.rpc_id(1)
+		rpc_client_ready.rpc_id(1, loadout[LOADOUT_KEYS[SLOT_CLIENT]])
+
+
+# ---- loadout -----------------------------------------------------------------
+
+## Defaults from data/loadout.json, the local officer's own picks (kept in Session across retries:
+## the lobby's solo picks, or the last online picks) over its slot.
+func _init_loadout() -> void:
+	var lo := JsonData.load_dict("res://data/loadout.json")
+	_choices = lo["choices"]
+	for s in 2:
+		loadout[LOADOUT_KEYS[s]] = clean_loadout(lo[LOADOUT_KEYS[s]], _choices)
+	var mine := clean_loadout(Session.solo_loadout if solo else Session.my_loadout, _choices)
+	if not mine.is_empty():
+		loadout[LOADOUT_KEYS[my_slot]] = mine
+	apply_loadout(loadout)
+
+
+## A loadout entry checked against the choices: {primary, ammo, tools: [2]} or {} when anything is
+## off (an unknown weapon, tool or round, the wrong number of tools).
+static func clean_loadout(entry: Dictionary, choices: Dictionary) -> Dictionary:
+	var primary := str(entry.get("primary", ""))
+	var ammo := str(entry.get("ammo", choices["ammo"][0]))
+	var tools: Variant = entry.get("tools", [])
+	if not (choices["primary"] as Array).has(primary) or not (choices["ammo"] as Array).has(ammo) or not (tools is Array) or (tools as Array).size() != 2:
+		return {}
+	var out_tools: Array[String] = []
+	for t: Variant in tools:
+		if not (choices["tools"] as Array).has(str(t)):
+			return {}
+		out_tools.append(str(t))
+	return {"primary": primary, "ammo": ammo, "tools": out_tools}
+
+
+## Picks can change during the briefing until that officer is ready.
+func can_change_loadout(slot: int) -> bool:
+	return mission.phase == MissionState.Phase.BRIEFING and not mission.ready[slot]
+
+
+## The local officer picks gear (briefing screen): the host takes it at once, a client asks the
+## host, who checks it and sends everyone's loadout back.
+func choose_loadout(entry: Dictionary) -> void:
+	var c := clean_loadout(entry, _choices)
+	if c.is_empty() or not can_change_loadout(my_slot):
+		return
+	if solo:
+		Session.solo_loadout = c.duplicate(true)
+	else:
+		Session.my_loadout = c.duplicate(true)
+	if is_host:
+		_set_loadout(SLOT_HOST, c)
+	else:  # shown at once, so a second click builds on this one; the host's answer confirms or puts it back
+		loadout[LOADOUT_KEYS[SLOT_CLIENT]] = c
+		apply_loadout(loadout)
+		rpc_choose_loadout.rpc_id(1, c)
+
+
+## Host: slot's new picks, if allowed and valid, applied and sent to the client.
+func _set_loadout(slot: int, entry: Dictionary) -> bool:
+	var c := clean_loadout(entry, _choices)
+	if c.is_empty() or not can_change_loadout(slot):
+		return false
+	loadout[LOADOUT_KEYS[slot]] = c
+	apply_loadout(loadout)
+	if _online() and _client_id != 0:
+		rpc_loadout.rpc_id(_client_id, loadout)
+	return true
 
 
 func apply_loadout(lo: Dictionary) -> void:
@@ -198,6 +275,7 @@ func apply_loadout(lo: Dictionary) -> void:
 		ps.taser_charges = int(tuning["taser_charges"]) if ps.has_tool("taser") else 0
 		ps.max_hp = int(tuning["player_hp"])
 		ps.hp = ps.max_hp
+	loadout_changed.emit()
 
 
 func display_pos(slot: int) -> Vector2:
@@ -771,14 +849,18 @@ func _from_client() -> bool:
 # ---- RPC -------------------------------------------------------------------
 
 @rpc("any_peer", "call_remote", "reliable")
-func rpc_client_ready() -> void:
+func rpc_client_ready(picks: Dictionary) -> void:
 	if not is_host or running:
 		return
 	_client_id = multiplayer.get_remote_sender_id()
 	running = true
 	_t = 0.0
 	Session.log_line("client ready id=%d" % _client_id)
-	rpc_loadout.rpc_id(_client_id, JsonData.load_dict("res://data/loadout.json"))
+	var c := clean_loadout(picks, _choices)  # the client's own picks (else the default stays)
+	if not c.is_empty():
+		loadout[LOADOUT_KEYS[SLOT_CLIENT]] = c
+		apply_loadout(loadout)
+	rpc_loadout.rpc_id(_client_id, loadout)
 	rpc_state.rpc_id(_client_id, level.pack_doors())
 	rpc_weapons.rpc_id(_client_id, _pack_weapons())
 	rpc_mission.rpc_id(_client_id, mission.pack())
@@ -826,7 +908,17 @@ func rpc_pong(sent_ms: int) -> void:
 
 @rpc("authority", "call_remote", "reliable")
 func rpc_loadout(lo: Dictionary) -> void:
-	apply_loadout(lo)
+	for s in 2:
+		var c := clean_loadout(lo.get(LOADOUT_KEYS[s], {}), _choices)
+		if not c.is_empty():
+			loadout[LOADOUT_KEYS[s]] = c
+	apply_loadout(loadout)
+
+
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_choose_loadout(entry: Dictionary) -> void:
+	if _from_client() and not _set_loadout(SLOT_CLIENT, entry):
+		rpc_loadout.rpc_id(_client_id, loadout)  # refused: put the client's screen back
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -927,16 +1019,45 @@ func _auto_tick() -> void:
 	if shot_path != "" and generation == 0 and _t >= float(scn["shot"]) and not _auto_done.has("shot"):
 		_auto_done["shot"] = true
 		_capture(shot_path)
-	if _t >= final_t and not _auto_done.has("final"):
+	# FINAL: the client tells the host it reached its end (after its own scripted acts), the host
+	# writes its FINAL and answers, then the client writes its own; so a slow side (drawing without
+	# a GPU) cannot make the two lines describe different moments
+	var at_end := _t >= final_t
+	if at_end and not is_host and not _auto_done.has("at_end"):
+		_auto_done["at_end"] = true
+		rpc_auto_end.rpc_id(1)
+	var write := _final_ack or (at_end and _t >= final_t + 20.0)
+	if is_host:
+		write = at_end and (solo or _client_at_end or _t >= final_t + 20.0)
+	if write and not _auto_done.has("final"):
 		_auto_done["final"] = true
+		_auto_done["final_t"] = _t
 		var npcs := PackedStringArray()
 		for a in director.agents:
 			npcs.append("%d/%d/%.0f,%.0f" % [a.brain.state, a.brain.hp, a.pos.x, a.pos.y])
-		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s ps0=%s ps1=%s w=%s npcs=%s mission=%s score=%d gen=%d" % [
+		Session.log_line("FINAL p0=%.1f,%.1f p1=%.1f,%.1f doors=%s ps0=%s ps1=%s w=%s npcs=%s mission=%s score=%d gen=%d lo=%s" % [
 			players[0].pos.x, players[0].pos.y, players[1].pos.x, players[1].pos.y, level.pack_doors(),
-			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs), mission.pack(), current_score(), generation])
-	if _t >= final_t + 0.5:
+			players[0].pack(), players[1].pack(), str(_pack_weapons()), ";".join(npcs), mission.pack(), current_score(), generation,
+			"|".join(LOADOUT_KEYS.map(func(k: String) -> String: return "%s/%s/%s" % [loadout[k]["primary"], loadout[k]["ammo"], "+".join(loadout[k]["tools"])]))])
+		if is_host and not solo and _client_id != 0:
+			rpc_auto_final_ack.rpc_id(_client_id)
+	# the host stays (frozen) until the client has written its FINAL and left, or 20 s at most
+	if _auto_done.has("final") and _t >= float(_auto_done["final_t"]) + 0.5 \
+			and (not is_host or multiplayer.get_peers().is_empty() or _t >= float(_auto_done["final_t"]) + 20.0):
 		get_tree().quit()
+
+
+## Test runs: the client reached its last scripted moment.
+@rpc("any_peer", "call_remote", "reliable")
+func rpc_auto_end() -> void:
+	if is_host and auto_role != "":
+		_client_at_end = true
+
+
+## Test runs: the host wrote its FINAL; the client writes its own.
+@rpc("authority", "call_remote", "reliable")
+func rpc_auto_final_ack() -> void:
+	_final_ack = true
 
 
 func _auto_do(name: String, arg: int) -> void:
@@ -968,6 +1089,10 @@ func _auto_do(name: String, arg: int) -> void:
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)
 			players[0].aim = 0.0
+		"bring_partner":  # test aid: the other officer steps up beside the host (both screens show the same place)
+			var at := players[0].pos + Vector2(-45.0, 40.0)
+			_bodies[1].position = at
+			players[1].pos = at
 		"aim":  # test aid: turn the host to arg degrees (0 east, 90 south)
 			_auto_aim = deg_to_rad(float(arg))
 		"aim_suspect":  # test aid: turn the host toward the suspect
@@ -982,6 +1107,7 @@ func _auto_do(name: String, arg: int) -> void:
 			level.set_door_state(0, Level.DoorState.OPEN, 1)
 			level.set_door_state(1, Level.DoorState.AJAR, 2)
 			level.set_door_state(4, Level.DoorState.OPEN, 0)
+			_push_state()
 		"cover_demo":  # test aid: the host in the kitchen with the light on, an armed enemy in the open by the island
 			_bodies[0].position = Vector2(630, 600)
 			players[0].pos = Vector2(630, 600)
@@ -1001,6 +1127,18 @@ func _auto_do(name: String, arg: int) -> void:
 			_bodies[0].position = Vector2(700, 330)
 			players[0].pos = Vector2(700, 330)
 			players[0].aim = 0.0
+		"pick_primary", "pick_ammo", "pick_tool0", "pick_tool1":  # test aid: a briefing gear pick (arg: index in the choices)
+			var e: Dictionary = (loadout[LOADOUT_KEYS[my_slot]] as Dictionary).duplicate(true)
+			match name:
+				"pick_primary":
+					e["primary"] = _choices["primary"][arg]
+				"pick_ammo":
+					e["ammo"] = _choices["ammo"][arg]
+				"pick_tool0":
+					e["tools"][0] = _choices["tools"][arg]
+				"pick_tool1":
+					e["tools"][1] = _choices["tools"][arg]
+			choose_loadout(e)
 		"vote_retry":
 			_send(Act.VOTE_RETRY, 0)
 		"vote_lobby":

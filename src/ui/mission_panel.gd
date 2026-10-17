@@ -1,7 +1,10 @@
 class_name MissionPanel
 extends Control
-## Briefing (floor plan + the two suspect clues), live objective list and the result screen.
-## Presentation only: it reads NetWorld.mission and the score rules.
+## Briefing (floor plan + the two suspect clues + gear picks), live objective list and the result
+## screen. Presentation only: it reads NetWorld.mission and the score rules (gear picks go through
+## NetWorld.choose_loadout).
+
+const LoadoutPicker := preload("res://src/ui/loadout_picker.gd")
 
 const BG := Color(0.04, 0.05, 0.07, 0.95)
 const TEXT := Color(0.92, 0.92, 0.95)
@@ -13,16 +16,27 @@ var world: NetWorld
 
 var _data: Dictionary = {}
 var _font: Font = ThemeDB.fallback_font
+var _picker: Control
+const PICKER_H := 250.0  ## room kept under the floor plan for the gear picks
 
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_data = JsonData.load_dict("res://data/mission.json")
+	_picker = LoadoutPicker.new()
+	_picker.world = world
+	_picker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(_picker)
 
 
 func _process(_delta: float) -> void:
 	size = get_viewport_rect().size  # parent is a CanvasLayer: anchors do not apply
+	_picker.visible = world.mission.phase == MissionState.Phase.BRIEFING
+	if _picker.visible:  # the right column, under the floor plan
+		var panel := Rect2(size * 0.03, size * 0.94)
+		_picker.position = Vector2(panel.position.x + panel.size.x * 0.52, panel.end.y - 52.0 - PICKER_H)
+		_picker.size = Vector2(panel.size.x * 0.44, PICKER_H)
 	queue_redraw()
 
 
@@ -83,11 +97,11 @@ func _draw_briefing() -> void:
 	for r in _data["rules"]:
 		y += _wrap(Vector2(x + 8.0, y + 18.0), "* " + str(r), width - 8.0, 14, DIM) + 4.0
 	_draw_plan(Rect2(panel.position.x + panel.size.x * 0.52, panel.position.y + 52.0,
-			panel.size.x * 0.44, panel.size.y - 150.0))
+			panel.size.x * 0.44, panel.size.y - 150.0 - PICKER_H))
 	var me := world.my_slot
 	var mine := world.mission.ready[me]
 	var other := world.mission.ready[1 - me]
-	var msg := tr("Enter: 준비 완료") if not mine else tr("준비 완료 - 상대를 기다리는 중")
+	var msg := tr("장비를 고르고 Enter: 준비 완료") if not mine else tr("준비 완료 - 상대를 기다리는 중")
 	_text(Vector2(x, panel.end.y - 30.0), msg, 20, GOOD if mine else TEXT)
 	var status := tr("싱글 플레이") if world.solo else tr("나: %s    상대: %s") % [tr("준비") if mine else tr("대기"), tr("준비") if other else tr("대기")]
 	_text(Vector2(panel.position.x + panel.size.x * 0.52, panel.end.y - 30.0), status, 17, DIM)

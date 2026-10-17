@@ -63,7 +63,8 @@
   - 사진 질감: `assets/textures/<set>/<이름>.png`가 있으면 무늬 대신 써요(Antigravity가 만들 수 있게 `docs/09` 3-2에 목록을 적었어요).
   - 경찰 구분: 몸을 감싸던 빛을 줄이고, 발밑 색 고리(파랑·주황)로 구분해요.
 - 테두리 계단 현상 줄이기(MSAA, 품질에 따라 4x / 2x / 끔)
-- 시험용 장면: `-- --solo --scenario=doors | shots | outside`, 확대는 `--zoom=0.5`
+- 시험용 장면: `-- --solo --scenario=doors | shots | outside | cover`, 확대는 `--zoom=0.5`
+- 엄폐(가구 뒤에 웅크림), 바닥별 발소리, 장비 선택: `docs/10-cover-sound-loadout-report.md`
 - 마우스 휠: 카메라 확대/축소(글씨 크기는 그대로)
 - 단서: 붉은 모자(머리 위 원통), 노란 완장(몸 옆 상자), 떨어진 무기
 - 손전등 원뿔, 레이저, 총탄 궤적, 소리 파문, 말풍선, 행동 진행률, 상태 표시(? ! !!)

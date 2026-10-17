@@ -1,7 +1,6 @@
 # Godot 4
 .godot/
 *.translation
-export_presets.cfg
 export/
 *.tmp
 
@@ -44,5 +43,5 @@ assets/props/**/*.png
 assets/props/**/*.jpg
 assets/textures/**/*.import
 
-# exported game builds (tests/net_smoke, export_presets.cfg)
+# exported game builds (export_presets.cfg is tracked: it holds no passwords or keys)
 build/

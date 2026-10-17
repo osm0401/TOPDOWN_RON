@@ -38,3 +38,7 @@ assets/characters/*/*.jpg
 !assets/characters/source/*.jpg
 assets/gear/**/*.png
 assets/gear/**/*.jpg
+
+assets/props/**/*.import
+assets/props/**/*.png
+assets/props/**/*.jpg

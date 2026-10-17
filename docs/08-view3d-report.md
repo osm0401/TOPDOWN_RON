@@ -23,6 +23,7 @@
 - 시야 안개: 시야 다각형 밖은 바닥 안개, 다각형에 닿지 않는 벽/문은 숨김
 - 플레이어/NPC (캡슐+머리): 서기, 엎드림(쓰러짐), 구속(웅크림+수갑), 항복(손 든 모습), 숨음(웅크림), 사망(누움)
 - 인물 모델(`assets/characters/`, 있으면 캡슐 대신): 불러올 때 뼈대 14개를 자동으로 붙이고(`src/game/character_models.gd`), 상태에 맞는 자세를 매 프레임 계산한다(`src/game/character_anim.gd`): 걷기·달리기, 소총·권총 겨누기, 재장전, 무릎 꿇고 작업, 위협 겨누기, 항복(손 들기), 숨어 머리 감싸기, 무릎 꿇고 수갑, 엎드려 손 머리 뒤, 쓰러짐, 숨쉬기, 움찔, 반동. 총·수갑·모자·완장은 `src/game/gear_models.gd`. 자세한 내용은 `assets/characters/README.md`. 값: `data/view3d.json`의 `characters.walk`, `characters.pose`
+- 모델 묶음: `data/view3d.json`의 `characters.set`(지금 `"gemini"`) 폴더의 인물(`assets/characters/<set>/`)과 장비(`assets/gear/<set>/`, 손잡이·총구 등은 빈 노드로 표시)를 먼저 쓰고, 없는 것은 기존 모델과 코드로 만든 장비를 쓴다. 3D 모델은 Antigravity가 만들고(`docs/09-3d-models-antigravity.md`), `tools/models/check_models.gd`가 게임과 같은 방식으로 읽어 검사하고 자세 그림을 저장한다
 - 마우스 휠: 카메라 확대/축소(글씨 크기는 그대로)
 - 단서: 붉은 모자(머리 위 원통), 노란 완장(몸 옆 상자), 떨어진 무기
 - 손전등 원뿔, 레이저, 총탄 궤적, 소리 파문, 말풍선, 행동 진행률, 상태 표시(? ! !!)

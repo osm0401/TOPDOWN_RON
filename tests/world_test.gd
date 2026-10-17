@@ -552,6 +552,7 @@ func _character_model_tests() -> void:
 	_check(absf(CharacterModels.bounds(up["node"]).size.y - 2.05) < 0.01, "a hands-up model is fitted fingertips included (2.05 m)")
 	(up["node"] as Node).free()
 	_walk_rig_tests(dir)
+	_model_set_tests(dir)
 
 	# in the 3D view: models replace the shapes and follow the NPC state
 	CharacterModels.folder = dir
@@ -656,6 +657,96 @@ func _character_model_tests() -> void:
 	for name in ["enemy", "enemy_up", "civilian", "civilian_up", "officer"]:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + name + ".glb"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(dir))
+
+
+## Writes the scene under `src` as a .glb at `path` (folders made) and frees it; true when written.
+func _write_glb(src: Node3D, path: String) -> bool:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	doc.append_from_scene(src, state)
+	var ok := doc.write_to_filesystem(state, ProjectSettings.globalize_path(path)) == OK
+	src.free()
+	return ok
+
+
+func _box_node(name: String, size: Vector3, at: Vector3) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	mi.name = name
+	var box := BoxMesh.new()
+	box.size = size
+	mi.mesh = box
+	mi.position = at
+	return mi
+
+
+## Model sets (data/view3d.json characters.set): a model in the set folder wins, a missing one comes
+## from the folder itself; a model that brings its own skeleton is re-rigged; gear model files with
+## marker nodes replace the built-in shapes, and a file made in centimetres is scaled to size.
+func _model_set_tests(dir: String) -> void:
+	var slim := Node3D.new()
+	slim.add_child(_box_node("body", Vector3(0.2, 2.0, 0.3), Vector3.ZERO))
+	_check(_write_glb(slim, dir + "gemini/enemy.glb"), "set model written")
+	var cfg := {"height_m": 1.75, "yaw_deg": 90.0, "set": "gemini"}
+	var m := CharacterModels.make("enemy", cfg, dir)
+	var c := CharacterModels.make("civilian", cfg, dir)
+	_check(absf(CharacterModels.bounds(m["node"]).size.z - 0.175) < 0.01, "set: the model in the set folder is used")
+	_check(absf(CharacterModels.bounds(c["node"]).size.z - 0.35) < 0.01, "set: a model missing from the set comes from the folder itself")
+	(m["node"] as Node).free()
+	(c["node"] as Node).free()
+	# a box person under its own skeleton, skinned: re-rigged with the auto-rig's bones
+	var root := Node3D.new()
+	var own := Skeleton3D.new()
+	own.add_bone("Root")
+	root.add_child(own)
+	var parts := {"leg_l": [Vector3(0.14, 0.82, 0.16), Vector3(0.1, 0.41, 0.0)], "leg_r": [Vector3(0.14, 0.82, 0.16), Vector3(-0.1, 0.41, 0.0)],
+		"torso": [Vector3(0.4, 0.62, 0.24), Vector3(0.0, 1.09, 0.0)], "head": [Vector3(0.2, 0.3, 0.22), Vector3(0.0, 1.6, 0.0)],
+		"arm_l": [Vector3(0.08, 0.7, 0.1), Vector3(0.27, 1.05, 0.0)], "arm_r": [Vector3(0.08, 0.7, 0.1), Vector3(-0.27, 1.05, 0.0)]}
+	for part: String in parts:
+		var mi := _box_node(part, parts[part][0], parts[part][1])
+		(mi.mesh as BoxMesh).subdivide_height = 24
+		mi.skin = Skin.new()
+		own.add_child(mi)
+	var sk := CharacterModels._rig(root, 1.75, true)
+	_check(sk != null and sk.get_bone_count() == CharacterModels.BONE_NAMES.size(), "a model with its own skeleton is re-rigged with the auto-rig's bones")
+	if sk != null:
+		var free_to: PackedFloat32Array = sk.get_meta("arm_free")
+		_check(free_to[0] > 0.7 and free_to[1] > 0.7, "arms modelled apart from the body are followed up to the armpit (%s)" % free_to)
+		sk.free()
+	root.free()
+	# gear files: points from empty nodes (a mesh named "light" is not a point), cm scaled to meters
+	var pistol := Node3D.new()
+	pistol.add_child(_box_node("frame", Vector3(0.03, 0.12, 0.2), Vector3(0.1, 0.2, 0.35)))
+	pistol.add_child(_box_node("light", Vector3(0.02, 0.02, 0.04), Vector3(0.1, 0.16, 0.4)))
+	for mark: Array in [["Grip", Vector3(0.1, 0.2, 0.3)], ["point_muzzle.001", Vector3(0.1, 0.25, 0.48)]]:
+		var e := Node3D.new()
+		e.name = mark[0]
+		e.position = mark[1]
+		pistol.add_child(e)
+	_check(_write_glb(pistol, dir + "gear/gemini/pistol.glb"), "gear model written")
+	var rifle := Node3D.new()
+	rifle.add_child(_box_node("body", Vector3(5.0, 8.0, 90.0), Vector3.ZERO))
+	_check(_write_glb(rifle, dir + "gear/gemini/rifle_lethal.glb"), "centimetre gear model written")
+	GearModels.release()
+	GearModels.folder = dir + "gear/"
+	GearModels.set_name = "gemini"
+	var p := GearModels.make("pistol")
+	var built := GearModels._build("pistol")
+	_check(GearModels.from_file("pistol") and not GearModels.from_file("cuffs"), "gear: a file replaces the built-in shape, a missing one keeps it")
+	_check((p.get_meta("muzzle") as Vector3).is_equal_approx(Vector3(0.0, 0.05, 0.18)) and p.get_meta("light") == built[1]["light"],
+			"gear: points from empty nodes, measured from the grip; an unmarked point keeps the built-in one (%s)" % p.get_meta("muzzle"))
+	_check(p.mesh.get_aabb().get_center().distance_to(Vector3(0.0, 0.0, 0.05)) < 0.005, "gear: the model is drawn with its grip at the origin (%s)" % p.mesh.get_aabb().get_center())
+	var r := GearModels.make("rifle_lethal")
+	var want := (GearModels._build("rifle_lethal")[0] as ArrayMesh).get_aabb().get_longest_axis_size()
+	_check(absf(r.mesh.get_aabb().get_longest_axis_size() - want) < 0.01, "gear: a model made in centimetres is scaled to the built-in size")
+	p.free()
+	r.free()
+	GearModels.folder = GearModels.DIR
+	GearModels.set_name = ""
+	GearModels.release()
+	CharacterModels.release()
+	for f in ["gemini/enemy.glb", "gear/gemini/pistol.glb", "gear/gemini/rifle_lethal.glb", "gear/gemini", "gear", "gemini"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(dir + f))
 
 
 ## The auto-rig on a box "person" (legs, torso, arms a little off the body, head) written as a

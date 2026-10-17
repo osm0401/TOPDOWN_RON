@@ -26,3 +26,15 @@ assets/characters/*.png
 assets/audio/_voice_ref/
 assets/audio/_voice_gen/
 __pycache__/
+
+# model check pictures (tools/models/check_models.gd)
+tools/models/_out/
+# Godot import files of model sets (assets/characters/<set>/, assets/gear/<set>/): rebuilt on import
+assets/characters/*/*.import
+assets/gear/**/*.import
+# ...and the textures the editor extracts from them (the source pictures stay tracked)
+assets/characters/*/*.png
+assets/characters/*/*.jpg
+!assets/characters/source/*.jpg
+assets/gear/**/*.png
+assets/gear/**/*.jpg

@@ -1,12 +1,13 @@
 extends RefCounted
 ## Character models for the 3D view: assets/characters/<name>.glb (officer, enemy, civilian and the
-## hands-up enemy_up / civilian_up). Any model works: it is scaled to the figure height, stood on the
-## floor at the origin and turned to face +X (the rig's aim; data/view3d.json "characters" yaw_deg
-## fixes a model that faces elsewhere). No file: WorldView3D keeps its primitive figure.
+## hands-up enemy_up / civilian_up), or from a set subfolder first (data/view3d.json characters.set).
+## Any model works: it is scaled to the figure height, stood on the floor at the origin and turned to
+## face +X (the rig's aim; data/view3d.json "characters" yaw_deg fixes a model that faces elsewhere).
+## No file: WorldView3D keeps its primitive figure.
 ## Loaded once per process; every figure gets its own copy (meshes are shared).
-## The models come without bones, so each one is rigged when it loads (_rig guesses the joints from
-## the shape and skins the mesh to them) and CharacterAnim poses the result. A model that already
-## has a skeleton is shown as it is, unposed.
+## Each model is rigged when it loads (_rig guesses the joints from the shape and skins the mesh to
+## them) and CharacterAnim poses the result. A skeleton the file brings is dropped: the poses only
+## know the auto-rig's bones, so the mesh is re-rigged from its rest shape.
 ## No class_name on purpose: users preload this file. A new global class name is only known after
 ## the editor has rescanned the project, so a game started straight after git pull (no editor)
 ## failed to compile every script that named it.
@@ -38,8 +39,19 @@ static var _templates: Dictionary = {}  ## file path -> normalized model as a Pa
 ## figure lying on its back / front; skeleton is the auto-rig CharacterAnim poses). {} without a file.
 ## A hands-up model (<kind>_up) is fitted to up_height_m, fingertips included, so the body keeps the
 ## size of the standing model; its raised arms stay part of the chest.
+## cfg "set" names a subfolder tried first (assets/characters/<set>/<name>.glb); a model missing
+## there comes from the folder itself, so a new set can arrive one file at a time.
 static func make(name: String, cfg: Dictionary, dir := "") -> Dictionary:
-	var path := (dir if dir != "" else folder) + name + ".glb"
+	var base := dir if dir != "" else folder
+	var set_name := str(cfg.get("set", ""))
+	if set_name != "":
+		var m := _make(base + set_name + "/" + name + ".glb", name, cfg)
+		if not m.is_empty():
+			return m
+	return _make(base + name + ".glb", name, cfg)
+
+
+static func _make(path: String, name: String, cfg: Dictionary) -> Dictionary:
 	if not _templates.has(path):
 		var body_h := float(cfg.get("height_m", 1.7))
 		var up := name.ends_with("_up")
@@ -177,23 +189,21 @@ static func _own(node: Node, owner: Node) -> void:
 # ---- auto-rig ---------------------------------------------------------------
 
 ## Skins the model to a skeleton guessed from its shape and returns it (meshes baked into the
-## holder's space), or null when the model has its own skeleton or no mesh. h: standing height.
+## holder's space), or null when the model has no mesh. h: standing height. A model that brings its
+## own skeleton is re-rigged from its rest shape (its bones and weights are replaced).
 ## Legs split at the gap between them; hips, knees, ankles, chest, neck and elbows sit at human
 ## proportions; upper arms run from the shoulders down the outer edge of the body, forearms and
 ## hands are what the mesh joins to the wrist. Weights blend over a few centimetres at every joint
 ## so the surface bends instead of tearing. The skeleton's metadata tells CharacterAnim where the
 ## hands are ("hand_l" / "hand_r"), the leg length ("leg_len"), the height ("h") and whether the arms
-## are rigged ("arms").
+## are rigged ("arms"); "arm_free" (left, right) is how high each arm was followed apart from the
+## body, as a share of h (0: not at all, the arm is cut off the body's outline instead).
 static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
-	if not model.find_children("*", "Skeleton3D", true, false).is_empty():
-		return null
 	var parts: Array = []  # [source mesh, [surface arrays], [materials], [primitive types]]
 	var pts := PackedVector3Array()
 	var tris := PackedInt32Array()  # into pts
 	for entry in _mesh_transforms(model, model.transform):
 		var mi: MeshInstance3D = entry[0]
-		if mi.skin != null:
-			return null
 		if mi.mesh == null:
 			continue
 		var surfaces: Array = []
@@ -236,6 +246,12 @@ static func _rig(model: Node3D, h: float, arms: bool) -> Skeleton3D:
 	sk.set_meta("leg_len", at[Bone.HIPS].y)
 	sk.set_meta("h", h)
 	sk.set_meta("arms", arms)
+	var free_to := PackedFloat32Array([0.0, 0.0])
+	if arms:
+		for side in 2:
+			var f: Dictionary = j["arm_l" if side == 0 else "arm_r"]["flood"]
+			free_to[side] = float(f["top"]) / h if not f.is_empty() else 0.0
+	sk.set_meta("arm_free", free_to)
 	var base := 0
 	var smooth: PackedVector3Array = g["nrm"]
 	var weld: PackedInt32Array = g["weld"]

@@ -21,6 +21,9 @@ const GearModels := preload("res://src/game/gear_models.gd")
 const PropModels := preload("res://src/game/prop_models.gd")
 
 static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
+static var tex_folder := "res://assets/textures/"  ## where surface pictures are looked for (tests point it elsewhere)
+static var quality := ""  ## graphics level (data/view3d.json graphics.levels), F8 cycles; kept across missions and F5
+const QUALITIES: Array[String] = ["high", "medium", "low"]
 
 var world: NetWorld
 var view: WorldView
@@ -51,6 +54,8 @@ var _props: Array[Dictionary] = []  ## furniture: {node, rect (px), tall, cut}
 var _props_dirty := true  ## the sight polygon changed: furniture visibility to redo
 var _police: Array[Dictionary] = []  ## police car light bars: {lights: [red, blue OmniLight3D], mats}
 var _surf_cache: Dictionary = {}  ## surface key -> shared material
+var _env: Environment
+var _wear: Array[Decal] = []  ## grime, scuffs, cracks, papers, stains (static)
 var _holes: Array[Decal] = []  ## bullet holes in walls and doors, oldest first (capped)
 var _stains: Array[Decal] = []  ## blood on the floor, oldest first (capped)
 var _casings: Array[Dictionary] = []  ## spent cases: {node, vel, spin, rest}, oldest first (capped)
@@ -83,6 +88,12 @@ func _ready() -> void:
 	for a in world.director.agents:
 		_npcs.append(_make_npc(a))
 	world.mouse_world = _mouse_ground
+	if quality == "":
+		quality = str(_cfg["graphics"]["quality"])
+	for arg in OS.get_cmdline_user_args():  # test aid: -- --quality=low
+		if arg.begins_with("--quality="):
+			quality = arg.substr(10)
+	_apply_quality()
 	world.sound_emitted.connect(_on_sound)
 	world.shot_fired.connect(_on_shot)
 	world.speech_emitted.connect(_on_speech)
@@ -119,6 +130,7 @@ func _add(mesh: Mesh, mat: Material, parent: Node3D = null) -> MeshInstance3D:
 	var bm := mat as BaseMaterial3D
 	if bm != null and (bm.shading_mode == BaseMaterial3D.SHADING_MODE_UNSHADED or bm.transparency != BaseMaterial3D.TRANSPARENCY_DISABLED):
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # overlays, beams, fog never shade
+		mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED  # nor bounce light
 	(parent if parent != null else self).add_child(mi)
 	return mi
 
@@ -140,10 +152,32 @@ func _surface_mat(key: String) -> ShaderMaterial:
 	for k in ["color_a", "color_b", "grout"]:
 		if s.has(k):
 			m.set_shader_parameter(k, _col(s[k]))
-	for k in ["scale", "tile_m", "rough_min", "rough_max", "bump", "grime_m", "plank_len"]:
+	for k in ["scale", "tile_m", "rough_min", "rough_max", "bump", "grime_m", "plank_len", "dirt", "speckle", "bevel", "tex_m"]:
 		if s.has(k):
 			m.set_shader_parameter(k, float(s[k]))
+	var tex := _surface_tex(key)
+	if tex != null:
+		m.set_shader_parameter("use_tex", true)
+		m.set_shader_parameter("tex_albedo", tex)
 	return m
+
+
+## A picture of surface `key` from the model set (assets/textures/<set>/<key>.png, or .jpg), read
+## without the editor's import when there is none; null when the set has none.
+func _surface_tex(key: String) -> Texture2D:
+	var set_name := str(_cfg["characters"].get("set", ""))
+	if set_name == "":
+		return null
+	for ext in ["png", "jpg"]:
+		var path := "%s%s/%s.%s" % [tex_folder, set_name, key, ext]
+		if ResourceLoader.exists(path):
+			return load(path) as Texture2D
+		if FileAccess.file_exists(path):
+			var img := Image.load_from_file(ProjectSettings.globalize_path(path))
+			if img != null and not img.is_empty():
+				img.generate_mipmaps()
+				return ImageTexture.create_from_image(img)
+	return null
 
 
 func _box(size: Vector3) -> BoxMesh:
@@ -166,8 +200,18 @@ func _capsule() -> CapsuleMesh:
 	return c
 
 
+## Moving geometry under `node` takes bounced light but is left out of the scene the bounce is
+## computed from (people, gear, door leaves).
+func _dynamic(node: Node) -> void:
+	if node is GeometryInstance3D and (node as GeometryInstance3D).gi_mode == GeometryInstance3D.GI_MODE_STATIC:
+		(node as GeometryInstance3D).gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+	for c in node.get_children():
+		_dynamic(c)
+
+
 func _label(pixel: float, color := Color.WHITE) -> Label3D:
 	var l := Label3D.new()
+	l.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	l.pixel_size = pixel
 	l.font_size = 48
@@ -232,28 +276,58 @@ func _in_sight(r: Rect2) -> bool:
 
 func _build_environment() -> void:
 	var env := Environment.new()
+	_env = env
 	env.background_mode = Environment.BG_COLOR
 	env.background_color = FOG
 	var lc: Dictionary = _cfg["lighting"]
+	var gc: Dictionary = _cfg["graphics"]
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = _col(lc["ambient"]["color"])
-	env.ambient_light_energy = float(lc["ambient"]["energy"])
-	# Forward+ look: contact shadows, bloom around lights, haze that shows beams, filmic grade
+	# Forward+ look: contact shadows, bloom around lights, haze that shows beams, a photographic
+	# grade (AgX); the quality level adds light bouncing off walls and floors, floor reflections
+	# and soft shadows (_apply_quality)
 	env.ssao_enabled = true
-	env.ssao_intensity = 2.0
+	env.ssao_radius = 0.8
+	env.ssao_intensity = 2.2
+	env.ssao_light_affect = 0.15  # corners darken a little even under direct light
 	env.glow_enabled = true
-	env.glow_intensity = 0.6
-	env.glow_bloom = 0.05
-	env.volumetric_fog_enabled = true
+	env.glow_intensity = 0.55
+	env.glow_bloom = 0.04
+	env.glow_hdr_threshold = 1.1
 	env.volumetric_fog_density = float(lc["haze_density"])
 	env.volumetric_fog_albedo = Color(0.7, 0.75, 0.85)
-	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_mode = Environment.TONE_MAPPER_AGX
+	env.tonemap_exposure = float(gc["exposure"])
 	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.1
-	env.adjustment_saturation = 0.85
+	env.adjustment_contrast = 1.06
+	env.adjustment_saturation = 0.92
+	env.ssr_max_steps = 48
+	env.ssr_fade_in = 0.15
+	env.ssr_fade_out = 2.0
+	env.ssr_depth_tolerance = 0.4
+	env.sdfgi_use_occlusion = true
+	env.sdfgi_read_sky_light = false
+	env.sdfgi_min_cell_size = 0.15
+	env.sdfgi_cascades = 3
+	env.sdfgi_bounce_feedback = 0.4
+	env.sdfgi_energy = float(gc["gi_energy"])
+	env.ssil_radius = 4.0
+	env.ssil_intensity = 1.2
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
+	var vignette := CanvasLayer.new()  # darker corners under the HUD (the HUD's layers draw on top)
+	vignette.layer = -1
+	var vr := ColorRect.new()
+	vr.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vr.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var vm := ShaderMaterial.new()
+	vm.shader = Shader.new()
+	vm.shader.code = "shader_type canvas_item;\nuniform float strength = 0.35;\nvoid fragment() {\n\tfloat d = length((UV - 0.5) * vec2(1.6, 1.2));\n\tCOLOR = vec4(0.0, 0.0, 0.0, smoothstep(0.55, 1.15, d) * strength);\n}\n"
+	vm.set_shader_parameter("strength", float(gc["vignette"]))
+	vr.material = vm
+	vignette.add_child(vr)
+	add_child(vignette)
 	_cam = Camera3D.new()
 	_cam.fov = float(_cfg["camera"]["fov_deg"])
 	_cam.far = 300.0
@@ -310,6 +384,7 @@ func _build_level() -> void:
 	for i in lv.door_rects.size():
 		_doors.append(_make_door(i))
 	_build_props()
+	_build_wear()
 	_build_lights()
 	_add(_fog, _mat(FOG, true))
 
@@ -518,6 +593,7 @@ func _make_door(i: int) -> Dictionary:
 	pivot.position = Vector3(-w * 0.5, 0, zs * depth * 0.5)  # the hinge sits on the face the leaf swings to
 	root.add_child(pivot)
 	var leaf := PropModels.door_leaf(w, leaf_h, t)
+	leaf.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC  # it swings
 	leaf.position = Vector3(0, 0, -zs * t * 0.5)  # closed inside the opening; turned 180 degrees, flat on the wall
 	pivot.add_child(leaf)
 	var wood := (PropModels.mat("door_wood") as ShaderMaterial).duplicate() as ShaderMaterial
@@ -629,6 +705,34 @@ func _add_omni(at: Vector2, height: float, energy: float, range_m: float, color:
 	return l
 
 
+# ---- graphics quality -------------------------------------------------------------
+
+## Switches to the next graphics level (F8) and returns its name.
+func cycle_quality() -> String:
+	quality = QUALITIES[(QUALITIES.find(quality) + 1) % QUALITIES.size()]
+	_apply_quality()
+	return quality
+
+
+## The level's effects (data/view3d.json graphics.levels): light bounced off walls and floors
+## (SDFGI, or the cheaper screen-space SSIL), floor reflections (SSR), haze, edge smoothing (MSAA),
+## soft shadow edges (light size) and the flat ambient light that stands in for bounce light.
+func _apply_quality() -> void:
+	var gc: Dictionary = _cfg["graphics"]
+	if not (gc["levels"] as Dictionary).has(quality):
+		quality = str(gc["quality"])
+	var q: Dictionary = gc["levels"][quality]
+	_env.sdfgi_enabled = bool(q["sdfgi"])
+	_env.ssil_enabled = bool(q["ssil"])
+	_env.ssr_enabled = bool(q["ssr"])
+	_env.volumetric_fog_enabled = bool(q["fog"])
+	_env.ambient_light_energy = float(_cfg["lighting"]["ambient"]["energy"]) * float(q["ambient"])
+	get_viewport().msaa_3d = int(q["msaa"]) as Viewport.MSAA
+	RenderingServer.positional_soft_shadow_filter_set_quality(int(q["shadow_filter"]) as RenderingServer.ShadowQuality)
+	for l in _lights:
+		(l["node"] as OmniLight3D).light_size = float(q["soft_shadow"])
+
+
 func _make_player(slot: int) -> Dictionary:
 	var root := Node3D.new()
 	add_child(root)
@@ -656,9 +760,12 @@ func _make_player(slot: int) -> Dictionary:
 	label.position.y = _actor_h + 0.45
 	root.add_child(label)
 	var ring := _add(_ring, _mat(Color.WHITE, true), root)
-	ring.position.y = 0.02
+	ring.position.y = 0.03
 	ring.scale = Vector3(0.4, 1.0, 0.4)
 	ring.visible = slot == world.my_slot
+	var mark := _add(_ring, _mat(Color(WorldView.PLAYER_COLORS[slot], 0.8), true), root)  # which officer: blue or orange underfoot
+	mark.position.y = 0.028
+	mark.scale = Vector3(0.33, 1.0, 0.33)
 	var cone := ArrayMesh.new()  # exact sim beam area, kept faint beside the real light
 	_add(cone, _mat(Color(1.0, 0.95, 0.6, 0.07), true))
 	var fc: Dictionary = _cfg["lighting"]["flash"]
@@ -673,6 +780,7 @@ func _make_player(slot: int) -> Dictionary:
 	spot.rotation_degrees = Vector3(float(fc["pitch_deg"]), -90.0, 0.0)  # -Z of the light -> rig +X (aim)
 	spot.visible = false
 	rig.add_child(spot)
+	_dynamic(root)
 	return {
 		"root": root, "rig": rig, "mat": mat, "model": model, "rim": rim, "gun": gun, "label": label, "cone": cone, "spot": spot,
 		"beam": _add(_box(Vector3(0.02, 0.02, 1.0)), _mat(Color(1.0, 0.1, 0.1, 0.75), true)),
@@ -735,6 +843,7 @@ func _make_npc(a: NpcDirector.Agent) -> Dictionary:
 	var dbg := _label(0.005, Color(1, 1, 1, 0.85))
 	dbg.position.y = 0.1
 	root.add_child(dbg)
+	_dynamic(root)
 	return {"root": root, "rig": rig, "mat": mat, "model": model, "model_up": model_up, "cap": cap, "band": band, "gun": gun,
 			"arms": arms, "cuffs": cuffs, "dropped": dropped, "sil": sil, "marker": marker, "dbg": dbg}
 
@@ -1205,6 +1314,7 @@ func _gear(model: Dictionary, kind: String) -> Node3D:
 	if not have.has(kind):
 		var g := GearModels.make(kind)
 		g.layers = 2
+		g.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 		(model["skeleton"] as Skeleton3D).add_child(g)
 		have[kind] = g
 	return have[kind]
@@ -1531,6 +1641,7 @@ func _burst(at: Vector3, dir: Vector3, color: Color, count: int, speed: float, l
 		mi.mesh = q
 		mi.material_override = m
 		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 		mi.position = at
 		add_child(mi)
 		var spread := Vector3(randf_range(-1, 1), randf_range(-0.3, 1), randf_range(-1, 1)) * 0.7
@@ -1560,6 +1671,7 @@ func _eject(n: Dictionary) -> void:
 	var mi := MeshInstance3D.new()
 	mi.mesh = _casing_mesh
 	mi.layers = 2
+	mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	var xf := gun.global_transform
@@ -1617,7 +1729,7 @@ func _effect_tex(kind: String) -> Texture2D:
 		return _tex[kind]
 	var rng := RandomNumberGenerator.new()
 	rng.seed = hash(kind)
-	var size := 128 if kind == "blood" else 64
+	var size := 64 if kind == "hole" or kind == "puff" or kind == "paper" else 128
 	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
 	var noise := FastNoiseLite.new()
 	noise.seed = rng.randi()
@@ -1664,8 +1776,154 @@ func _effect_tex(kind: String) -> Texture2D:
 				"puff":
 					var a := clampf(1.0 - r, 0.0, 1.0)
 					c = Color(1, 1, 1, a * a)
+				"grime":
+					var a := smoothstep(0.75, 0.15, r + noise.get_noise_2d(x * 1.5, y * 1.5) * 0.45) * 0.28
+					c = Color(0.16, 0.13, 0.1, a)
+				"oil":
+					var a := smoothstep(0.62, 0.45, r + noise.get_noise_2d(x * 1.2, y * 1.2) * 0.3) * 0.75
+					c = Color(0.025, 0.025, 0.03, a)
+				"water":
+					var e := r + noise.get_noise_2d(x * 1.2, y * 1.2) * 0.2
+					var a := smoothstep(0.62, 0.5, e) * 0.12 + smoothstep(0.04, 0.0, absf(e - 0.56)) * 0.35
+					c = Color(0.2, 0.18, 0.15, a)
+				"scuff":
+					var a := 0.0
+					for k in 7:
+						var dir := Vector2.from_angle(cracks[k % cracks.size()] * 0.15 + float(k) * 0.07)
+						var off := absf((u - Vector2(0.0, (float(k) - 3.0) * 0.18)).cross(dir))
+						var along := absf(u.dot(dir))
+						if off < 0.02 + 0.01 * sin(float(x) * 0.3 + k) and along < 0.6 + 0.2 * sin(k * 1.7):
+							a = maxf(a, 0.3 * (1.0 - along))
+					c = Color(0.06, 0.06, 0.06, a)
+				"crack":
+					var a := 0.0
+					for k in cracks.size():
+						var dir := Vector2.from_angle(cracks[k])
+						var along := u.dot(dir)
+						var wobble := noise.get_noise_2d(float(k) * 50.0 + along * 60.0, 0.0) * 0.12
+						var off := absf(u.cross(dir) - wobble * along)
+						if along > 0.0 and along < 0.55 + 0.4 * fmod(cracks[k], 1.0) and off < 0.018 * (1.0 - along):
+							a = 0.85
+					c = Color(0.06, 0.05, 0.05, a)
+				"paper":
+					var q := absf(u.x) < 0.66 and absf(u.y) < 0.86
+					if q:
+						var line := fmod(u.y + 1.0, 0.16) < 0.04 and u.y > -0.6 and u.y < 0.7 and absf(u.x) < 0.52 and fmod(u.x * 7.0 + float(int(u.y * 6.0)), 3.0) > 0.4
+						c = Color(0.35, 0.36, 0.4, 1.0) if line else Color(0.9, 0.9, 0.86, 1.0)
+				"streak":
+					var col := noise.get_noise_2d(x * 0.9, 0.0) * 0.5 + 0.5
+					var run := 0.2 + col * 1.6  # how far down this drip runs (from the top)
+					var from_top := (u.y + 1.0) * 0.5 * 2.0
+					var a := smoothstep(run, run - 0.6, from_top) * smoothstep(0.35, 0.75, col) * 0.4
+					c = Color(0.07, 0.06, 0.05, a)
 			img.set_pixel(x, y, c)
 	img.generate_mipmaps()
 	var tex := ImageTexture.create_from_image(img)
 	_tex[kind] = tex
 	return tex
+
+
+# ---- signs of use ---------------------------------------------------------------
+
+## Marks that make the rooms look lived in, the same every run (seeded): grime in the corners,
+## scuffs at the doors, cracks and stains on the walls, papers in the office and the corridor, a
+## water ring by the sink, oil in the storeroom and on the street, rain streaks on the brick.
+## Floor marks fade on upright faces (no smears up furniture legs).
+func _build_wear() -> void:
+	var lv := world.level
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 9137
+	var wc: Dictionary = _cfg["wear"]
+	for rm in lv.rooms:
+		var r: Rect2 = rm["rect"]
+		var style := str(rm["floor"])
+		var area := r.size.x * r.size.y * _k * _k
+		for i in int(area * float(wc["grime_per_m2"])):  # grime gathers along the walls
+			var p := _near_wall(r, rng, rng.randf_range(0.1, 0.7))
+			_mark("grime", _p3(p, 0.03), Vector3.UP, rng.randf_range(0.5, 1.4), 0.3, rng)
+		for i in int(wc["cracks_per_room"]):
+			var face := _wall_spot(r, rng)
+			if not face.is_empty():
+				_mark("crack" if rng.randf() < 0.6 else "grime", face["at"] + Vector3(0, rng.randf_range(0.35, 1.3), 0), face["normal"], rng.randf_range(0.4, 0.8), 0.2, rng)
+		var papers := int(wc["papers"].get(style, 0))
+		for i in papers:
+			var p := r.position + Vector2(rng.randf_range(0.15, 0.85) * r.size.x, rng.randf_range(0.15, 0.85) * r.size.y)
+			_mark("paper", _p3(p, 0.03), Vector3.UP, rng.randf_range(0.22, 0.3), 0.3, rng)
+		if style == "kitchen" or style == "concrete":
+			for pr in lv.props:
+				var kind := str(pr["kind"])
+				if (kind == "sink" or kind == "fridge" or kind == "pallet" or kind == "workbench" or kind == "barrel") and r.encloses(pr["rect"]):
+					var front: Vector2 = (pr["rect"] as Rect2).get_center().move_toward(r.get_center(), 32.0)
+					_mark("water" if style == "kitchen" else "oil", _p3(front, 0.03), Vector3.UP, rng.randf_range(0.6, 1.0), 0.3, rng)
+	for i in lv.door_rects.size():  # shoes scuff the floor where people go through
+		var dr := lv.door_rects[i]
+		var horiz := dr.size.x >= dr.size.y
+		for side: float in [-1.0, 1.0]:
+			var p := dr.get_center() + (Vector2(0, side * 26.0) if horiz else Vector2(side * 26.0, 0))
+			if lv.building.has_point(p):
+				_mark("scuff", _p3(p, 0.03), Vector3.UP, rng.randf_range(0.9, 1.3), 0.3, rng)
+	var b := lv.building
+	for i in int(wc["streaks_outside"]):  # rain runs down the brick from the top of the outer walls
+		var face := _wall_spot(b, rng, true)
+		if not face.is_empty():
+			_mark("streak", face["at"] + Vector3(0, _wall_h * 0.62, 0), face["normal"], rng.randf_range(0.6, 1.0), 0.2, rng)
+	for g in lv.ground:
+		if str(g["surface"]) == "asphalt":
+			var gr: Rect2 = g["rect"]
+			for i in int(wc["oil_on_street"]):
+				var p := gr.position + Vector2(rng.randf() * gr.size.x, rng.randf() * gr.size.y)
+				_mark("oil", _p3(p, 0.02), Vector3.UP, rng.randf_range(0.5, 1.2), 0.3, rng)
+
+
+## A point in room r, `off` m in from one of its walls, anywhere along it.
+func _near_wall(r: Rect2, rng: RandomNumberGenerator, off: float) -> Vector2:
+	var o := off / _k
+	match rng.randi_range(0, 3):
+		0: return Vector2(rng.randf_range(r.position.x, r.end.x), r.position.y + o)
+		1: return Vector2(rng.randf_range(r.position.x, r.end.x), r.end.y - o)
+		2: return Vector2(r.position.x + o, rng.randf_range(r.position.y, r.end.y))
+	return Vector2(r.end.x - o, rng.randf_range(r.position.y, r.end.y))
+
+
+## A spot on a wall face round rect r (its inside faces, or with `outside` the faces looking out),
+## not in a doorway: {at (3D, on the floor line), normal}; {} when the try lands in a door.
+func _wall_spot(r: Rect2, rng: RandomNumberGenerator, outside := false) -> Dictionary:
+	var side := rng.randi_range(0, 3)
+	var t := rng.randf_range(0.1, 0.9)
+	var p: Vector2
+	var n: Vector3
+	match side:
+		0:
+			p = Vector2(lerpf(r.position.x, r.end.x, t), r.position.y)
+			n = Vector3.FORWARD if outside else Vector3.BACK
+		1:
+			p = Vector2(lerpf(r.position.x, r.end.x, t), r.end.y)
+			n = Vector3.BACK if outside else Vector3.FORWARD
+		2:
+			p = Vector2(r.position.x, lerpf(r.position.y, r.end.y, t))
+			n = Vector3.LEFT if outside else Vector3.RIGHT
+		_:
+			p = Vector2(r.end.x, lerpf(r.position.y, r.end.y, t))
+			n = Vector3.RIGHT if outside else Vector3.LEFT
+	for dr in world.level.door_rects:
+		if dr.grow(30.0).has_point(p):
+			return {}
+	return {"at": _p3(p), "normal": n}
+
+
+func _mark(kind: String, at: Vector3, normal: Vector3, size: float, depth: float, rng: RandomNumberGenerator) -> void:
+	var d := Decal.new()
+	d.texture_albedo = _effect_tex(kind)
+	d.size = Vector3(size, depth, size)
+	d.upper_fade = 0.05
+	d.lower_fade = 0.05
+	d.normal_fade = 0.5
+	d.cull_mask = 1
+	d.modulate = Color(1, 1, 1, rng.randf_range(0.7, 1.0))
+	var y := normal.normalized()
+	var x := (Vector3.UP if absf(y.y) < 0.9 else Vector3.RIGHT).cross(y).normalized()
+	var spin := rng.randf() * TAU if kind != "streak" else 0.0  # streaks run down
+	d.basis = Basis(y, spin) * Basis(x, y, x.cross(y))
+	d.position = at
+	add_child(d)
+	_wear.append(d)

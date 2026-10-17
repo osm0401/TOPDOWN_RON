@@ -1024,6 +1024,30 @@ func _scenery_tests(v3: WorldView3D, k: float) -> void:
 	for f in 120:
 		v3._update_npcs(0.05)
 	_check((n["pool"]["decal"] as Decal).size.x > first + 0.4, "the pool spreads (%.2f -> %.2f m)" % [first, (n["pool"]["decal"] as Decal).size.x])
+	# signs of use: the same marks every run, inside the map
+	_check(v3._wear.size() > 30 and v3._wear.all(func(d: Decal) -> bool: return lv.bounds.has_point(Vector2(d.position.x, d.position.z) / k)),
+			"grime, scuffs, cracks and papers are laid about the map (%d)" % v3._wear.size())
+	# graphics levels: F8 cycles high -> medium -> low, each switching its effects
+	var start := WorldView3D.quality
+	var seen := {}
+	for step in 3:
+		var q := v3.cycle_quality()
+		seen[q] = {"gi": v3._env.sdfgi_enabled, "ssil": v3._env.ssil_enabled, "ssr": v3._env.ssr_enabled, "msaa": v3.get_viewport().msaa_3d}
+	_check(seen.size() == 3 and seen["high"]["gi"] and seen["high"]["ssr"] and not seen["medium"]["gi"] and seen["medium"]["ssil"]
+			and not seen["low"]["gi"] and not seen["low"]["ssil"] and seen["low"]["msaa"] == Viewport.MSAA_DISABLED and WorldView3D.quality == start,
+			"graphics levels: bounce light and reflections on high, screen-space bounce on medium, none on low")
+	# a picture of a surface from the model set replaces its pattern
+	var tex_dir := "user://tex_test/"
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(tex_dir + "gemini"))
+	var img := Image.create(8, 8, false, Image.FORMAT_RGB8)
+	img.fill(Color(0.6, 0.3, 0.2))
+	img.save_png(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood.png"))
+	WorldView3D.tex_folder = tex_dir
+	_check(v3._surface_tex("floor_wood") != null and v3._surface_tex("floor_carpet") == null, "a surface picture in the set is used; without one the pattern stays")
+	WorldView3D.tex_folder = "res://assets/textures/"
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood.png"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir + "gemini"))
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir))
 	await _frames(1)
 
 

@@ -20,6 +20,14 @@ uniform float bump = 0.05;
 uniform float grime_m = 0.0;    // height of the dirty band at the foot of vertical surfaces
 uniform float plank_len = 0.0;  // wood: plank length in meters (0: endless planks)
 uniform bool object_space = false;
+uniform float dirt = 0.0;       // 0..1: large faint stains and worn patches (darker, rougher)
+uniform float speckle = 0.0;    // 0..1: fine light / dark grains (asphalt, concrete, terrazzo)
+uniform float bevel = 0.0;      // tiles: width (m) of the rounded edge each tile gets at its joints
+// a texture (assets/textures/<set>/<key>.png) replaces the pattern's colours; its brightness
+// gives the bumps. tex_m: meters the picture covers.
+uniform bool use_tex = false;
+uniform sampler2D tex_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float tex_m = 2.0;
 
 varying vec3 wpos;
 varying vec3 wnrm;
@@ -83,8 +91,9 @@ void fragment() {
 		float joint = 1.0 - smoothstep(0.008 - aa, 0.008 + aa, edge);
 		vec3 tile = mix(color_a, color_b, clamp(hash(id) * 0.8 + n * 0.4, 0.0, 1.0));
 		col = mix(tile, grout, joint);
-		h = (1.0 - joint) * 0.6 + n * 0.2 + fine * 0.05;
-		rough = mix(rough_min, rough_max, clamp(n + joint, 0.0, 1.0));
+		float round_edge = bevel > 0.0 ? smoothstep(0.0, bevel, edge) : 1.0;  // tiles dome toward their middle
+		h = (1.0 - joint) * 0.6 * round_edge + n * 0.2 + fine * 0.05;
+		rough = mix(rough_min, rough_max, clamp(n + joint + hash(id + 3.0) * 0.25 - 0.1, 0.0, 1.0));
 	} else if (mode == 2) {
 		float px = uv.x / tile_m;
 		float plank = floor(px);
@@ -128,6 +137,24 @@ void fragment() {
 		col = mix(color_a, color_b, n) * (0.85 + 0.3 * fine);
 		h = n * 0.7 + fine * 0.3;
 		rough = mix(rough_min, rough_max, fine);
+	}
+	if (use_tex) {  // a picture of the real surface instead of the pattern's colours
+		vec3 t = texture(tex_albedo, uv / tex_m).rgb;
+		col = t * (0.92 + 0.16 * n);
+		h = dot(t, vec3(0.3, 0.5, 0.2)) * 1.4 + fine * 0.05;
+	}
+	if (speckle > 0.0) {
+		float g1 = vnoise(uv * 90.0);
+		float g2 = vnoise(uv * 160.0 + 31.0);
+		col *= 1.0 + speckle * (smoothstep(0.82, 0.95, g1) * 0.5 - smoothstep(0.8, 0.95, g2) * 0.45);
+	}
+	if (dirt > 0.0) {
+		float patch = fbm(uv * 0.32 + vec2(13.0, 7.0));
+		float worn = smoothstep(0.48, 0.78, patch) * dirt;
+		col *= 1.0 - 0.35 * worn;
+		rough = mix(rough, rough_max, worn);
+		float tide = smoothstep(0.012, 0.0, abs(patch - 0.62)) * dirt;  // the dried edge of an old spill
+		col *= 1.0 - 0.18 * tide;
 	}
 	if (grime_m > 0.0 && an.y < 0.5) {
 		float g = smoothstep(grime_m, 0.0, wpos.y) * (0.5 + 0.5 * n);

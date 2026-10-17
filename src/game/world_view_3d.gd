@@ -2,7 +2,8 @@ class_name WorldView3D
 extends Node3D
 ## PLACEHOLDER angled 3D rendering of NetWorld: primitive shapes; characters use the models in
 ## assets/characters/ when they exist (CharacterModels, posed by CharacterAnim, carrying gear from
-## GearModels), the primitive figures otherwise. Mouse wheel: zoom.
+## GearModels; the model set in data/view3d.json characters.set comes first), the primitive figures
+## otherwise. Mouse wheel: zoom.
 ## The simulation stays in 2D plane coordinates, (x, y) px -> (x, 0, y) / px_per_m.
 ## WorldView keeps computing the sight polygon, flashlight cones and per-NPC visibility;
 ## this node reads that cache (view._vis, _cones, ...) and only draws. HUD, briefing and
@@ -51,6 +52,7 @@ var _t := 0.0  ## seconds since the view opened (breathing, idle sway)
 
 func _ready() -> void:
 	_cfg = JsonData.load_dict("res://data/view3d.json")
+	GearModels.set_name = str(_cfg["characters"].get("set", ""))  # gear files of the same model set
 	_k = 1.0 / float(_cfg["px_per_m"])
 	_wall_h = float(_cfg["wall_h"])
 	_actor_h = float(_cfg["actor_h"])

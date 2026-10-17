@@ -6,11 +6,21 @@ extends RefCounted
 ## the muzzle, +Y up. Its metadata holds the points CharacterAnim needs, in that frame: "fore" (where
 ## the support hand holds), "muzzle", "light" (weapon light lens) and "stock" (butt end, rifles).
 ## Each kind's mesh is built once (one surface per material) and shared.
+## A model file replaces the built-in shape: assets/gear/<set>/<kind>.glb (set_name, from
+## data/view3d.json characters.set). It is drawn in the same frame; empty nodes in it named after the
+## points mark them ("grip" moves the origin there; "fore", "muzzle", "light", "stock", "mag"; a
+## point the file does not mark keeps the built-in shape's). A file whose size is far off the
+## built-in shape's (made in centimetres, say) is scaled to it. Guide: docs/09-3d-models-antigravity.md.
 ## No class_name: preloaded (see character_models.gd).
 
+const CharacterModels := preload("res://src/game/character_models.gd")
 const KINDS: Array[String] = ["rifle_lethal", "rifle_nonlethal", "pistol", "cuffs", "cap", "band", "camera"]
+const POINTS: Array[String] = ["fore", "muzzle", "light", "stock", "mag"]
+const DIR := "res://assets/gear/"
 
-static var _meshes: Dictionary = {}  ## kind -> [ArrayMesh, metadata]
+static var folder := DIR  ## where model files are looked for (tests point it elsewhere)
+static var set_name := ""  ## subfolder of folder with the model files; "" = built-in shapes only
+static var _meshes: Dictionary = {}  ## kind or "<set>/<kind>" -> [ArrayMesh, metadata]
 static var _mats: Dictionary = {}
 
 
@@ -18,21 +28,106 @@ static var _mats: Dictionary = {}
 static func make(kind: String) -> MeshInstance3D:
 	if not KINDS.has(kind):
 		kind = "pistol"
-	if not _meshes.has(kind):
-		_meshes[kind] = _build(kind)
+	var key := kind if set_name == "" else set_name + "/" + kind
+	if not _meshes.has(key):
+		var built: Array = _from_file(folder + set_name + "/" + kind + ".glb", kind) if set_name != "" else []
+		_meshes[key] = built if not built.is_empty() else _builtin(kind)
 	var mi := MeshInstance3D.new()
 	mi.name = kind
-	mi.mesh = _meshes[kind][0]
-	var meta: Dictionary = _meshes[kind][1]
+	mi.mesh = _meshes[key][0]
+	var meta: Dictionary = _meshes[key][1]
 	for k: String in meta:
 		mi.set_meta(k, meta[k])
 	return mi
+
+
+## True when gear `kind` comes from a model file (for the model check tool).
+static func from_file(kind: String) -> bool:
+	make(kind).free()
+	return set_name != "" and _meshes[set_name + "/" + kind] != _builtin(kind)
 
 
 ## Drops the shared meshes (at quit, like CharacterModels.release()).
 static func release() -> void:
 	_meshes.clear()
 	_mats.clear()
+
+
+static func _builtin(kind: String) -> Array:
+	if not _meshes.has(kind):
+		_meshes[kind] = _build(kind)
+	return _meshes[kind]
+
+
+## [mesh, metadata] from a .glb drawn in the gear frame, or [] when the file is missing or empty.
+## All meshes are merged into one (each surface keeps its material).
+static func _from_file(path: String, kind: String) -> Array:
+	var root := CharacterModels._load_glb(path)
+	if root == null:
+		return []
+	var marks := {}
+	_find_points(root, Transform3D.IDENTITY, marks)
+	var parts := CharacterModels._mesh_transforms(root, Transform3D.IDENTITY)
+	var box := AABB()
+	var first := true
+	for entry in parts:
+		var mi: MeshInstance3D = entry[0]
+		if mi.mesh != null:
+			var b: AABB = entry[1] * mi.mesh.get_aabb()
+			box = b if first else box.merge(b)
+			first = false
+	if first:
+		push_warning("gear model %s has no mesh" % path)
+		root.free()
+		return []
+	var grip: Vector3 = marks.get("grip", Vector3.ZERO)
+	var want := (_builtin(kind)[0] as ArrayMesh).get_aabb().get_longest_axis_size()
+	var s := 1.0
+	var size := box.get_longest_axis_size()
+	if size > 0.0001 and (size > want * 2.0 or size < want * 0.5):
+		s = want / size
+		push_warning("gear model %s is %.3f long, scaled x%.3f to the built-in %.3f (meters?)" % [path, size, s, want])
+	var to_gear := Transform3D(Basis.from_scale(Vector3.ONE * s), -grip * s)
+	var mesh := ArrayMesh.new()
+	for entry in parts:
+		var mi: MeshInstance3D = entry[0]
+		if mi.mesh == null:
+			continue
+		for i in mi.mesh.get_surface_count():
+			var arr := CharacterModels._bake(mi.mesh.surface_get_arrays(i), to_gear * (entry[1] as Transform3D))
+			arr[Mesh.ARRAY_BONES] = null  # drawn rigid on the hand / body, never skinned
+			arr[Mesh.ARRAY_WEIGHTS] = null
+			var prim := (mi.mesh as ArrayMesh).surface_get_primitive_type(i) if mi.mesh is ArrayMesh else Mesh.PRIMITIVE_TRIANGLES
+			mesh.add_surface_from_arrays(prim, arr)
+			var mat := mi.get_active_material(i)
+			var bm := mat as BaseMaterial3D
+			if bm != null and bm.metallic_texture == null and bm.metallic > 0.9:
+				bm.metallic = 0.7  # full metal turns black here: the scene has no sky to reflect
+			mesh.surface_set_material(mesh.get_surface_count() - 1, mat)
+	root.free()
+	var meta: Dictionary = (_builtin(kind)[1] as Dictionary).duplicate()
+	for p: String in POINTS:
+		if marks.has(p):
+			meta[p] = to_gear * (marks[p] as Vector3)
+	print("[gear] %s: %s, points %s" % [path.get_file(), (to_gear * box).size, ", ".join(PackedStringArray(marks.keys()))])
+	return [mesh, meta]
+
+
+## Positions of the marker nodes under `node` into marks: point name -> position in the file's
+## space. A marker is an empty node (not a mesh, so a part named "light" is not taken for the
+## point) named after the point, compared in lower case; a "point_" / "marker_" prefix and a
+## ".001" / "_001" suffix are ignored.
+static func _find_points(node: Node, xf: Transform3D, marks: Dictionary) -> void:
+	for c in node.get_children():
+		var cx := xf * (c as Node3D).transform if c is Node3D else xf
+		var nm := String(c.name).to_lower().get_slice(".", 0)
+		if nm.get_slice("_", nm.get_slice_count("_") - 1).is_valid_int():
+			nm = nm.substr(0, nm.rfind("_"))
+		for prefix: String in ["point_", "marker_"]:
+			nm = nm.trim_prefix(prefix)
+		if c is Node3D and not c is VisualInstance3D and (nm == "grip" or POINTS.has(nm)) and not marks.has(nm):
+			marks[nm] = cx.origin
+		_find_points(c, cx, marks)
 
 
 static func _mat(key: String) -> StandardMaterial3D:

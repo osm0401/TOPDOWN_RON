@@ -12,6 +12,8 @@
   "fog_y": 0.03,
   "characters": {
     "_note": "assets/characters/<이름>.glb가 있으면 도형 대신 모델을 쓴다: officer(경찰), enemy(용의자), civilian(민간인), enemy_up / civilian_up(항복, 손 든 자세: surrender_model이 true일 때만 쓰고, false면 서 있는 모델이 뼈대로 손을 든다). height_m 키로 맞추고 바닥에 세운다(손 든 모델은 손끝까지 up_height_m). yaw_deg: 모델이 +Z(glTF 기본 정면)를 보면 90, 다른 쪽을 보면 바꾼다. player_tint / player_rim: 두 경찰을 구분하는 색. 몸 전체에 고르게 덧칠하는 정도와 윤곽(가장자리)에 비치는 정도(0~1). 어두운 방에서도 보이고 옷과 장비도 보이게 윤곽 위주로.",
+    "set": "gemini",
+    "_set": "set: 먼저 찾는 모델 묶음 폴더. assets/characters/<set>/<이름>.glb, 장비는 assets/gear/<set>/<종류>.glb. 그 폴더에 없는 파일은 기존 것(assets/characters/<이름>.glb, 장비는 코드로 만든 모양)을 쓴다. \"\"이면 기존 것만. gemini = Antigravity가 만드는 묶음(docs/09-3d-models-antigravity.md).",
     "height_m": 1.75,
     "up_height_m": 1.9,
     "yaw_deg": 90.0,

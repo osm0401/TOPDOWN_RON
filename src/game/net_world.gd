@@ -1043,7 +1043,7 @@ func _auto_tick() -> void:
 			rpc_auto_final_ack.rpc_id(_client_id)
 	# the host stays (frozen) until the client has written its FINAL and left, or 20 s at most
 	if _auto_done.has("final") and _t >= float(_auto_done["final_t"]) + 0.5 \
-			and (not is_host or multiplayer.get_peers().is_empty() or _t >= float(_auto_done["final_t"]) + 20.0):
+			and (not is_host or solo or multiplayer.get_peers().is_empty() or _t >= float(_auto_done["final_t"]) + 20.0):
 		get_tree().quit()
 
 

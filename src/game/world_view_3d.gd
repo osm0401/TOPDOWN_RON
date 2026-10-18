@@ -11,6 +11,7 @@ extends Node3D
 
 ## A foot lands (walk cycle): at (px), speed (m/s), who (officer slot, or 2 + NPC index).
 signal footstep(at: Vector2, speed: float, who: int)
+signal lightning(delay_s: float)  ## a flash far off: its thunder is heard delay_s later
 
 const FOG := Color(0.02, 0.02, 0.03)
 const FAR := 5000.0
@@ -23,6 +24,8 @@ const CharacterAnim := preload("res://src/game/character_anim.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
 const PropModels := preload("res://src/game/prop_models.gd")
 const PeopleLooks := preload("res://src/game/people_looks.gd")
+const POST := preload("res://src/game/post.gdshader")
+const Weather := preload("res://src/game/weather.gd")
 
 static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
 static var tex_folder := "res://assets/textures/"  ## where surface pictures are looked for (tests point it elsewhere)
@@ -60,6 +63,12 @@ var _props_dirty := true  ## the sight polygon changed: furniture visibility to 
 var _police: Array[Dictionary] = []  ## police car light bars: {lights: [red, blue OmniLight3D], mats}
 var _surf_cache: Dictionary = {}  ## surface key -> shared material
 var _env: Environment
+var _post: ShaderMaterial  ## vignette, film grain, lens fringes over the picture
+var _moon: DirectionalLight3D
+var _rain: Dictionary = {}  ## Weather.build(): the rain over the ground outside
+var _bolt_rng := RandomNumberGenerator.new()
+var _bolt_next := -1.0  ## when the next lightning flashes (_t)
+var _bolt_t := -1.0  ## seconds since the flash began (< 0: none)
 var _wear: Array[Decal] = []  ## grime, scuffs, cracks, papers, stains (static)
 var _holes: Array[Decal] = []  ## bullet holes in walls and doors, oldest first (capped)
 var _stains: Array[Decal] = []  ## blood on the floor, oldest first (capped)
@@ -162,6 +171,10 @@ func _surface_mat(key: String) -> ShaderMaterial:
 	for k in ["scale", "tile_m", "rough_min", "rough_max", "bump", "grime_m", "plank_len", "dirt", "speckle", "bevel", "tex_m"]:
 		if s.has(k):
 			m.set_shader_parameter(k, float(s[k]))
+	var wet: Dictionary = (_cfg.get("weather", {}) as Dictionary).get("wet", {})
+	if wet.has(key):  # out in the rain: darker, glossy, puddles where drops ring
+		m.set_shader_parameter("wet", float(wet[key]))
+		m.set_shader_parameter("puddles", float(_cfg["weather"].get("puddles", 0.0)))
 	var tex := _surface_tex(key)
 	if tex != null:
 		m.set_shader_parameter("use_tex", true)
@@ -302,12 +315,18 @@ func _build_environment() -> void:
 	env.glow_bloom = 0.04
 	env.glow_hdr_threshold = 1.1
 	env.volumetric_fog_density = float(lc["haze_density"])
-	env.volumetric_fog_albedo = Color(0.7, 0.75, 0.85)
+	env.volumetric_fog_albedo = _col(lc.get("haze_color", [0.7, 0.75, 0.85]))
+	env.volumetric_fog_anisotropy = 0.2  # light scatters forward: halos round lamps, the torch beam
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = float(gc["exposure"])
+	# the grade (graphics.grade): flatter colours, firmer contrast, cold shadows and a warm edge to
+	# the highlights, like night footage
+	var grade: Dictionary = gc.get("grade", {})
 	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.06
-	env.adjustment_saturation = 0.92
+	env.adjustment_contrast = float(grade.get("contrast", 1.06))
+	env.adjustment_saturation = float(grade.get("saturation", 0.92))
+	if grade.has("shadows") and grade.has("highlights"):
+		env.adjustment_color_correction = grade_lut(_col(grade["shadows"]), _col(grade["highlights"]))
 	env.ssr_max_steps = 48
 	env.ssr_fade_in = 0.15
 	env.ssr_fade_out = 2.0
@@ -323,18 +342,20 @@ func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
-	var vignette := CanvasLayer.new()  # darker corners under the HUD (the HUD's layers draw on top)
-	vignette.layer = -1
+	var post := CanvasLayer.new()  # lens and film under the HUD (the HUD's layers draw on top)
+	post.layer = -1
 	var vr := ColorRect.new()
 	vr.set_anchors_preset(Control.PRESET_FULL_RECT)
 	vr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var vm := ShaderMaterial.new()
-	vm.shader = Shader.new()
-	vm.shader.code = "shader_type canvas_item;\nuniform float strength = 0.35;\nvoid fragment() {\n\tfloat d = length((UV - 0.5) * vec2(1.6, 1.2));\n\tCOLOR = vec4(0.0, 0.0, 0.0, smoothstep(0.55, 1.15, d) * strength);\n}\n"
-	vm.set_shader_parameter("strength", float(gc["vignette"]))
+	vm.shader = POST
+	vm.set_shader_parameter("vignette", float(gc["vignette"]))
+	vm.set_shader_parameter("grain", float(grade.get("grain", 0.0)))
+	vm.set_shader_parameter("aberration", float(grade.get("aberration", 0.0)))
 	vr.material = vm
-	vignette.add_child(vr)
-	add_child(vignette)
+	post.add_child(vr)
+	add_child(post)
+	_post = vm
 	_cam = Camera3D.new()
 	_cam.fov = float(_cfg["camera"]["fov_deg"])
 	_cam.far = 300.0
@@ -393,6 +414,7 @@ func _build_level() -> void:
 	_build_props()
 	_build_wear()
 	_build_lights()
+	_rain = Weather.build(self, lv.bounds, lv.building, _k, _cfg.get("weather", {}))
 	_add(_fog, _mat(FOG, true))
 
 
@@ -659,6 +681,73 @@ func _build_props() -> void:
 			_police.append({"lights": lights, "mats": mi.get_meta("light_mats")})
 
 
+## Lightning far off now and then (weather.lightning): the moonlight flares twice, then the
+## thunder follows (the lightning signal, for the sound) a few seconds later.
+func _flash_lightning(delta: float) -> void:
+	var lc: Dictionary = (_cfg.get("weather", {}) as Dictionary).get("lightning", {})
+	if lc.is_empty() or _moon == null:
+		return
+	if _bolt_next < 0.0:
+		_bolt_next = _t + _bolt_rng.randf_range(float(lc["every_s"][0]), float(lc["every_s"][1]))
+	if _t >= _bolt_next:
+		_bolt_next = _t + _bolt_rng.randf_range(float(lc["every_s"][0]), float(lc["every_s"][1]))
+		_bolt_t = 0.0
+		lightning.emit(_bolt_rng.randf_range(float(lc["thunder_delay_s"][0]), float(lc["thunder_delay_s"][1])))
+	var flare := 0.0
+	if _bolt_t >= 0.0:
+		_bolt_t += delta
+		if _bolt_t < 0.07 or (_bolt_t > 0.16 and _bolt_t < 0.24):
+			flare = 1.0
+		elif _bolt_t < 0.6:
+			flare = 0.12 * (0.6 - _bolt_t) / 0.6
+		else:
+			_bolt_t = -1.0
+	_moon.light_energy = float(_cfg["lighting"]["moon"]["energy"]) + flare * float(lc["flash_energy"])
+
+
+## A worn-out light: on most of the time, then for a moment it stutters on and off (lighting.flicker:
+## how often, how long, how dim when off).
+func _flicker_lights() -> void:
+	var fc: Dictionary = _cfg["lighting"].get("flicker", {})
+	if fc.is_empty():
+		return
+	for l in _lights:
+		if not l.has("flicker"):
+			continue
+		var f: Dictionary = l["flicker"]
+		if _t >= float(f["end"]):
+			var rng: RandomNumberGenerator = f["rng"]
+			f["start"] = _t + rng.randf_range(float(fc["every_s"][0]), float(fc["every_s"][1]))
+			f["end"] = float(f["start"]) + rng.randf_range(float(fc["length_s"][0]), float(fc["length_s"][1]))
+		var on := true
+		if _t >= float(f["start"]):  # stuttering: on or off every few hundredths of a second
+			on = fposmod(sin(floorf(_t * 24.0) * 12.9898 + float(f["start"])) * 43758.5453, 1.0) > 0.45
+		(l["node"] as OmniLight3D).light_energy = float(f["base"]) * (1.0 if on else float(fc["low"]))
+
+
+## The colour grade as a per-channel curve (Environment.adjustment_color_correction): `shadows`
+## pulls the darks toward its colour and `highlights` the lights (0.5 in a channel: unchanged).
+static func grade_lut(shadows: Color, highlights: Color) -> GradientTexture1D:
+	var offsets := PackedFloat32Array()
+	var colors := PackedColorArray()
+	for i in 33:
+		var x := i / 32.0
+		var dark := 6.75 * x * (1.0 - x) * (1.0 - x)  # 1 at a third
+		var light := 6.75 * x * x * (1.0 - x)  # 1 at two thirds
+		var c := Color(x, x, x)
+		for ch in 3:
+			c[ch] = clampf(x + (shadows[ch] - 0.5) * dark + (highlights[ch] - 0.5) * light, 0.0, 1.0)
+		offsets.append(x)
+		colors.append(c)
+	var g := Gradient.new()
+	g.offsets = offsets
+	g.colors = colors
+	var tex := GradientTexture1D.new()
+	tex.gradient = g
+	tex.width = 256
+	return tex
+
+
 ## Light bar pattern: red flashes twice, then blue twice, over period_s.
 func _flash_police() -> void:
 	if _police.is_empty():
@@ -674,20 +763,48 @@ func _flash_police() -> void:
 
 
 ## Ceiling lights in lit rooms only (long rooms get one per spacing_m), a street lamp at
-## the exit. Dark rooms get none, so light spills in only through open doors.
+## the exit. Dark rooms get none, so light spills in only through open doors. Each room's light
+## after its floor (lighting.room_kinds: warm bulbs at home, cold tubes in the office and the
+## corridor), falling off with distance (pools of light, darker corners); some lights stutter now
+## and then (flicker). Outside, moonlight; a roof that only casts shadows keeps it out of the rooms.
 func _build_lights() -> void:
 	var lc: Dictionary = _cfg["lighting"]
 	var rc: Dictionary = lc["room"]
+	var kinds: Dictionary = lc.get("room_kinds", {})
 	for rm in world.level.rooms:
 		if rm["dark"]:
 			continue
+		var kc: Dictionary = rc.duplicate()
+		kc.merge(kinds.get(str(rm["floor"]), {}), true)
 		var r: Rect2 = rm["rect"]
 		var along_x := r.size.x >= r.size.y
-		var n := maxi(1, roundi((r.size.x if along_x else r.size.y) * _k / float(rc["spacing_m"])))
+		var n := maxi(1, roundi((r.size.x if along_x else r.size.y) * _k / float(kc["spacing_m"])))
 		for i in n:
 			var t := (float(i) + 0.5) / float(n)
-			_add_omni(r.position + (Vector2(r.size.x * t, r.size.y * 0.5) if along_x else Vector2(r.size.x * 0.5, r.size.y * t)),
-					float(rc["height_m"]), float(rc["energy"]), float(rc["range_m"]), _col(rc["color"]))
+			var l := _add_omni(r.position + (Vector2(r.size.x * t, r.size.y * 0.5) if along_x else Vector2(r.size.x * 0.5, r.size.y * t)),
+					float(kc["height_m"]), float(kc["energy"]), float(kc["range_m"]), _col(kc["color"]))
+			l.omni_attenuation = float(kc.get("attenuation", 1.0))
+			var rng := RandomNumberGenerator.new()  # the same lights flicker on both screens
+			rng.seed = hash("light/%s/%d" % [rm["name"], i])
+			if rng.randf() < float(kc.get("flicker", 0.0)):
+				_lights[-1]["flicker"] = {"rng": rng, "base": l.light_energy, "start": INF, "end": -INF}
+	var mc: Dictionary = lc.get("moon", {})
+	if not mc.is_empty():
+		_moon = DirectionalLight3D.new()
+		_moon.light_color = _col(mc["color"])
+		_moon.light_energy = float(mc["energy"])
+		_moon.rotation_degrees = Vector3(float(mc["pitch_deg"]), float(mc["yaw_deg"]), 0.0)
+		_moon.shadow_enabled = true
+		_moon.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		_moon.directional_shadow_max_distance = 80.0
+		_moon.light_bake_mode = Light3D.BAKE_DISABLED  # no moonlight bouncing into the rooms
+		add_child(_moon)
+		var b := world.level.building
+		var caster_h := float(lc["shadow_caster_h"])
+		var roof := _add(_box(Vector3(b.size.x * _k, 0.1, b.size.y * _k)), _surface_mat("wall"))
+		roof.position = _p3(b.get_center(), caster_h + 0.05)
+		roof.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+		roof.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	var sc: Dictionary = lc["street"]
 	var lamps := 0
 	for p in _props:  # street lamps hang their light from the lamp head (not from the pole: the cutaway lowers that)
@@ -1066,6 +1183,8 @@ func _update_level(delta: float) -> void:
 			p["cut"] = lerpf(float(p["cut"]), float(_cfg["cutaway"]["low"]) if hides else 1.0, step)
 			(p["node"] as Node3D).scale.y = p["cut"]
 	_flash_police()
+	_flicker_lights()
+	_flash_lightning(delta)
 	for i in _doors.size():
 		var d: Dictionary = _doors[i]
 		var st := lv.get_door_state(i)

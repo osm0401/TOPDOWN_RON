@@ -28,6 +28,10 @@ uniform float bevel = 0.0;      // tiles: width (m) of the rounded edge each til
 uniform bool use_tex = false;
 uniform sampler2D tex_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float tex_m = 2.0;
+// rain (outside): wet 0..1 darkens and glosses the surface; puddles 0..1 is how much of the ground
+// holds standing water, mirror-smooth, with rings where the drops land.
+uniform float wet = 0.0;
+uniform float puddles = 0.0;
 
 varying vec3 wpos;
 varying vec3 wnrm;
@@ -55,6 +59,23 @@ float fbm(vec2 p) {
 		a *= 0.5;
 	}
 	return v;
+}
+
+// Rings spreading where drops land in standing water: height -1..1 at uv (meters), drops in cells
+// of 0.35 m, each landing at its own moment.
+float ripples(vec2 p, float t) {
+	float sum = 0.0;
+	vec2 cell = floor(p / 0.35);
+	for (int dx = -1; dx <= 1; dx++) {
+		for (int dy = -1; dy <= 1; dy++) {
+			vec2 id = cell + vec2(float(dx), float(dy));
+			float ph = fract(t * 0.9 + hash(id));
+			vec2 c = (id + vec2(hash(id + 1.7), hash(id + 5.3))) * 0.35;
+			float w = length(p - c) - ph * 0.22;
+			sum += sin(w * 150.0) * exp(-w * w * 1800.0) * (1.0 - ph);
+		}
+	}
+	return sum;
 }
 
 void vertex() {
@@ -160,6 +181,18 @@ void fragment() {
 		float g = smoothstep(grime_m, 0.0, wpos.y) * (0.5 + 0.5 * n);
 		col *= 1.0 - 0.55 * g;
 		rough = mix(rough, rough_max, g);
+	}
+	if (wet > 0.0) {
+		float pud = 0.0;
+		if (an.y > 0.5) {
+			pud = smoothstep(0.56, 0.6, fbm(uv * 0.45 + vec2(3.7, 9.1))) * puddles;
+		}
+		col *= 1.0 - 0.32 * wet;  // wet stone, asphalt and grass look darker
+		col = mix(col, col * 0.6, pud);
+		rough = mix(rough, 0.3, wet * 0.75);
+		rough = mix(rough, 0.03, pud);
+		float rings = ripples(uv, TIME) * (1.0 - smoothstep(0.006, 0.02, aa));  // fades out when too small to see
+		h = mix(h, rings * 0.0025 / max(bump, 0.001), pud);  // flat water, but for the rings
 	}
 	ALBEDO = col * tint;
 	ROUGHNESS = rough;

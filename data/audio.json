@@ -2,6 +2,7 @@
   "_note": "PROTOTYPE/TUNING: 임시값. 코드로 합성한 임시 효과음의 음량(dB)과 거리 설정. 소리가 닿는 거리는 tuning.json의 sound_radius를 그대로 쓴다.",
   "sfx_db": 0.0,
   "ambient_db": -30.0,
+  "rain": {"_note": "빗소리: 밖에서 out_db, 건물 안에서 in_db로 작고 먹먹하게(in_hz 아래만), ease_per_s 속도로 바뀜. 천둥(번개가 친 뒤) thunder_db. 파일: rain_N.wav, thunder_N.wav.", "on": true, "out_db": -14.0, "in_db": -27.0, "in_hz": 650.0, "ease_per_s": 1.5, "thunder_db": -6.0},
   "muffle_hz": 700.0,
   "own_footstep_db": -9.0,
   "_steps": "발소리: 바닥 이름(방의 floor, 바깥 ground의 surface, 깔개 rug) -> 발소리 종류(footstep_<종류>_<번호>.wav). 걸을 때 walk_db, 뛸 때 run_db를 더한다(속도 m/s 사이는 섞음).",

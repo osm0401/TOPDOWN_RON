@@ -89,6 +89,22 @@ func _test_sfx() -> void:
 	_check(hum.loop_mode == AudioStreamWAV.LOOP_FORWARD and hum.loop_end == count, "hum loops over its whole length")
 	var seam := absf(float(hum.data.decode_s16(0)) - float(hum.data.decode_s16((count - 1) * 2))) / 32768.0
 	_check(seam < 0.1, "hum loop seam is continuous")
+	var rain := SfxSynth.rain()
+	var rc := rain.data.size() / 2
+	var rain_seam := absi(rain.data.decode_s16(0) - rain.data.decode_s16((rc - 1) * 2))
+	var inner := 0  # hiss jumps from sample to sample anyway: the seam must not jump more than that
+	for i in range(1, rc):
+		inner = maxi(inner, absi(rain.data.decode_s16(i * 2) - rain.data.decode_s16((i - 1) * 2)))
+	_check(rain.loop_mode == AudioStreamWAV.LOOP_FORWARD and rain.loop_end == rc and rain_seam <= inner, "rain loops over its whole length without a click")
+	var thunder := SfxSynth.thunder(131)
+	var tn := thunder.data.size() / 2
+	var early := 0
+	var late := 0
+	for i in range(int(0.2 * SfxSynth.RATE), int(1.0 * SfxSynth.RATE)):
+		early = maxi(early, absi(thunder.data.decode_s16(i * 2)))
+	for i in range(tn - int(0.3 * SfxSynth.RATE), tn):
+		late = maxi(late, absi(thunder.data.decode_s16(i * 2)))
+	_check(tn >= 4 * SfxSynth.RATE and early > 8000 and late < early / 4, "thunder rolls loud, then dies out")
 
 
 func _test_weapon() -> void:

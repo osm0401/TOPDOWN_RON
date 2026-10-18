@@ -485,3 +485,61 @@ static func hum() -> AudioStreamWAV:
 			w = noise[i] * a + noise[count + i] * (1.0 - a)
 		out[i] = sin(TAU * 50.0 * t) * 0.5 + sin(TAU * 100.0 * t) * 0.2 + sin(TAU * 150.0 * t) * 0.05 + w * 3.0
 	return _stream(out, 1.0, 0.6, true)
+
+
+## Rain round the building: a soft hiss, the low patter of many drops and single drops ticking
+## close by. Loops without a seam (its end crossfades into its start).
+static func rain() -> AudioStreamWAV:
+	var n := 3.0
+	var xf := 0.25
+	var hiss := _lowpass(_highpass(_white(n + xf, 21), 500.0), 4500.0)
+	var patter := _lowpass(_white(n + xf, 22), 260.0)
+	var out := _buf(n)
+	var count := out.size()
+	var fade := int(xf * RATE)
+	for i in count:
+		var h := hiss[i]
+		var p := patter[i]
+		if i < fade:
+			var a := float(i) / fade
+			h = hiss[i] * a + hiss[count + i] * (1.0 - a)
+			p = patter[i] * a + patter[count + i] * (1.0 - a)
+		out[i] = h * 0.8 + p * 2.5
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 23
+	var tick := _highpass(_white(0.012, 24), 2500.0)
+	_decay(tick, 0.003)
+	for d in 260:  # near drops, wrapped round the loop
+		var at := rng.randi() % count
+		var g := rng.randf_range(-0.35, 0.35)
+		for i in tick.size():
+			out[(at + i) % count] += tick[i] * g
+	return _stream(out, 1.0, 0.5, true)
+
+
+## Thunder far away: a dull crack, then a rumble that rolls in two or three swells and dies out.
+static func thunder(seed_: int) -> AudioStreamWAV:
+	var secs := 5.0
+	var rumble := _lowpass(_lowpass(_white(secs, seed_), 160.0), 90.0)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_ + 1
+	var rolls := [[0.0, 0.25, 1.0], [rng.randf_range(0.6, 1.4), 0.5, rng.randf_range(0.5, 0.9)],
+			[rng.randf_range(1.6, 2.6), 0.8, rng.randf_range(0.4, 0.7)]]  # start s, length s, strength
+	var block := 64  # the swells change slowly: their envelope once per block
+	for b0 in range(0, rumble.size(), block):
+		var t := float(b0) / RATE
+		var env := 0.0
+		for r: Array in rolls:
+			var dt := t - float(r[0])
+			if dt > 0.0:
+				env += float(r[2]) * minf(dt / 0.15, 1.0) * exp(-dt / (float(r[1]) + 1.2))
+		for i in range(b0, mini(b0 + block, rumble.size())):
+			rumble[i] *= env
+	var out := rumble
+	var tail := int(1.5 * RATE)  # the last swell fades all the way out
+	for i in tail:
+		out[out.size() - tail + i] *= 1.0 - float(i) / tail
+	var crack := _lowpass(_highpass(_white(0.4, seed_ + 2), 300.0), 2500.0)
+	_decay(crack, 0.09)
+	_mix(out, crack, 0.02, 0.06)
+	return _stream(out, 1.5, 0.8)

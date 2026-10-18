@@ -45,7 +45,10 @@ var _npc_seen: Array[int] = []
 var _cones: Array[PackedVector2Array] = [PackedVector2Array(), PackedVector2Array()]
 var _laser_dots: Array[Vector2] = [Vector2.INF, Vector2.INF]
 var _show_sound := true
-var _debug := true
+var _debug := OS.get_cmdline_user_args().has("--debug")  ## AI state under each NPC (F4)
+var _help := false  ## the controls lines, toggled with F1 (shown anyway for the first HELP_S of a mission)
+var _help_t := 0.0  ## seconds of the mission so far, for the controls lines
+const HELP_S := 20.0
 var _headless := DisplayServer.get_name() == "headless"
 var _cam: Camera2D
 var _hud: Label
@@ -80,6 +83,9 @@ func _ready() -> void:
 	layer.add_child(_red)
 	_hud = Label.new()
 	_hud.position = Vector2(16, 8)
+	_hud.modulate = Color(0.86, 0.86, 0.83, 0.88)  # quiet: the picture comes first
+	_hud.add_theme_constant_override("outline_size", 4)
+	_hud.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.75))
 	layer.add_child(_hud)
 	var panel_layer := CanvasLayer.new()
 	panel_layer.layer = 10
@@ -101,7 +107,10 @@ func _ready() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.physical_keycode == KEY_F3:
+		if event.physical_keycode == KEY_F1:
+			_help = not (_help or _help_t < HELP_S)
+			_help_t = HELP_S
+		elif event.physical_keycode == KEY_F3:
 			_show_sound = not _show_sound
 		elif event.physical_keycode == KEY_F4:
 			_debug = not _debug
@@ -120,6 +129,7 @@ func _set_3d(on: bool) -> void:
 		_view3d.view = self
 		add_child(_view3d)
 		_view3d.footstep.connect(_audio.play_step)
+		_view3d.lightning.connect(_audio.play_thunder)
 	elif not on and _view3d != null:
 		_view3d.queue_free()
 		_view3d = null
@@ -235,6 +245,8 @@ func _process(delta: float) -> void:
 	if _headless:
 		_view_setup()
 	_update_camera(delta)
+	if world.mission.phase == MissionState.Phase.ACTIVE:
+		_help_t += delta
 	_update_hud()
 	queue_redraw()
 
@@ -509,8 +521,12 @@ func _update_hud() -> void:
 	var S := NpcBrain.State
 	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
-	lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-	lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / F3 소리표시 / F4 디버그 / F5 2D/3D 전환 / 휠 확대 / F6 소리 끄기 / F7 소리 시험 / F8 그래픽 품질 / Esc 나가기"))
+	if _help or _help_t < HELP_S:  # the controls: at the start, then on F1
+		lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
+		lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / 휠 확대 / Esc 나가기"))
+		lines.append(tr("F1 조작법 숨기기 / F3 소리표시 / F4 디버그 / F5 2D/3D 전환 / F6 소리 끄기 / F7 소리 시험 / F8 그래픽 품질"))
+	else:
+		lines.append(tr("F1 조작법"))
 	lines.append(tr("%s  %d / 예비 탄창 %d개 (%s) %s") % [WEAPON_NAMES[kind], w.current, w.spares.size(), spare, tr("[재장전 중]") if w.reloading else ""])
 	lines.append(tr("도구: %s   손전등 %s   레이저 %s") % [", ".join(tools), tr("켬") if me.flash else tr("끔"), tr("켬") if me.laser else tr("끔")])
 	lines.append(tr("체력 %d/%d%s   적: 구속 %d 사망 %d   민간인: 구속 %d 사망 %d   점수 %d   RTT %s") % [

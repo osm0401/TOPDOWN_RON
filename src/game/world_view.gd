@@ -20,7 +20,7 @@ const ENEMY_COLOR := Color(0.8, 0.15, 0.15)
 const CIVILIAN_COLOR := Color(0.2, 0.75, 0.8)
 const WEAPON_NAMES := {"pistol": "권총", "rifle_lethal": "살상 소총", "rifle_nonlethal": "비살상 소총"}
 const TOOL_NAMES := {"camera": "문틈 카메라", "lockpick": "락픽", "taser": "테이저"}
-const ACTION_LABELS: Array[String] = ["", "락픽", "구속", "카메라"]
+const ACTION_LABELS: Array[String] = ["", "락픽", "구속", "카메라", "증거 회수"]
 
 ## The game starts in the angled WorldView3D (data/view3d.json "start_3d"); F5 switches to this
 ## 2D drawing and back. Command line: --view2d / --view3d.
@@ -358,6 +358,12 @@ func _draw_npcs() -> void:
 			draw_circle(a.pos, 14.0, Color(0.35, 0.35, 0.4, 0.8))
 			continue
 		_draw_npc(a)
+	for e in world.director.evidence:  # dropped weapons not yet picked up
+		var at: Vector2 = e["pos"]
+		if e["taken"] or (not _headless and _vis.size() >= 3 and not Geometry2D.is_point_in_polygon(at, _vis)):
+			continue
+		draw_line(at + Vector2(-7, 0), at + Vector2(7, 0), Color(1.0, 0.9, 0.3), 3.0)
+		draw_line(at + Vector2(-7, 0), at + Vector2(-7, 5), Color(1.0, 0.9, 0.3), 3.0)
 
 
 func _draw_npc(a: NpcDirector.Agent) -> void:
@@ -375,8 +381,7 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 		S.DEAD:
 			draw_line(p + Vector2(-10, -10), p + Vector2(10, 10), Color(0.5, 0.5, 0.5), 3.0)
 			draw_line(p + Vector2(-10, 10), p + Vector2(10, -10), Color(0.5, 0.5, 0.5), 3.0)
-			_draw_dropped(a)
-			_draw_status(p, tr("사망"), Color(0.75, 0.75, 0.75))
+			_draw_status(p, tr("사망") + ("" if a.reported else tr(" · 보고 필요")), Color(0.75, 0.75, 0.75))
 			return
 		S.DOWN:
 			draw_rect(Rect2(p - Vector2(14, 7), Vector2(28, 14)), base.darkened(0.2), true)
@@ -389,6 +394,9 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 			draw_line(p + Vector2(8, -8), p + Vector2(8, -22), base.lightened(0.3), 2.0)
 		S.HIDE:
 			draw_circle(p, 9.0, base.darkened(0.2))
+		S.CAPTIVE:
+			draw_circle(p, 11.0, base)
+			draw_arc(p, 13.0, 0.0, TAU, 20, Color(1.0, 0.3, 0.3), 2.0)
 		_:
 			draw_circle(p, 14.0, base)
 	if a.clues.has("cap"):
@@ -401,7 +409,6 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 		draw_line(p, p + Vector2.from_angle(b.facing) * 26.0, Color.WHITE, 3.0)
 		if b.aiming:  # holding an angle / in ambush: a faint line along its aim
 			draw_line(p + Vector2.from_angle(b.facing) * 28.0, p + Vector2.from_angle(b.facing) * 90.0, Color(1.0, 0.5, 0.3, 0.35), 1.5)
-	_draw_dropped(a)
 	var pulse := 1.0 + 0.25 * sin(Time.get_ticks_msec() / 80.0)
 	match b.state:
 		S.DOWN:
@@ -409,7 +416,12 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 		S.SURRENDER:
 			_draw_status(p, tr("항복"), Color.WHITE)
 		S.RESTRAINED:
-			_draw_status(p, tr("구속"), Color(0.5, 1.0, 0.5))
+			_draw_status(p, tr("구속") + ("" if a.reported else tr(" · 보고 필요")), Color(0.5, 1.0, 0.5))
+		S.HOLD:
+			draw_arc(p, 22.0 * pulse, 0.0, TAU, 24, Color(1.0, 0.2, 0.2), 3.0)
+			_draw_status(p, tr("인질극"), Color(1.0, 0.35, 0.3))
+		S.CAPTIVE:
+			_draw_status(p + Vector2(0, 40), tr("인질"), Color.WHITE)
 		S.SPOTTED:
 			draw_string(ThemeDB.fallback_font, p + Vector2(-4, -22), "?", HORIZONTAL_ALIGNMENT_LEFT, -1, 22, Color.YELLOW)
 		S.THREAT:
@@ -429,11 +441,6 @@ func _draw_npc(a: NpcDirector.Agent) -> void:
 func _draw_status(p: Vector2, text: String, color: Color) -> void:
 	draw_string(ThemeDB.fallback_font, p + Vector2(-16, -26), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0, 0, 0, 0.8))
 	draw_string(ThemeDB.fallback_font, p + Vector2(-17, -27), text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14, color)
-
-
-func _draw_dropped(a: NpcDirector.Agent) -> void:
-	if a.brain.had_weapon and not a.brain.armed:
-		draw_line(a.pos + Vector2(12, 8), a.pos + Vector2(26, 8), Color(1.0, 0.9, 0.3), 3.0)
 
 
 func _draw_players() -> void:
@@ -523,7 +530,7 @@ func _update_hud() -> void:
 	var lines := PackedStringArray()
 	if _help or _help_t < HELP_S:  # the controls: at the start, then on F1
 		lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-		lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / 휠 확대 / Esc 나가기"))
+		lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / V 증거 줍기·무전 보고 / 휠 확대 / Esc 나가기"))
 		lines.append(tr("F1 조작법 숨기기 / F3 소리표시 / F4 디버그 / F5 2D/3D 전환 / F6 소리 끄기 / F7 소리 시험 / F8 그래픽 품질"))
 	else:
 		lines.append(tr("F1 조작법"))
@@ -535,6 +542,21 @@ func _update_hud() -> void:
 		d.count_state(C, S.RESTRAINED), d.count_state(C, S.DEAD), world.current_score(), rtt])
 	if not me.dead() and world.level.is_dark(world.display_pos(world.my_slot)):
 		lines.append(tr("어두운 방: 손전등 빛줄기 안의 적만 알아볼 수 있다") if me.flash else tr("어두운 방: 손전등(F)을 켜지 않으면 가까이 있는 적의 윤곽만 보인다"))
+	var pending := d.unreported()
+	var missed := d.evidence_missed()
+	var todo := PackedStringArray()
+	if pending > 0:
+		todo.append(tr("무전 보고 대기 %d명") % pending)
+	if missed > 0:
+		todo.append(tr("회수 안 한 무기 %d개") % missed)
+	if not todo.is_empty():
+		lines.append("   ".join(todo))
+	if not me.dead() and not me.busy():
+		var at := world.display_pos(world.my_slot)
+		if d.evidence_near(at, float(world.tuning["actions"]["collect_range"])) >= 0:
+			lines.append(tr("V: 떨어진 무기를 증거로 회수"))
+		elif d.report_candidate(at, float(world.tuning["actions"]["report_range"])) >= 0:
+			lines.append(tr("V: 무전으로 보고"))
 	if me.cam_door >= 0:
 		lines.append(tr("문틈 카메라 사용 중 (C로 종료)"))
 	if world.mission.reinforce == ReinforcementClock.Phase.WARNED:

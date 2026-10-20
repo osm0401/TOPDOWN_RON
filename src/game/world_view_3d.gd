@@ -56,6 +56,7 @@ var _wall_cut: Array[float] = []  ## per-wall height factor, lowered while it hi
 var _doors: Array[Dictionary] = []
 var _players: Array[Dictionary] = []
 var _npcs: Array[Dictionary] = []
+var _evidence: Array[Node3D] = []  ## dropped weapons (one per NpcDirector.evidence entry)
 var _fx: Array[Dictionary] = []  ## live ripples, tracers, muzzle flashes and speech bubbles
 var _lights: Array[Dictionary] = []  ## static ceiling/street lights: {node, pos (px)}
 var _props: Array[Dictionary] = []  ## furniture: {node, rect (px), tall, cut}
@@ -1080,6 +1081,7 @@ func _process(delta: float) -> void:
 	_update_level(delta)
 	_update_players(delta)
 	_update_npcs(delta)
+	_update_evidence()
 	_update_fx(delta)
 
 
@@ -1370,7 +1372,7 @@ func _update_npcs(delta: float) -> void:
 		(n["gun"] as Node3D).visible = b.armed and st != S.DOWN and st != S.HIDE and st != S.DEAD and shapes
 		(n["arms"] as Node3D).visible = st == S.SURRENDER and shapes
 		(n["cuffs"] as Node3D).visible = st == S.RESTRAINED and shapes
-		(n["dropped"] as Node3D).visible = b.had_weapon and not b.armed
+		(n["dropped"] as Node3D).visible = false  # a dropped weapon lies where it fell (_update_evidence)
 		var marker := ""
 		var marker_color := Color(1.0, 0.45, 0.1)
 		match st:
@@ -1388,11 +1390,17 @@ func _update_npcs(delta: float) -> void:
 				marker = tr("항복")
 				marker_color = Color.WHITE
 			S.RESTRAINED:
-				marker = tr("구속")
+				marker = tr("구속") + ("" if a.reported else tr(" · 보고 필요"))
 				marker_color = Color(0.5, 1.0, 0.5)
 			S.DEAD:
-				marker = tr("사망")
+				marker = tr("사망") + ("" if a.reported else tr(" · 보고 필요"))
 				marker_color = Color(0.75, 0.75, 0.75)
+			S.HOLD:
+				marker = tr("인질극")
+				marker_color = Color(1.0, 0.3, 0.25)
+			S.CAPTIVE:
+				marker = tr("인질")
+				marker_color = Color.WHITE
 		(n["marker"] as Label3D).text = marker
 		(n["marker"] as Label3D).modulate = marker_color
 		(n["marker"] as Label3D).pixel_size = (0.012 if marker in ["?", "!", "!!"] else 0.007) * _zoom  # symbols big, words smaller; same size on screen at any zoom
@@ -1565,7 +1573,7 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 	var CS := CharacterAnim.Stance
 	var H := CharacterAnim.Hold
 	var scared := 0.0  # civilians shake when they give up or hide; a surrendered enemy a little
-	if st in [S.SURRENDER, S.HIDE, S.DOWN, S.RESTRAINED]:
+	if st in [S.SURRENDER, S.HIDE, S.DOWN, S.RESTRAINED, S.CAPTIVE]:
 		scared = 1.0 if b.role == NpcBrain.Role.CIVILIAN else (0.35 if not b.armed else 0.0)
 	s["tremble"] = lerpf(float(n.get("tremble", 0.0)), scared, minf(delta * 2.0, 1.0))
 	n["tremble"] = s["tremble"]
@@ -1584,7 +1592,9 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 	var near := _nearest_officer(a.pos)
 	if b.aiming:  # holding an angle / waiting in ambush: along where it looks, not at an officer it cannot see
 		to_officer = _to_model(model, _p3(Vector2.from_angle(b.facing) * 50.0, 0.0), false)
-	elif near != Vector2.INF and st in [S.SPOTTED, S.THREAT, S.ATTACK, S.SURRENDER, S.FLEE]:
+	elif st == S.HOLD and _captive_near(a.pos) != Vector2.INF:
+		to_officer = _to_model(model, _p3(_captive_near(a.pos) - a.pos, 0.0), false)  # the gun at the hostage's head
+	elif near != Vector2.INF and st in [S.SPOTTED, S.THREAT, S.ATTACK, S.SURRENDER, S.FLEE, S.HOLD, S.CAPTIVE]:
 		to_officer = _to_model(model, _p3(near - a.pos, 0.0), false)
 	match st:
 		S.DEAD:
@@ -1604,10 +1614,12 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 			slots["cuffs"] = "cuffs"
 		S.SURRENDER:
 			s["hold"] = H.HANDS_UP
+		S.CAPTIVE:
+			s["hold"] = H.STARTLED
 		_:
 			if b.armed:
 				slots["hand"] = "pistol"
-				s["hold"] = H.PISTOL_ONE if (st in [S.THREAT, S.ATTACK] or b.aiming) and to_officer != Vector3.ZERO else H.PISTOL_LOW
+				s["hold"] = H.PISTOL_ONE if (st in [S.THREAT, S.ATTACK, S.HOLD] or b.aiming) and to_officer != Vector3.ZERO else H.PISTOL_LOW
 				n["pop"] = maxf(float(n.get("pop", 0.0)) - delta, 0.0)
 				if b.in_cover and float(n["pop"]) <= 0.0:  # crouched behind furniture; rises to fire
 					s["stance"] = CS.CROUCH
@@ -1621,6 +1633,36 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		s["look"] = to_officer
 	s["aim"] = to_officer if to_officer != Vector3.ZERO else Vector3.BACK
 	_pose(model, s, slots)
+
+
+## A held hostage right by `from` (px), or Vector2.INF (the client does not know who holds whom).
+func _captive_near(from: Vector2) -> Vector2:
+	for o in world.director.agents:
+		if o.brain.state == NpcBrain.State.CAPTIVE and o.pos.distance_to(from) < 40.0:
+			return o.pos
+	return Vector2.INF
+
+
+## Dropped weapons on the floor where they fell (lit yellow, the evidence cue) until an officer
+## picks them up; only where the local officer can see.
+func _update_evidence() -> void:
+	var list := world.director.evidence
+	while _evidence.size() < list.size():
+		var pistol := GearModels.make("pistol")
+		var glow := _mat(Color(1.0, 0.85, 0.2, 0.45), true)
+		glow.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		pistol.material_overlay = glow
+		add_child(pistol)
+		_dynamic(pistol)
+		_evidence.append(pistol)
+	for k in _evidence.size():
+		var node := _evidence[k]
+		if k >= list.size() or list[k]["taken"]:
+			node.visible = false
+			continue
+		var at: Vector2 = list[k]["pos"]
+		node.visible = view._vis.size() < 3 or Geometry2D.is_point_in_polygon(at, view._vis)
+		node.transform = Transform3D(Basis(Vector3.UP, 0.6 + k * 1.3) * Basis(Vector3.BACK, PI * 0.5) * Basis.from_scale(Vector3.ONE * 1.3), _p3(at, 0.025))
 
 
 ## The nearest living officer's position (px), or Vector2.INF.

@@ -11,7 +11,8 @@
   "sound_radius": {"footstep": 120.0, "gunshot": 600.0, "door": 200.0, "kick": 700.0, "voice": 400.0, "scream": 500.0, "taser": 100.0, "door_ajar": 40.0, "siren": 900.0},
   "sound_penalty": {"wall": 120.0, "door_closed": 200.0, "door_ajar": 60.0},
   "light": {"flash_fov_deg": 45.0, "flash_range": 380.0, "silhouette_radius": 70.0},
-  "actions": {"lockpick_s": 3.0, "restrain_s": 2.5, "camera_s": 4.0, "kick_cooldown_s": 1.0, "camera_view_radius": 500.0},
+  "actions": {"lockpick_s": 3.0, "restrain_s": 2.5, "camera_s": 4.0, "kick_cooldown_s": 1.0, "camera_view_radius": 500.0,
+    "collect_s": 1.0, "collect_range": 40.0, "report_range": 140.0},
   "commands": {
     "range": 450.0, "cone_deg": 50.0,
     "chance": {"weapon_drop": 0.45, "down": 0.2, "freeze": 0.4, "turn": 0.55},
@@ -29,7 +30,12 @@
     "_tactics": "적 전술(임시값, 난이도 tactics가 곱해짐): 경계(alert)는 총성 등으로 올라가 alert_decay_s 동안 줄고, 경계 중에 경찰을 보면 반응·위협 시간이 alert_react_mult배. 조준은 aim_settle_s 동안 aim_first_mult→aim_steady_mult로 좋아지고, 위협 사격을 받는 중 ×aim_suppressed_mult, 움직이는 경찰은 ×aim_move_mult(최고 속도일 때). 놓친 뒤 hold_s초 더 겨눔. 다른 방 소리에 ambush_chance로 매복(ambush_s초). 다치면 retreat_chance로 한 번 후퇴.",
     "alert_decay_s": 30.0, "alert_react_mult": 0.5,
     "aim_settle_s": 1.2, "aim_first_mult": 0.6, "aim_steady_mult": 1.25, "aim_suppressed_mult": 0.6, "aim_move_mult": 0.65,
-    "hold_s": [2.0, 6.0], "ambush_chance": 0.5, "ambush_s": [6.0, 14.0], "retreat_chance": 0.5
+    "hold_s": [2.0, 6.0], "ambush_chance": 0.5, "ambush_s": [6.0, 14.0], "retreat_chance": 0.5,
+    "_styles": "적 성격(임시값): styles = 지도에 style이 없을 때 뽑는 비율. runner는 처음 경찰을 보거나 총성을 들으면 먼 방으로 도주(flee_s×runner_flee_mult). camper는 다른 방 소리에 자기 방 문 옆에서 기다림(ambush_s×camp_wait_mult), 그 자리에서 경찰을 보면 반응 시간×camp_react_mult. feigner는 경찰을 보면 feign_spotted_chance로 손을 들고, 누가 겨누고 있으면(watch_deg 안) 공격까지 시간이 feign_watched_rate배로 느리게 흐름. hostage는 hostage_grab_px 안의 민간인을 붙잡아 hostage_offset(앞, 옆 px)에 세우고, 경찰을 보는 동안 hostage_patience_s가 지나면 밀치고 공격, hostage_back_px보다 가까이 오면 뒤로 물러남, 명령 따를 확률×hostage_comply_mult.",
+    "styles": {"fighter": 0.4, "runner": 0.15, "camper": 0.2, "feigner": 0.15, "hostage": 0.1},
+    "runner_flee_mult": 1.5, "camp_wait_mult": 2.0, "camp_react_mult": 0.4, "feign_spotted_chance": 0.6, "feign_watched_rate": 0.25, "watch_deg": 12.0,
+    "hostage_grab_px": 260.0, "hostage_grab_s": 3.0, "hostage_offset": [18.0, 9.0], "hostage_patience_s": [10.0, 18.0], "hostage_shout_s": [3.0, 5.0],
+    "hostage_back_px": 160.0, "hostage_comply_mult": 0.6
   },
   "reinforcement": {
     "min_warning_s": 8.0, "min_lead_after_noise_s": 2.0, "alarm_mult": 2.0,

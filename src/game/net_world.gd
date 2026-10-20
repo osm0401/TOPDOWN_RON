@@ -15,7 +15,7 @@ signal restart_requested  ## the vote chose a retry: Main rebuilds the world
 signal lobby_requested    ## the vote chose the main lobby
 signal loadout_changed    ## someone's gear changed (briefing picks)
 
-enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY, VOTE_RETRY, VOTE_LOBBY }
+enum Act { INTERACT_DOWN, INTERACT_UP, PEEK, KICK, CAMERA, FLASH, LASER, COMMAND, TASER, SWAP, READY, VOTE_RETRY, VOTE_LOBBY, REPORT }
 
 const SLOT_HOST := 0
 const SLOT_CLIENT := 1
@@ -72,6 +72,14 @@ const SCENARIOS := {
 	"ambush": {  # a look at an ambush: a kick by room B's door, the enemy inside takes a spot covering it; then the door opens
 		"events": {"host": [[0.1, "ready", 0], [0.2, "ambush_demo", 0], [3.0, "open_b", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 3.4, "final": 4.5,
+	},
+	"hostage": {  # a look at a hostage taker: the host in dark room D, light on; the enemy grabs the civilian beside it
+		"events": {"host": [[0.1, "ready", 0], [0.2, "hostage_demo", 0], [2.6, "aim_taker", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 3.5, "final": 4.5,
+	},
+	"evidence": {  # a look at the paperwork: the taker gives up, its pistol lies on the floor, the host stands by it
+		"events": {"host": [[0.1, "ready", 0], [0.2, "hostage_demo", 0], [2.6, "aim_taker", 0], [3.0, "hostage_give_up", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 4.0, "final": 5.0,
 	},
 	"outside": {  # a look at the street: the host stays at the spawn by the police car
 		"events": {"host": [[0.1, "ready", 0]], "client": [[0.1, "ready", 0]]},
@@ -187,6 +195,7 @@ func _ready() -> void:
 		director.speech.connect(func(text: String, at: Vector2) -> void: _say(text, at, true))
 		director.doors_changed.connect(_push_state)
 		director.npc_killed.connect(_on_npc_killed)
+		director.evidence_changed.connect(_push_evidence)
 
 	var view := WorldView.new()
 	view.name = "View"
@@ -291,7 +300,7 @@ func score_counts() -> Dictionary:
 	for ps in players:
 		if ps.present and ps.dead():
 			dead += 1
-	return ScoreRules.counts(mission, dead)
+	return ScoreRules.counts(mission, dead, {"unreported": director.unreported(), "evidence_missed": director.evidence_missed()})
 
 
 func current_score() -> int:
@@ -353,6 +362,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_send(Act.SWAP, 0)
 		KEY_R:
 			_request_reload()
+		KEY_V:
+			_send(Act.REPORT, 0)
 		KEY_1, KEY_2, KEY_3, KEY_4:
 			var n: int = event.physical_keycode - KEY_1
 			if mission.phase == MissionState.Phase.RESULT:
@@ -572,6 +583,14 @@ func _step_actions(delta: float) -> void:
 					ps.end_action()
 					_push_state()
 					_notice(s, tr("잠금을 풀었습니다"))
+			PlayerState.ACTION_COLLECT:
+				if director.evidence_near(ps.pos, float(_acts["collect_range"])) != ps.action_target:
+					ps.end_action()
+				elif ps.action_t >= ps.action_dur:
+					director.collect(ps.action_target)
+					ps.end_action()
+					_say(director.line("evidence"), ps.pos)
+					_notice(s, tr("무기 증거를 회수했습니다"))
 			PlayerState.ACTION_RESTRAIN:
 				if director.restrain_candidate(ps.pos) != ps.action_target:
 					ps.end_action()
@@ -619,6 +638,28 @@ func _do_act(slot: int, act: int, arg: int) -> void:
 			if not ps.busy():
 				ps.active = 1 - ps.active
 				_push_weapons()
+		Act.REPORT:
+			_report(slot)
+
+
+## V: picks up a dropped weapon at the officer's feet, else radios in the nearest restrained or dead
+## person nobody has reported yet; the command post answers on everyone's screen.
+func _report(slot: int) -> void:
+	var ps := players[slot]
+	if ps.busy():
+		return
+	var e := director.evidence_near(ps.pos, float(_acts["collect_range"]))
+	if e >= 0:
+		ps.begin_action(PlayerState.ACTION_COLLECT, e, float(_acts["collect_s"]))
+		return
+	var npc := director.report_candidate(ps.pos, float(_acts["report_range"]))
+	if npc < 0:
+		_notice(slot, tr("보고할 사람이나 주울 증거가 가까이에 없습니다"))
+		return
+	var key := director.report(npc)
+	_say(director.line(key), ps.pos)
+	_notice_all(director.line("toc"))
+	Session.log_line("report %d: %s" % [npc, key])
 
 
 func _interact(slot: int) -> void:
@@ -833,6 +874,12 @@ func _push_vote() -> void:
 		rpc_vote.rpc(vote.pack())
 
 
+func _push_evidence() -> void:
+	if _online():
+		var pk := director.pack_evidence()
+		rpc_evidence.rpc(pk[0], pk[1])
+
+
 func _push_weapons() -> void:
 	if _online():
 		rpc_weapons.rpc(_pack_weapons())
@@ -869,6 +916,8 @@ func rpc_client_ready(picks: Dictionary) -> void:
 	rpc_weapons.rpc_id(_client_id, _pack_weapons())
 	rpc_mission.rpc_id(_client_id, mission.pack())
 	rpc_vote.rpc_id(_client_id, vote.pack())
+	var ev := director.pack_evidence()
+	rpc_evidence.rpc_id(_client_id, ev[0], ev[1])
 
 
 @rpc("any_peer", "call_remote", "unreliable_ordered")
@@ -881,7 +930,7 @@ func rpc_input(move: Vector2, angle: float) -> void:
 
 @rpc("any_peer", "call_remote", "reliable")
 func rpc_act(act: int, arg: int) -> void:
-	if _from_client() and act >= 0 and act <= Act.VOTE_LOBBY and arg >= 0 and arg <= 3:
+	if _from_client() and act >= 0 and act <= Act.REPORT and arg >= 0 and arg <= 3:
 		_do_act(SLOT_CLIENT, act, arg)
 
 
@@ -929,6 +978,11 @@ func rpc_choose_loadout(entry: Dictionary) -> void:
 func rpc_state(doors: PackedInt32Array) -> void:
 	level.unpack_doors(doors)
 	running = true
+
+
+@rpc("authority", "call_remote", "reliable")
+func rpc_evidence(ps: PackedVector2Array, taken: PackedByteArray) -> void:
+	director.unpack_evidence(ps, taken)
 
 
 @rpc("authority", "call_remote", "reliable")
@@ -1104,6 +1158,20 @@ func _auto_do(name: String, arg: int) -> void:
 			_auto_aim = deg_to_rad(-75.0)
 			director._params["ambush_chance"] = 1.0
 			_emit_sound(SoundProp.Kind.KICK, players[0].pos + Vector2(0, -20))
+		"hostage_demo":  # test aid: the host just inside room D, light on, aiming at the hostage taker
+			_bodies[0].position = Vector2(650, 590)
+			players[0].pos = Vector2(650, 590)
+			players[0].flash = true
+			players[0].hp = 99
+			_auto_aim = 2.2
+		"aim_taker":  # test aid: light and aim on the hostage taker
+			for a in director.agents:
+				if a.brain.state == NpcBrain.State.HOLD:
+					_auto_aim = (a.pos - players[0].pos).angle()
+		"hostage_give_up":  # test aid: the hostage taker lets go and surrenders; the host steps to its pistol
+			for a in director.agents:
+				if a.brain.state == NpcBrain.State.HOLD:
+					a.brain._surrender("test")  # (a sure surrender: the command roll is not the point here)
 		"open_b":  # test aid: room B's door swings open (the host's doing)
 			level.set_door_state(1, Level.DoorState.OPEN, 1)
 			_push_state()

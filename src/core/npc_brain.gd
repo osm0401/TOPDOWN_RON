@@ -23,12 +23,26 @@ extends RefCounted
 ##   ambush     a sound from another room: some wait for the officers at a spot covering the way
 ##              in (INVESTIGATE with an ambush) instead of walking into them
 ##   retreat    hurt and still armed: may fall back to another room once and fight from there
+##
+## Styles (one per enemy: the map's "style", else drawn from npc.styles weights):
+##   fighter    all of the above, nothing more
+##   runner     the first time it sees an officer (or hears a shot) it runs to a far room, then
+##              hides there and fights when found
+##   camper     a sound from another room: always waits beside the door of its own room, off the
+##              doorway, and shoots fast at whoever comes through (INVESTIGATE, camping)
+##   feigner    may raise its hands when it sees an officer, and draws again once nobody keeps a
+##              gun on it (watched slows the countdown)
+##   hostage    when it sees an officer it grabs the nearest civilian it can reach and holds them
+##              in front of itself (HOLD); the civilian is CAPTIVE. It shouts, backs away, and after
+##              its patience runs out shoves them away and attacks; a command may make it let go
+##              and give up, a hit or a stun makes it lose its grip
 
 enum Role { ENEMY, CIVILIAN }
-enum State { IDLE, INVESTIGATE, SPOTTED, THREAT, ATTACK, SURRENDER, FLEE, HIDE, DOWN, RESTRAINED, DEAD }
+enum State { IDLE, INVESTIGATE, SPOTTED, THREAT, ATTACK, SURRENDER, FLEE, HIDE, DOWN, RESTRAINED, DEAD, HOLD, CAPTIVE }
 enum Cmd { WEAPON_DROP, DOWN, FREEZE, TURN }
 
-const STATE_NAMES: Array[String] = ["경계 전", "소리 확인", "발견", "위협", "공격", "항복", "도주", "숨음", "엎드림", "구속", "사망"]
+const STATE_NAMES: Array[String] = ["경계 전", "소리 확인", "발견", "위협", "공격", "항복", "도주", "숨음", "엎드림", "구속", "사망", "인질극", "인질"]
+const STYLES: Array[String] = ["fighter", "runner", "camper", "feigner", "hostage"]
 const CMD_KEYS: Array[String] = ["weapon_drop", "down", "freeze", "turn"]
 const LOUD_KINDS: Array[String] = ["gunshot", "kick", "scream", "taser"]
 
@@ -55,6 +69,12 @@ var aiming := false               ## weapon up along `facing` with no officer in
 var ambush_spot := Vector2.INF    ## where to wait for the officers (the director picks it when needs_ambush)
 var ambush_look := Vector2.INF    ## the way in it covers there
 var needs_ambush := false
+var style := "fighter"
+var watched := false              ## percept: an officer keeps a gun on it (the director sets it every tick)
+var camping := false              ## this ambush waits beside the door (the director picks a door-side spot)
+var has_hostage := false          ## HOLD: the civilian is in its grip (the director attaches them)
+var hold_target := Vector2.INF    ## HOLD: where the civilian it goes for stands (the director)
+var needs_hostage := false        ## asks the director for a civilian to grab (answer: offer_hostage)
 var reason := ""
 var time_in_state := 0.0
 
@@ -88,13 +108,20 @@ var _hold := 0.0       ## ATTACK: extra seconds to keep aiming at the last seen 
 var _quick := 1.0      ## reaction / telegraph time factor, from how alert it was when it saw the officer
 var _retreated := false
 var _tac := 1.0
+var _hostage_tried := false
+var _ran := false
+var _feigned := false
+var _patience := 0.0
+var _shout_t := 0.0
+var _shout := ""  ## a line to say this tick (a data/radio.json key)
 
 
-func _init(r: int, params: Dictionary, generator: RandomNumberGenerator, feign_type: bool = false) -> void:
+func _init(r: int, params: Dictionary, generator: RandomNumberGenerator, feign_type: bool = false, style_name: String = "") -> void:
 	role = r
 	_p = params
 	_rng = generator
-	feigns = feign_type
+	style = style_name if STYLES.has(style_name) else ("feigner" if feign_type else "fighter")
+	feigns = feign_type or style == "feigner"
 	_tac = float(params.get("tactics", 1.0))
 	if r == Role.ENEMY:
 		hp = int(params["enemy_hp"])
@@ -149,6 +176,8 @@ func on_command(cmd: int) -> String:
 	if state == State.DEAD or state == State.RESTRAINED:
 		return "ignored"
 	if role == Role.CIVILIAN:
+		if state == State.CAPTIVE:
+			return "ignored"
 		if _rng.randf() < float(_p["civilian_chance"]):
 			_go(State.DOWN if cmd == Cmd.DOWN else State.SURRENDER, "명령에 따름")
 			return "comply"
@@ -161,11 +190,15 @@ func on_command(cmd: int) -> String:
 			reason = "무기를 버림 (진짜 항복)"
 			return "comply"
 		return "refuse"
-	if state == State.SURRENDER or state == State.DOWN:
+	if state == State.SURRENDER or state == State.DOWN or state == State.CAPTIVE:
 		return "ignored"
 	if _rng.randf() < _comply_chance(cmd):
-		_surrender("명령에 항복")
+		if state == State.HOLD and has_hostage:
+			_shout = "hostage_release"
+		_surrender("인질을 놓고 항복" if state == State.HOLD else "명령에 항복")
 		return "comply"
+	if state == State.HOLD and has_hostage:
+		_shout = "hostage_threat"  # answers with a threat
 	return "refuse"
 
 
@@ -196,6 +229,8 @@ func on_hit(damage: int, stun: bool, from: Vector2) -> void:
 	var hurt := hp * 2 <= max_hp
 	if hurt and _rng.randf() < float(_p["hurt_surrender_chance"]):
 		_surrender("부상으로 항복")
+	elif state == State.HOLD:
+		_go(State.ATTACK, "총에 맞아 인질을 놓침")
 	elif hurt and armed and not _retreated and is_alert() and _rng.randf() < minf(float(_p.get("retreat_chance", 0.0)) * _tac, 0.95):
 		_retreated = true  # once: from where it falls back to, it fights on
 		_go(State.FLEE, "부상으로 후퇴")
@@ -211,7 +246,7 @@ func on_threat_shot() -> void:
 		if state == State.IDLE:
 			_go(State.HIDE, "위협 사격에 놀람")
 		return
-	if state == State.SPOTTED or state == State.THREAT or state == State.ATTACK:
+	if state == State.SPOTTED or state == State.THREAT or state == State.ATTACK or state == State.HOLD:
 		if _rng.randf() < float(_p["threat_shot_surrender_chance"]) * float(_p["compliance_mult"]):
 			_surrender("위협 사격에 항복")
 		elif state == State.ATTACK and not in_cover and armed:
@@ -249,7 +284,55 @@ func set_ambush(spot: Vector2, look: Vector2) -> void:
 
 
 func is_alert() -> bool:
-	return state == State.SPOTTED or state == State.THREAT or state == State.ATTACK
+	return state == State.SPOTTED or state == State.THREAT or state == State.ATTACK or state == State.HOLD
+
+
+## The director's answer to needs_hostage: the civilian to grab stands at `at` (INF: none in reach).
+func offer_hostage(at: Vector2) -> void:
+	needs_hostage = false
+	if at == Vector2.INF or state == State.DEAD:
+		return
+	hold_target = at
+	_go(State.HOLD, "민간인을 붙잡으러 감")
+
+
+## HOLD: the civilian is in its grip now.
+func grabbed() -> void:
+	has_hostage = true
+	reason = "민간인을 인질로 잡음"
+	_shout = "hostage_grab"
+	_shout_t = 2.5
+
+
+## HOLD: the civilian got away (shot, or slipped off): fights on.
+func lose_hostage() -> void:
+	if state == State.HOLD:
+		_go(State.ATTACK, "인질을 놓침")
+
+
+## Civilian: an enemy grabbed it.
+func capture() -> void:
+	if state != State.DEAD and state != State.RESTRAINED:
+		_go(State.CAPTIVE, "인질로 잡힘")
+		_scream = true
+
+
+## Civilian: the captor let go. shoved: pushed away by a captor that starts shooting (runs);
+## otherwise the captor gave up or fell (drops to the floor, ready to be restrained).
+func set_free(shoved: bool) -> void:
+	if state != State.CAPTIVE:
+		return
+	if shoved:
+		_go(State.FLEE, "밀쳐져 도망")
+	else:
+		_go(State.DOWN, "풀려나 엎드림")
+
+
+## The line to say this tick (a data/radio.json key), "" for none.
+func take_shout() -> String:
+	var s := _shout
+	_shout = ""
+	return s
 
 
 func alive() -> bool:
@@ -260,7 +343,7 @@ func alive() -> bool:
 
 ## Intents: move_to (Vector2|null), run (bool), shoot (Vector2|null), scream (bool), alert_nearby (Vector2|null)
 func tick(delta: float) -> Dictionary:
-	var out := {"move_to": null, "run": false, "shoot": null, "scream": false, "alert_nearby": null}
+	var out := {"move_to": null, "run": false, "shoot": null, "scream": false, "alert_nearby": null, "shout": ""}
 	time_in_state += delta
 	_suppressed = maxf(_suppressed - delta, 0.0)
 	_fire_cd = maxf(_fire_cd - delta, 0.0)
@@ -276,6 +359,7 @@ func tick(delta: float) -> Dictionary:
 	if _scream:
 		out["scream"] = true
 		_scream = false
+	out["shout"] = take_shout()
 	if _alert_out:
 		out["alert_nearby"] = _alert_target
 		_alert_out = false
@@ -302,6 +386,20 @@ func _tick_enemy(delta: float, out: Dictionary) -> void:
 			elif _alerted:
 				target_pos = _alert_pos
 				_go(State.INVESTIGATE, "동료의 경고를 받음")
+			elif _heard and style == "runner" and armed and not _ran and _heard_kind == "gunshot":
+				_ran = true
+				_retreated = true
+				_alert_target = _heard_pos
+				target_pos = _heard_pos
+				_go(State.FLEE, "총성을 듣고 도주")
+			elif _heard and style == "camper" and armed and _heard_other_room:
+				target_pos = _heard_pos
+				_go(State.INVESTIGATE, "%s 소리를 듣고 문 옆에서 기다림" % _heard_kind)
+				_ambush = true
+				camping = true
+				needs_ambush = true
+				var span: Array = _p.get("ambush_s", [6.0, 6.0])
+				_timer = _rng.randf_range(float(span[0]), float(span[1])) * float(_p.get("camp_wait_mult", 1.0)) * _tac
 			elif _heard:
 				target_pos = _heard_pos
 				if armed and _heard_other_room and _rng.randf() < minf(float(_p.get("ambush_chance", 0.0)) * _tac, 0.95):
@@ -350,10 +448,22 @@ func _tick_enemy(delta: float, out: Dictionary) -> void:
 			_track_player(delta)
 			_timer -= delta
 			if _timer <= 0.0:
-				if armed:
-					_go(State.THREAT, "무기를 겨눔")
-				else:
+				if not armed:
 					_go(State.FLEE, "무장이 없어 도주")
+				elif needs_hostage:
+					pass  # the director answers this tick
+				elif style == "hostage" and not _hostage_tried:
+					_hostage_tried = true
+					needs_hostage = true
+				elif style == "runner" and not _ran:
+					_ran = true
+					_retreated = true  # from where it runs to, it fights
+					_go(State.FLEE, "경찰을 보고 도주")
+				elif style == "feigner" and not _feigned and _rng.randf() < float(_p.get("feign_spotted_chance", 0.0)):
+					_feigned = true
+					_surrender("경찰을 보고 손을 듦")
+				else:
+					_go(State.THREAT, "무기를 겨눔")
 			elif _lost >= float(_p["lose_target_s"]):
 				_go(State.INVESTIGATE, "발견했다가 놓침")
 		State.THREAT:
@@ -378,11 +488,14 @@ func _tick_enemy(delta: float, out: Dictionary) -> void:
 				_go(State.INVESTIGATE, "목표를 놓침 (기다렸다가 확인하러 감)")
 		State.SURRENDER:
 			if feigning:
-				_timer -= delta
+				_timer -= delta * (float(_p.get("feign_watched_rate", 1.0)) if watched else 1.0)  # a gun on it: waits for its chance
 				if _timer <= 0.0:
 					feigning = false
 					_feign_attack = true
+					_shout = "feign_draw"
 					_go(State.THREAT, "항복한 척하다가 공격 준비")
+		State.HOLD:
+			_hold_hostage(delta, out)
 		State.FLEE:
 			_flee(delta, out)
 		State.HIDE:
@@ -441,6 +554,37 @@ func _wait_in_ambush(delta: float, out: Dictionary) -> void:
 		_arrived = false
 		_timer = 0.0
 		reason = "아무도 오지 않아 확인하러 감"
+
+
+## HOLD: goes for the civilian, then holds them in front of itself, gun to their head, facing the
+## officer; shouts now and then and backs off when an officer comes close. Its patience runs down
+## while it sees an officer: then it shoves the civilian away and fights.
+func _hold_hostage(delta: float, out: Dictionary) -> void:
+	_track_player(delta)
+	if not has_hostage:
+		_timer -= delta
+		if _timer <= 0.0 or hold_target == Vector2.INF:
+			_go(State.THREAT, "인질을 잡지 못함")
+			return
+		out["move_to"] = hold_target
+		out["run"] = true
+		return
+	if not _sees:
+		if target_pos.distance_to(pos) > 1.0:
+			facing = (target_pos - pos).angle()  # the hostage between it and where the officer was
+		return
+	_patience -= delta
+	_shout_t -= delta
+	if _shout_t <= 0.0:
+		var span: Array = _p.get("hostage_shout_s", [3.0, 5.0])
+		_shout_t = _rng.randf_range(float(span[0]), float(span[1]))
+		_shout = "hostage_threat"
+	if _patience <= 0.0:
+		has_hostage = false
+		_go(State.ATTACK, "인질을 밀치고 공격")
+		return
+	if _seen_pos.distance_to(pos) < float(_p.get("hostage_back_px", 0.0)):
+		out["move_to"] = pos + (pos - _seen_pos).normalized() * 40.0  # backs off, still facing the officer
 
 
 func _flee(delta: float, out: Dictionary) -> void:
@@ -503,10 +647,16 @@ func _comply_chance(cmd: int) -> float:
 		c += float(_p["outnumbered_bonus"])
 	if state == State.ATTACK:
 		c *= float(_p["engaged_mult"])
+	elif state == State.HOLD:
+		c *= float(_p.get("hostage_comply_mult", 1.0))
 	return clampf(c, 0.0, 0.95)
 
 
 func _go(s: int, why: String) -> void:
+	var from_camp := camping and _ambush
+	if state == State.HOLD and s != State.HOLD:
+		has_hostage = false
+		hold_target = Vector2.INF
 	state = s
 	reason = why
 	time_in_state = 0.0
@@ -520,9 +670,12 @@ func _go(s: int, why: String) -> void:
 	ambush_spot = Vector2.INF
 	ambush_look = Vector2.INF
 	aiming = false
+	camping = false
 	match s:
 		State.SPOTTED:
 			_quick = lerpf(1.0, float(_p.get("alert_react_mult", 1.0)), alertness)  # keyed up: reacts sooner
+			if from_camp:
+				_quick *= float(_p.get("camp_react_mult", 1.0))  # waiting by the door for exactly this
 			_timer = float(_p["react_time"]) * _quick
 			_lost = 0.0
 			_alert_out = true
@@ -541,7 +694,12 @@ func _go(s: int, why: String) -> void:
 				armed = false
 		State.FLEE:
 			needs_flee_target = true
-			_timer = float(_p["flee_s"])
+			_timer = float(_p["flee_s"]) * (float(_p.get("runner_flee_mult", 1.0)) if style == "runner" and armed else 1.0)
+		State.HOLD:
+			_timer = float(_p.get("hostage_grab_s", 3.0))
+			has_hostage = false
+			_patience = _rng.randf_range(float((_p.get("hostage_patience_s", [12.0, 12.0]) as Array)[0]), float((_p.get("hostage_patience_s", [12.0, 12.0]) as Array)[1])) / maxf(_tac, 0.1)
+			_shout_t = 0.0
 		State.HIDE:
 			_timer = float(_p["hide_s"])
 			if role == Role.CIVILIAN:

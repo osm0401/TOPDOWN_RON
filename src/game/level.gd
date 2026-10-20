@@ -41,7 +41,7 @@ var door_actor: Array[int] = []        ## who touched the door last: 0 nobody/NP
 var rooms: Array[Dictionary] = []      ## {name, rect, dark, floor, wall} (floor / wall: surface styles for the 3D view)
 var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid, cover ("full" / "hard" / "soft" / "")}
 var ground: Array[Dictionary] = []     ## outdoor surfaces in drawing order {rect, surface, h (m, raised kerbs)}
-var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns}
+var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns, suspect, reinforcement, clues, style}
 
 var _door_state: Array[int] = []
 var _door_locked: Array[bool] = []
@@ -95,6 +95,7 @@ func load_map(path: String) -> bool:
 			"suspect": bool(n.get("suspect", false)),
 			"reinforcement": bool(n.get("reinforcement", false)),
 			"clues": n.get("clues", []),
+			"style": str(n.get("style", "")),
 		})
 	for w in d["walls"]:
 		var r := _rect(w)

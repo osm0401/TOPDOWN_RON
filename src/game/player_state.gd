@@ -6,7 +6,8 @@ const ACTION_NONE := 0
 const ACTION_LOCKPICK := 1
 const ACTION_RESTRAIN := 2
 const ACTION_CAMERA := 3
-const ACTION_NAMES: Array[String] = ["", "lockpick", "restrain", "camera"]
+const ACTION_COLLECT := 4
+const ACTION_NAMES: Array[String] = ["", "lockpick", "restrain", "camera", "collect"]
 
 var present := true                  ## false for the missing second officer in single player
 var pos := Vector2.ZERO
@@ -24,7 +25,7 @@ var taser_charges := 0
 var action := ACTION_NONE
 var action_t := 0.0
 var action_dur := 1.0
-var action_target := -1               ## door index or npc index
+var action_target := -1               ## door index, npc index or evidence index
 var cam_door := -1
 var kick_cd := 0.0
 

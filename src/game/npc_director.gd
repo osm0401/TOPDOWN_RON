@@ -11,10 +11,13 @@ signal player_hit(slot: int, npc: int)
 signal speech(text: String, pos: Vector2)
 signal doors_changed
 signal npc_killed(npc: int, slot: int)
+signal evidence_changed  ## a weapon was dropped or picked up (the host sends the list to the client)
 
 const ARRIVE_DIST := 16.0
 const DOOR_TOUCH := 18.0
 const MOVING_STATES: Array[int] = [NpcBrain.State.IDLE, NpcBrain.State.INVESTIGATE, NpcBrain.State.FLEE]
+const GRAB_DIST := 26.0
+const REPORTED_BIT := 524288
 
 
 class Agent extends RefCounted:
@@ -28,17 +31,24 @@ class Agent extends RefCounted:
 	var suspect := false          ## the designated suspect (must be taken alive)
 	var dormant := false          ## reinforcement not arrived yet: not simulated, seen, heard or shot
 	var clues: Array[String] = []  ## visible identifying marks: "cap", "band"
+	var hostage := -1             ## enemy: the civilian it goes for or holds
+	var captor := -1              ## civilian: the enemy holding it
+	var reported := false         ## an officer radioed in this one's restraint or death
+	var dropped := false          ## its weapon lies on the floor as evidence
 
 
 var level: Level
 var agents: Array[Agent] = []
 var players: Array[PlayerState]
+var evidence: Array[Dictionary] = []  ## dropped weapons: {"pos": Vector2, "npc": int, "taken": bool}
+var lines: Dictionary = {}           ## data/radio.json
 
 var _t: Dictionary
 var _np: Dictionary
 var _diff: Dictionary
 var _params: Dictionary = {}
 var _rng := RandomNumberGenerator.new()
+var _say_rng := RandomNumberGenerator.new()  ## picks lines (keeps the decision dice untouched)
 var _queue: Array[Dictionary] = []
 var _pl_prev: Array[Vector2] = []
 var _pl_speed: Array[float] = []  ## px/s of each officer (smoothed): a moving officer is harder to hit
@@ -57,10 +67,16 @@ func _init(lv: Level, tuning: Dictionary, diff: Dictionary, player_list: Array[P
 	_params["chance"] = cmd["chance"]
 	for k in ["suppressed_bonus", "hurt_bonus", "outnumbered_bonus", "engaged_mult", "civilian_chance"]:
 		_params[k] = cmd[k]
+	lines = JsonData.load_dict("res://data/radio.json")
+	var style_rng := RandomNumberGenerator.new()  # its own dice: the main ones stay as they were
+	style_rng.seed = seed_value + 7
 	for def in lv.npc_defs:
 		var a := Agent.new()
 		var role: int = NpcBrain.Role.ENEMY if def["role"] == "enemy" else NpcBrain.Role.CIVILIAN
-		a.brain = NpcBrain.new(role, _params, _rng, bool(def["feigns"]))
+		var style := str(def.get("style", ""))
+		if style == "" and role == NpcBrain.Role.ENEMY and not bool(def["feigns"]) and not bool(def["reinforcement"]):
+			style = pick_style(_np.get("styles", {}), style_rng.randf())
+		a.brain = NpcBrain.new(role, _params, _rng, bool(def["feigns"]), style)
 		a.pos = def["pos"]
 		a.home = a.pos
 		a.brain.pos = a.pos
@@ -69,6 +85,25 @@ func _init(lv: Level, tuning: Dictionary, diff: Dictionary, player_list: Array[P
 		a.dormant = bool(def["reinforcement"])
 		a.clues.assign(def["clues"])
 		agents.append(a)
+
+
+## A style from {name: weight} for a roll in 0..1 ("fighter" when there are none).
+static func pick_style(weights: Dictionary, roll: float) -> String:
+	var total := 0.0
+	for k in weights:
+		total += maxf(float(weights[k]), 0.0)
+	var at := roll * total
+	for k in weights:
+		at -= maxf(float(weights[k]), 0.0)
+		if at < 0.0:
+			return str(k)
+	return "fighter"
+
+
+## A random line for a data/radio.json key ("" when there is none).
+func line(key: String) -> String:
+	var options: Array = lines.get(key, [])
+	return "" if options.is_empty() else str(options[_say_rng.randi() % options.size()])
 
 
 ## A sound the NPCs may hear (source = agent index that made it, -1 for players).
@@ -81,10 +116,12 @@ func tick(delta: float) -> void:
 	var sounds := _queue
 	_queue = []
 	var alerts: Array[Dictionary] = []
+	_update_drops()
 	for i in agents.size():
 		_tick_agent(i, delta, sounds, alerts)
 	for al in alerts:
 		_share_alert(int(al["from"]), al["pos"])
+	_update_hostages()
 
 
 func _track_players(delta: float) -> void:
@@ -190,6 +227,8 @@ func command(slot: int, cmd: int) -> Dictionary:
 			best_d = d
 	if best < 0:
 		return {"target": -1, "result": "none"}
+	if agents[best].captor >= 0:
+		best = agents[best].captor  # the hostage is not the one to talk to
 	var target: Agent = agents[best]
 	var seers := 0
 	for q in players:
@@ -244,7 +283,7 @@ func pack() -> Array:
 		face.append(b.facing)
 		data.append(b.state | (16 if b.armed else 0) | (32 if b.feigning else 0) | (64 if b.had_weapon else 0) \
 			| (128 if b.role == NpcBrain.Role.CIVILIAN else 0) | (b.hp << 8) | (65536 if a.dormant else 0) | (131072 if b.in_cover else 0) \
-			| (262144 if b.aiming else 0))
+			| (262144 if b.aiming else 0) | (REPORTED_BIT if a.reported else 0))
 	return [ps, data, face]
 
 
@@ -263,6 +302,7 @@ func unpack(ps: PackedVector2Array, data: PackedInt32Array, face: PackedFloat32A
 		a.dormant = (d & 65536) != 0
 		b.in_cover = (d & 131072) != 0
 		b.aiming = (d & 262144) != 0
+		a.reported = (d & REPORTED_BIT) != 0
 
 
 # ---- per-agent tick ------------------------------------------------------------
@@ -274,18 +314,30 @@ func _tick_agent(i: int, delta: float, sounds: Array[Dictionary], alerts: Array[
 		return
 	b.pos = a.pos
 	if b.needs_flee_target:
+		if b.role == NpcBrain.Role.ENEMY:
+			_unlock_way_out(i, a)
 		b.flee_target = _pick_flee_target(a)
 		b.needs_flee_target = false
 	if b.needs_cover:
 		b.set_cover(_pick_cover(a))
 	if b.needs_ambush:
-		var amb := _pick_ambush(a)
+		var amb := _pick_door_camp(a) if b.camping else _pick_ambush(a)
 		b.set_ambush(amb[0], amb[1])
+	if b.needs_hostage:
+		a.hostage = _pick_hostage(i)
+		b.offer_hostage(agents[a.hostage].pos if a.hostage >= 0 else Vector2.INF)
 	_hear(i, a, sounds)
 	if b.role == NpcBrain.Role.ENEMY:
 		_see(a)
 		_see_laser(a)
+		b.watched = _watched(a)
 	var out := b.tick(delta)
+	var said: String = out["shout"]
+	if said != "":
+		var text := line(said)
+		if text != "":
+			speech.emit(text, a.pos)
+			_emit(SoundProp.Kind.VOICE, a.pos, i)
 	if out["scream"]:
 		speech.emit("꺄악!", a.pos)  # the words first: a recorded scream replaces the synthesized one
 		_emit(SoundProp.Kind.SCREAM, a.pos, i)
@@ -496,7 +548,7 @@ func _move(i: int, a: Agent, out: Dictionary, delta: float) -> void:
 			a.pos += (wp - a.pos) / d * step
 			step = 0.0
 	var moved := a.pos - before
-	if moved.length_squared() > 0.0001 and MOVING_STATES.has(a.brain.state):
+	if moved.length_squared() > 0.0001 and (MOVING_STATES.has(a.brain.state) or (a.brain.state == NpcBrain.State.HOLD and not a.brain.has_hostage)):
 		a.brain.facing = moved.angle()
 	_open_doors_near(i, a)
 	if a.path_i >= a.path.size():
@@ -639,6 +691,23 @@ func _spot_taken(a: Agent, spot: Vector2) -> bool:
 	return false
 
 
+## An enemy locked in its room (it has the key) unlocks the door to get away.
+func _unlock_way_out(i: int, a: Agent) -> void:
+	var room := level.room_at(a.pos)
+	if room < 0:
+		return
+	for k in level.rooms.size():
+		if k != room and not level.find_path(a.pos, (level.rooms[k]["rect"] as Rect2).get_center()).is_empty():
+			return  # there is a way out already
+	var r: Rect2 = level.rooms[room]["rect"]
+	for d in level.door_rects.size():
+		if level.is_locked(d) and level.door_rects[d].grow(12.0).intersects(r):
+			level.set_locked(d, false)
+			_emit(SoundProp.Kind.DOOR_AJAR, level.door_rects[d].get_center(), i)  # the key turning
+			doors_changed.emit()
+			return
+
+
 func _pick_flee_target(a: Agent) -> Vector2:
 	var best := a.pos
 	var best_score := -INF
@@ -655,3 +724,233 @@ func _pick_flee_target(a: Agent) -> Vector2:
 			best_score = score
 			best = c
 	return best
+
+
+# ---- hostages ------------------------------------------------------------------
+
+## The civilian an enemy can grab: alive, free (not held, restrained, lying or taken by another),
+## within hostage_grab_px and reachable, in its room or one with a clear line. The nearest wins; -1 none.
+func _pick_hostage(i: int) -> int:
+	var a: Agent = agents[i]
+	var best := -1
+	var best_d := float(_np.get("hostage_grab_px", 0.0))
+	for j in agents.size():
+		var c: Agent = agents[j]
+		if c.dormant or c.brain.role != NpcBrain.Role.CIVILIAN or not c.brain.alive() or c.captor >= 0:
+			continue
+		if c.brain.state in [NpcBrain.State.RESTRAINED, NpcBrain.State.CAPTIVE, NpcBrain.State.DOWN]:
+			continue
+		var taken := false
+		for o in agents:
+			if o != a and o.hostage == j and o.brain.state == NpcBrain.State.HOLD:
+				taken = true
+		var d := a.pos.distance_to(c.pos)
+		if taken or d >= best_d:
+			continue
+		if level.room_at(c.pos) != level.room_at(a.pos) and not level.has_los(a.pos, c.pos):
+			continue
+		var path := level.find_path(a.pos, c.pos)
+		if path.is_empty() or path[path.size() - 1].distance_to(c.pos) > 24.0:
+			continue
+		best = j
+		best_d = d
+	return best
+
+
+## Keeps hostage pairs in step: the taker reaches the civilian and grabs them, holds them in front
+## of itself (between it and the officer it faces), lets go when it leaves HOLD (shoved away when
+## it starts shooting, else the civilian drops to the floor), loses them when they get hurt.
+func _update_hostages() -> void:
+	var off: Array = _np.get("hostage_offset", [18.0, 9.0])
+	for i in agents.size():
+		var a: Agent = agents[i]
+		if a.hostage < 0:
+			continue
+		var c: Agent = agents[a.hostage]
+		var b := a.brain
+		if b.state != NpcBrain.State.HOLD:
+			_release(a, b.state == NpcBrain.State.ATTACK or b.state == NpcBrain.State.THREAT)
+			continue
+		if c.captor >= 0 and agents[c.captor] != a:
+			b.lose_hostage()
+			a.hostage = -1
+			continue
+		if not b.has_hostage:
+			if not c.brain.alive() or c.brain.state in [NpcBrain.State.RESTRAINED, NpcBrain.State.DOWN]:
+				b.offer_hostage(Vector2.INF)
+				b.hold_target = Vector2.INF  # gives up on its next tick
+				continue
+			b.hold_target = c.pos
+			if a.pos.distance_to(c.pos) <= GRAB_DIST + 4.0:
+				c.brain.capture()
+				c.captor = i
+				b.grabbed()
+			continue
+		if c.brain.state != NpcBrain.State.CAPTIVE:  # shot, or otherwise got away
+			c.captor = -1
+			a.hostage = -1
+			b.lose_hostage()
+			continue
+		var fwd := Vector2.from_angle(b.facing)
+		var spot := a.pos + fwd * float(off[0]) + fwd.orthogonal() * float(off[1])
+		if not level.has_los(a.pos, spot):
+			spot = a.pos + fwd * 8.0
+		c.pos = spot
+		c.brain.pos = spot
+		c.brain.facing = b.facing
+		c.path = PackedVector2Array()
+
+
+func _release(a: Agent, shoved: bool) -> void:
+	var c: Agent = agents[a.hostage]
+	a.hostage = -1
+	if agents.find(a) == c.captor:
+		c.captor = -1
+		c.brain.set_free(shoved)
+
+
+## Is an officer holding a gun on this agent (aim within watch_deg, a clear line, in range)?
+func _watched(a: Agent) -> bool:
+	var half := deg_to_rad(float(_np.get("watch_deg", 0.0)))
+	if half <= 0.0:
+		return false
+	for pl in players:
+		if pl.dead() or not pl.present:
+			continue
+		var to := a.pos - pl.pos
+		if to.length() > float(_diff["detect_range"]) * 1.5 or absf(angle_difference(pl.aim, to.angle())) > half:
+			continue
+		if level.has_los(pl.pos, a.pos):
+			return true
+	return false
+
+
+## A camper's spot: just inside its room beside the door it expects the officers through (the first
+## door on its way to the sound), off the doorway so it is not seen from the far side, facing the
+## opening. [spot, look]; spot INF to stay put.
+func _pick_door_camp(a: Agent) -> Array:
+	var room := level.room_at(a.pos)
+	var door := _first_door_on(a.pos, level.find_path(a.pos, a.brain.target_pos))
+	if room < 0 or door < 0:
+		return _pick_ambush(a)
+	var r: Rect2 = level.rooms[room]["rect"]
+	var dr := level.door_rects[door]
+	var dc := dr.get_center()
+	var horizontal := dr.size.x >= dr.size.y  # the door sits in a horizontal wall
+	var inward := Vector2(0.0, signf(r.get_center().y - dc.y)) if horizontal else Vector2(signf(r.get_center().x - dc.x), 0.0)
+	var along := Vector2(1.0, 0.0) if horizontal else Vector2(0.0, 1.0)
+	var half := (dr.size.x if horizontal else dr.size.y) * 0.5
+	var look := dc + inward * 20.0
+	var best := Vector2.INF
+	var best_d := INF
+	for side in [-1.0, 1.0]:
+		var spot: Vector2 = dc + inward * 34.0 + along * side * (half + 26.0)
+		if level.room_at(spot) != room or _spot_taken(a, spot):
+			continue
+		var path := level.find_path(a.pos, spot)
+		if path.is_empty() or path[path.size() - 1].distance_to(spot) > 24.0:
+			continue
+		if a.pos.distance_to(spot) < best_d:
+			best = spot
+			best_d = a.pos.distance_to(spot)
+	if best == Vector2.INF:
+		return _pick_ambush(a)
+	return [best, look]
+
+
+# ---- evidence and reports --------------------------------------------------------
+
+## A weapon that left someone's hands (dropped on surrender, on a stun, on death) lies as evidence.
+func _update_drops() -> void:
+	var changed := false
+	for i in agents.size():
+		var a: Agent = agents[i]
+		if a.dropped or a.dormant or not a.brain.had_weapon or a.brain.armed:
+			continue
+		a.dropped = true
+		var spot := a.pos + Vector2(22.0, 14.0).rotated(a.brain.facing)
+		if not level.has_los(a.pos, spot):
+			spot = a.pos
+		evidence.append({"pos": spot, "npc": i, "taken": false})
+		changed = true
+	if changed:
+		evidence_changed.emit()
+
+
+## The nearest evidence not yet picked up within `reach` of p, or -1.
+func evidence_near(p: Vector2, reach: float) -> int:
+	var best := -1
+	var best_d := reach
+	for e in evidence.size():
+		var d := p.distance_to(evidence[e]["pos"])
+		if not evidence[e]["taken"] and d <= best_d:
+			best = e
+			best_d = d
+	return best
+
+
+func collect(e: int) -> bool:
+	if e < 0 or e >= evidence.size() or evidence[e]["taken"]:
+		return false
+	evidence[e]["taken"] = true
+	evidence_changed.emit()
+	return true
+
+
+func evidence_missed() -> int:
+	var n := 0
+	for e in evidence:
+		if not e["taken"]:
+			n += 1
+	return n
+
+
+## [positions, taken flags] for the client.
+func pack_evidence() -> Array:
+	var ps := PackedVector2Array()
+	var taken := PackedByteArray()
+	for e in evidence:
+		ps.append(e["pos"])
+		taken.append(1 if e["taken"] else 0)
+	return [ps, taken]
+
+
+func unpack_evidence(ps: PackedVector2Array, taken: PackedByteArray) -> void:
+	evidence.clear()
+	for k in ps.size():
+		evidence.append({"pos": ps[k], "npc": -1, "taken": k < taken.size() and taken[k] != 0})
+
+
+func needs_report(a: Agent) -> bool:
+	return not a.dormant and not a.reported and (a.brain.state == NpcBrain.State.RESTRAINED or a.brain.state == NpcBrain.State.DEAD)
+
+
+## The nearest restrained or dead person not yet reported that an officer at p can see within reach, or -1.
+func report_candidate(p: Vector2, reach: float) -> int:
+	var best := -1
+	var best_d := reach
+	for i in agents.size():
+		var a: Agent = agents[i]
+		var d := p.distance_to(a.pos)
+		if needs_report(a) and d <= best_d and level.has_los(p, a.pos):
+			best = i
+			best_d = d
+	return best
+
+
+## Marks agent i reported; returns the data/radio.json key of what the officer says, or "".
+func report(i: int) -> String:
+	if i < 0 or i >= agents.size() or not needs_report(agents[i]):
+		return ""
+	var a: Agent = agents[i]
+	a.reported = true
+	var who := "suspect" if a.suspect else ("enemy" if a.brain.role == NpcBrain.Role.ENEMY else "civilian")
+	return "report_%s_%s" % [who, "dead" if a.brain.state == NpcBrain.State.DEAD else "restrained"]
+
+
+func unreported() -> int:
+	var n := 0
+	for a in agents:
+		if needs_report(a):
+			n += 1
+	return n

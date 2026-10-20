@@ -543,3 +543,19 @@ static func thunder(seed_: int) -> AudioStreamWAV:
 	_decay(crack, 0.09)
 	_mix(out, crack, 0.02, 0.06)
 	return _stream(out, 1.5, 0.8)
+
+
+## One hurt breath: a ragged inhale through the mouth, a short catch, a longer shaky exhale.
+static func breath(seed_: int) -> AudioStreamWAV:
+	var out := _buf(1.7)
+	var inhale := _resonate(_highpass(_white(0.55, seed_), 500.0), 1500.0, 900.0)
+	for i in inhale.size():
+		var t := float(i) / inhale.size()
+		inhale[i] *= sin(PI * pow(t, 0.7)) * (0.8 + 0.2 * sin(TAU * 23.0 * t))
+	_mix(out, inhale, 0.0, 1.0)
+	var exhale := _resonate(_highpass(_white(0.9, seed_ + 1), 300.0), 900.0, 700.0)
+	for i in exhale.size():
+		var t := float(i) / exhale.size()
+		exhale[i] *= pow(sin(PI * t), 1.5) * (0.75 + 0.25 * sin(TAU * 9.0 * t))  # shaky
+	_mix(out, exhale, 0.7, 0.8)
+	return _stream(_lowpass(out, 4000.0), 1.0, 0.7)

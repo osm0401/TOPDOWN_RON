@@ -38,5 +38,21 @@
     "voice_db": -2.0,
     "radio_db": -10.0,
     "heart_db": -12.0
-  }
+  },
+  "music": {
+    "_note": "PROTOTYPE/TUNING: 긴장감 배경음. 층 네 개(drone 낮은 울림, pulse 베이스, drums 북, strings 높은 현)를 같이 틀고, 긴장도(0~1)에 따라 층마다 [from, full] 사이에서 커진다. 사건(총소리, 피격)이 긴장도를 바로 올리고 hold_s 동안 유지, 그다음 fall_per_s로 천천히 내려간다. 적이 나를 알아챘으면 그 아래로는 안 내려간다(floor). assets/audio/music_<층>_0.wav가 있으면 그 층은 파일을 쓴다. 음량은 설정 메뉴의 배경음 크기를 곱한다.",
+    "db": -8.0,
+    "layers": {
+      "drone": {"from": 0.0, "full": 0.0, "db": -4.0},
+      "pulse": {"from": 0.2, "full": 0.4, "db": -6.0},
+      "drums": {"from": 0.45, "full": 0.65, "db": -5.0},
+      "strings": {"from": 0.7, "full": 0.9, "db": -12.0}
+    },
+    "rise_per_s": 1.5, "fall_per_s": 0.06, "hold_s": 6.0, "fade_db_per_s": 30.0,
+    "events": {"enemy_shot_near": 0.85, "enemy_shot_far": 0.5, "our_shot_near": 0.65, "our_shot_far": 0.4, "hurt": 1.0, "reinforce_warned": 0.5},
+    "near_px": 700.0,
+    "floor": {"investigate": 0.25, "spotted": 0.45, "attack": 0.6, "reach_px": 900.0},
+    "briefing_db": -10.0
+  },
+  "breath": {"_note": "체력이 below 비율 이하면 숨소리. 낮을수록 빨라지고 커진다(간격 초 [체력 below일 때, 거의 0일 때]).", "below": 0.6, "gap_s": [2.6, 1.4], "db": [-16.0, -6.0], "after_hit_db": -8.0}
 }

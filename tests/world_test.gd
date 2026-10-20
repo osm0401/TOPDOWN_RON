@@ -14,6 +14,8 @@ var _w: NetWorld
 
 
 func _ready() -> void:
+	GameSettings.path = "user://test_settings_world.cfg"  # the defaults, never the player's own file
+	GameSettings.reset_all()
 	Engine.time_scale = 2.0
 	Session.host(true)
 	await _boot(true)
@@ -28,12 +30,129 @@ func _ready() -> void:
 	await _audio_tests()
 	await _audio_extra_tests()
 	await _death_tests()
+	await _settings_feedback_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	remove_child(_w)  # like the game: the world goes before the connection, so no frame sends to a closed peer
 	_w.free()
 	Session.leave()
 	get_tree().quit(1 if _failed > 0 else 0)
+
+
+## Key bindings, the pause menu, tension music, screen feedback, no health over the heads.
+func _settings_feedback_tests() -> void:
+	GameSettings.path = "user://test_settings_world.cfg"  # never the player's own file
+	GameSettings.reset_all()
+	Session.host(true)
+	await _boot(true)
+	_place(0, Vector2(800, 480))
+	var press := func(code: int, shift := false) -> void:
+		var e := InputEventKey.new()
+		e.physical_keycode = code as Key
+		e.pressed = true
+		e.shift_pressed = shift
+		_w._unhandled_input(e)
+	var ps := _w.players[0]
+	var was: bool = ps.flash
+	press.call(KEY_F)
+	_check(ps.flash != was, "the flashlight key (F by default) toggles the flashlight")
+	GameSettings.rebind("flashlight", KEY_G)
+	was = ps.flash
+	press.call(KEY_F)
+	_check(ps.flash == was, "after rebinding, the old key does nothing")
+	press.call(KEY_G)
+	_check(ps.flash != was, "and the new key works")
+	# Esc opens the menu instead of leaving; while it is open nothing acts or moves
+	var asked := [0, 0]
+	_w.menu_requested.connect(func() -> void: asked[0] += 1)
+	_w.leave_requested.connect(func() -> void: asked[1] += 1)
+	press.call(KEY_ESCAPE)
+	_check(asked[0] == 1 and asked[1] == 0, "Esc asks for the menu, it no longer leaves the mission")
+	var menu := PauseMenu.new()
+	menu.world = _w
+	add_child(menu)
+	menu.open()
+	_check(_w.input_blocked and menu.visible, "the open menu blocks the officer's input")
+	was = ps.flash
+	press.call(KEY_G)
+	_check(ps.flash == was, "keys do nothing while the menu is open")
+	_check(_w._local_input()["move"] == Vector2.ZERO, "and the officer stands still")
+	menu.close()
+	_check(not _w.input_blocked and not menu.visible, "closing the menu gives the controls back")
+	menu.open()
+	(menu._main.get_child(3) as Button).pressed.emit()
+	_check(asked[1] == 1 and not _w.input_blocked, "the menu's leave button leaves the mission")
+	menu.queue_free()
+	GameSettings.reset_keys()
+	# the settings panel builds with every action listed
+	var panel := SettingsPanel.new()
+	add_child(panel)
+	await _frames(1)
+	_check(panel._key_buttons.size() == GameSettings.ACTIONS.size() and (panel._key_buttons["reload"] as Button).text == "R", "the settings panel lists every key")
+	panel._wait_for_key("reload")
+	var e := InputEventKey.new()
+	e.physical_keycode = KEY_Q
+	e.pressed = true
+	panel._input(e)
+	_check(GameSettings.key("reload") == KEY_Q and GameSettings.key("swap") == KEY_R and panel._note.text != "", "binding a taken key in the panel swaps the two and says so")
+	panel.queue_free()
+	GameSettings.reset_keys()
+	# tension music: shots and hits push it up; aware enemies nearby hold a floor
+	var music := GameMusic.new()
+	music.world = _w
+	_w.add_child(music)
+	await _frames(1)
+	for a in _w.director.agents:
+		a.pos = Vector2(5000, 5000)  # everyone far away and calm
+	_check(music.situation_floor() == 0.0, "nobody aware of you: no tension floor")
+	var en: NpcDirector.Agent = _w.director.agents.filter(func(a: NpcDirector.Agent) -> bool: return a.brain.role == NpcBrain.Role.ENEMY and not a.dormant)[0]
+	en.pos = Vector2(900, 480)
+	en.brain.state = NpcBrain.State.ATTACK
+	_check(music.situation_floor() >= 0.6, "an enemy fighting close by holds the tension up")
+	en.brain.state = NpcBrain.State.IDLE
+	_w.shot_fired.emit(2, Vector2(900, 480), Vector2(800, 480), false)
+	_check(music.meter._spike >= 0.85, "an enemy shot close by spikes the tension")
+	music.meter = TensionMeter.new()
+	_w.damaged.emit(0)
+	_check(music.meter._spike >= 1.0, "being hit is the most tense")
+	music.queue_free()
+	# screen feedback: firing and being hit shake the camera; the shake setting scales it
+	var fx := ScreenFx.new()
+	fx.world = _w
+	add_child(fx)
+	await _frames(1)
+	_w.shot_fired.emit(0, Vector2(800, 480), Vector2(900, 480), false)
+	_check(fx.trauma() > 0.2, "your own shot kicks the camera")
+	_w.shot_fired.emit(1, Vector2(800, 480), Vector2(900, 480), false)
+	var t1 := fx.trauma()
+	fx._t = 0.37
+	_check(fx.shake_px().length() > 0.0, "the camera shakes")
+	GameSettings.set_value("graphics", "shake", 0.0)
+	_check(fx.shake_px() == Vector2.ZERO, "shake set to 0: no shake")
+	GameSettings.set_value("graphics", "shake", 1.0)
+	_w.damaged.emit(0)
+	_check(fx.hit_level() == 1.0 and fx.trauma() > t1, "a hit flashes the screen red and shakes it")
+	ps.hp = ps.max_hp
+	await _seconds(1.0)
+	fx._process(0.0)
+	_check(not fx.visible, "at full health the red screen goes away after the hit")
+	ps.hp = int(ps.max_hp * 0.2)
+	fx._process(0.0)
+	_check(fx.visible, "badly hurt: the red rim stays")
+	ps.hp = ps.max_hp
+	fx.queue_free()
+	# no health number over the officers' heads (the action progress still shows)
+	var v3 := WorldView3D.new()
+	v3.world = _w
+	v3.view = _w.get_node("View")
+	_w.add_child(v3)
+	await _frames(2)
+	v3._update_players(0.016)
+	_check(not (v3._players[0]["label"] as Label3D).text.contains("HP"), "no HP text over the officer's head")
+	v3.queue_free()
+	await _frames(1)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(GameSettings.path))
+	GameSettings.reset_all()
 
 
 ## Fresh host-side world; `ready_up` skips the briefing.

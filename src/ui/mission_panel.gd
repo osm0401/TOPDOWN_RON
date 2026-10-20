@@ -101,7 +101,7 @@ func _draw_briefing() -> void:
 	var me := world.my_slot
 	var mine := world.mission.ready[me]
 	var other := world.mission.ready[1 - me]
-	var msg := tr("장비를 고르고 Enter: 준비 완료") if not mine else tr("준비 완료 - 상대를 기다리는 중")
+	var msg := tr("장비를 고르고 %s: 준비 완료") % GameSettings.key_name("ready") if not mine else tr("준비 완료 - 상대를 기다리는 중")
 	_text(Vector2(x, panel.end.y - 30.0), msg, 20, GOOD if mine else TEXT)
 	var status := tr("싱글 플레이") if world.solo else tr("나: %s    상대: %s") % [tr("준비") if mine else tr("대기"), tr("준비") if other else tr("대기")]
 	_text(Vector2(panel.position.x + panel.size.x * 0.52, panel.end.y - 30.0), status, 17, DIM)
@@ -198,7 +198,7 @@ func _draw_vote(panel: Rect2, x: float) -> void:
 	if v.outcome == VoteState.Outcome.LOBBY:
 		_text(Vector2(x, y + 34.0), tr("메인 로비로 돌아갑니다..."), 22, BAD)
 		return
-	_text(Vector2(x, y + 28.0), tr("1: 같은 임무 재시도        2: 메인 로비로"), 22)
+	_text(Vector2(x, y + 28.0), tr("%s: 같은 임무 재시도        %s: 메인 로비로") % [GameSettings.key_name("command_1"), GameSettings.key_name("command_2")], 22)
 	var names: Array[String] = [tr("선택 중"), tr("재시도"), tr("로비")]
 	var me := world.my_slot
 	var line := tr("나: %s") % names[v.votes[me]]

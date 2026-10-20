@@ -6,6 +6,7 @@ extends Node2D
 ## replays a fixed script and prints FINAL.
 
 signal leave_requested
+signal menu_requested  ## Esc: the pause menu (WorldView opens it; "leave" from there emits leave_requested)
 signal sound_emitted(kind: int, pos: Vector2)
 signal shot_fired(shooter: int, from: Vector2, to: Vector2, hit_npc: bool)  ## shooter 0/1 players, 2+ NPCs
 signal speech_emitted(text: String, pos: Vector2, from_npc: bool)
@@ -100,6 +101,7 @@ var _auto_aim := 0.0  ## test runs: where the host aims (scenario "aim" events t
 var scenario := ""
 var generation := 0  ## how many times the mission was restarted by a vote
 var shot_path := ""
+var input_blocked := false  ## the pause menu is open: no actions, no movement
 var mouse_world := Callable()  ## set by a 3D view: cursor position on the 2D ground plane (px)
 
 var tuning: Dictionary = {}
@@ -325,36 +327,46 @@ func _make_body(at: Vector2) -> CharacterBody2D:
 # ---- local input -----------------------------------------------------------
 
 func _unhandled_input(event: InputEvent) -> void:
+	if input_blocked:
+		return
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		_request_fire()
 		return
 	if not (event is InputEventKey) or event.echo:
 		return
-	if event.physical_keycode == KEY_E and not event.pressed:
+	var code: int = event.physical_keycode
+	if code == KEY_KP_ENTER:
+		code = GameSettings.key("ready")  # the keypad Enter always readies too
+	var act := GameSettings.action_for(code)
+	if act == "interact" and not event.pressed:
 		_send(Act.INTERACT_UP, 0)
 	if not event.pressed:
 		return
-	match event.physical_keycode:
-		KEY_ENTER, KEY_KP_ENTER:
+	match act:
+		"ready":
 			_send(Act.READY, 0)
-		KEY_E:
+		"interact":
 			_send(Act.PEEK if event.shift_pressed else Act.INTERACT_DOWN, 0)
-		KEY_X:
+		"kick":
 			_send(Act.KICK, 0)
-		KEY_C:
+		"camera":
 			_send(Act.CAMERA, 0)
-		KEY_F:
+		"flashlight":
 			_send(Act.FLASH, 0)
-		KEY_L:
+		"laser":
 			_send(Act.LASER, 0)
-		KEY_T:
+		"taser":
 			_send(Act.TASER, 0)
-		KEY_Q:
+		"swap":
 			_send(Act.SWAP, 0)
-		KEY_R:
+		"reload":
 			_request_reload()
-		KEY_1, KEY_2, KEY_3, KEY_4:
-			var n: int = event.physical_keycode - KEY_1
+		"report":
+			var acts: Dictionary = Act  # evidence pick-up / radio report: Act.REPORT comes with the hostage & evidence work
+			if acts.has("REPORT"):
+				_send(int(acts["REPORT"]), 0)
+		"command_1", "command_2", "command_3", "command_4":
+			var n := int(act.substr(8)) - 1
 			if mission.phase == MissionState.Phase.RESULT:
 				if n == 0:
 					_send(Act.VOTE_RETRY, 0)
@@ -362,17 +374,20 @@ func _unhandled_input(event: InputEvent) -> void:
 					_send(Act.VOTE_LOBBY, 0)
 			else:
 				_send(Act.COMMAND, n)
-		KEY_ESCAPE:
-			leave_requested.emit()
+	if code == KEY_ESCAPE:
+		menu_requested.emit()
 
 
 func _local_input() -> Dictionary:
 	if auto_role != "":
 		return {"move": _auto_move(), "aim": _auto_aim}
 	var m := Vector2(
-		float(Input.is_physical_key_pressed(KEY_D)) - float(Input.is_physical_key_pressed(KEY_A)),
-		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
-	var mouse: Vector2 = mouse_world.call() if mouse_world.is_valid() else get_global_mouse_position()
+		float(GameSettings.pressed("move_right")) - float(GameSettings.pressed("move_left")),
+		float(GameSettings.pressed("move_down")) - float(GameSettings.pressed("move_up")))
+	if input_blocked:  # the pause menu is open: stand still, keep aiming where you were
+		return {"move": Vector2.ZERO, "aim": players[my_slot].aim}
+	var mouse: Vector2 = mouse_world.call() if mouse_world.is_valid() \
+			else get_canvas_transform().affine_inverse() * AimCursor.screen_pos(get_viewport())
 	var a := (mouse - display_pos(my_slot)).angle()
 	return {"move": m.limit_length(1.0), "aim": a}
 
@@ -1089,6 +1104,10 @@ func _auto_do(name: String, arg: int) -> void:
 			_request_fire()
 		"reload":
 			_request_reload()
+		"report":
+			var acts: Dictionary = Act  # evidence pick-up / radio report: Act.REPORT comes with the hostage & evidence work
+			if acts.has("REPORT"):
+				_send(int(acts["REPORT"]), 0)
 		"teleport_c":  # test aid: put the host inside room C to look at the suspect and the decoys
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)

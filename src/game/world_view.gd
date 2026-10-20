@@ -33,7 +33,6 @@ var _audio: GameAudio
 var _ripples: Array[Dictionary] = []
 var _tracers: Array[Dictionary] = []
 var _bubbles: Array[Dictionary] = []
-var _flash_t := 0.0
 var _was_dark := false  ## the local officer was in a dark room last frame (entry notice)
 var _stun_notice_cd := 0.0  ## seconds until the "non-lethal only stuns" hint may show again
 var _notice_t := 0.0
@@ -53,7 +52,9 @@ var _headless := DisplayServer.get_name() == "headless"
 var _cam: Camera2D
 var _hud: Label
 var _notice: Label
-var _red: ColorRect
+var _fx: ScreenFx
+var _cursor: AimCursor
+var _menu: PauseMenu
 
 
 static func _start_3d() -> bool:
@@ -70,17 +71,14 @@ func _ready() -> void:
 	world.shot_fired.connect(_on_shot)
 	world.speech_emitted.connect(_on_speech)
 	world.notice_emitted.connect(_on_notice)
-	world.damaged.connect(_on_damaged)
 	_cam = Camera2D.new()
 	add_child(_cam)
 	_cam.make_current()
 	var layer := CanvasLayer.new()
 	add_child(layer)
-	_red = ColorRect.new()
-	_red.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_red.color = Color(1, 0, 0, 0)
-	_red.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(_red)
+	_fx = ScreenFx.new()
+	_fx.world = world
+	layer.add_child(_fx)
 	_hud = Label.new()
 	_hud.position = Vector2(16, 8)
 	_hud.modulate = Color(0.86, 0.86, 0.83, 0.88)  # quiet: the picture comes first
@@ -102,6 +100,16 @@ func _ready() -> void:
 	_audio = GameAudio.new()
 	_audio.world = world
 	add_child(_audio)
+	var top := CanvasLayer.new()  # crosshair and pause menu over everything
+	top.layer = 20
+	add_child(top)
+	_cursor = AimCursor.new()
+	_cursor.world = world
+	top.add_child(_cursor)
+	_menu = PauseMenu.new()
+	_menu.world = world
+	top.add_child(_menu)
+	world.menu_requested.connect(_menu.open)
 	_set_3d(use_3d)
 
 
@@ -118,6 +126,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_set_3d(not use_3d)
 		elif event.physical_keycode == KEY_F8 and _view3d != null:
 			var q := _view3d.cycle_quality()
+			GameSettings.set_value("graphics", "quality", q)
+			GameSettings.save_file()
 			_on_notice(tr("그래픽 품질: %s") % {"high": tr("높음"), "medium": tr("보통"), "low": tr("낮음")}.get(q, q))
 
 
@@ -160,11 +170,6 @@ func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
 func _on_notice(text: String) -> void:
 	_notice.text = text
 	_notice_t = NOTICE_S
-
-
-func _on_damaged(slot: int) -> void:
-	if slot == world.my_slot:
-		_flash_t = 0.35
 
 
 # ---- per-frame --------------------------------------------------------------
@@ -237,8 +242,6 @@ func _process(delta: float) -> void:
 		_on_notice(tr("어두운 방이다: 손전등(F)으로 비춰야 적을 알아볼 수 있다"))
 	_was_dark = dark
 	_stun_notice_cd = maxf(_stun_notice_cd - delta, 0.0)
-	_flash_t = maxf(_flash_t - delta, 0.0)
-	_red.color.a = _flash_t
 	_notice_t = maxf(_notice_t - delta, 0.0)
 	if _notice_t <= 0.0:
 		_notice.text = ""
@@ -257,8 +260,14 @@ func _update_camera(delta: float) -> void:
 	if me.cam_door >= 0:
 		target = _vis_origin
 	elif world.auto_role == "":
-		target += ((get_viewport().get_mouse_position() - get_viewport_rect().size * 0.5) * 0.3).limit_length(160.0)
+		target += ((AimCursor.screen_pos(get_viewport()) - get_viewport_rect().size * 0.5) * 0.3).limit_length(160.0)
 	_cam.position = _cam.position.lerp(target, minf(delta * 12.0, 1.0))
+	_cam.offset = _fx.shake_px()
+
+
+## Camera shake this frame (screen px), for the 3D view's camera too.
+func shake_px() -> Vector2:
+	return _fx.shake_px() if _fx != null else Vector2.ZERO
 
 
 # ---- drawing ----------------------------------------------------------------
@@ -452,9 +461,6 @@ func _draw_players() -> void:
 			draw_arc(p, 20.0, 0.0, TAU, 24, Color.WHITE, 1.5)
 			if _outline_only(ps, p):  # dark room, no flashlight: outlines show only inside this ring
 				draw_arc(p, float(world.tuning["light"]["silhouette_radius"]), 0.0, TAU, 40, Color(0.7, 0.8, 1.0, 0.4), 1.5)
-		var w := 30.0
-		draw_rect(Rect2(p + Vector2(-w * 0.5, -26), Vector2(w, 4)), Color(0, 0, 0, 0.6), true)
-		draw_rect(Rect2(p + Vector2(-w * 0.5, -26), Vector2(w * float(ps.hp) / maxf(ps.max_hp, 1), 4)), Color(0.3, 0.9, 0.3), true)
 
 
 func _draw_lasers() -> void:
@@ -521,9 +527,13 @@ func _update_hud() -> void:
 	var S := NpcBrain.State
 	var rtt := tr("싱글") if world.solo else (tr("호스트") if world.is_host else "%d ms" % world.rtt_ms)
 	var lines := PackedStringArray()
+	var k := GameSettings.key_name
 	if _help or _help_t < HELP_S:  # the controls: at the start, then on F1
-		lines.append(tr("WASD 이동 / 클릭 사격 / R 재장전 / Q 무기교체 / E 문·구속·락픽(누르기) / Shift+E 약간 열기 / X 발로 차기"))
-		lines.append(tr("C 문틈 카메라 / T 테이저 / F 손전등 / L 레이저 / 1~4 명령 / 휠 확대 / Esc 나가기"))
+		lines.append(tr("%s%s%s%s 이동 / 클릭 사격 / %s 재장전 / %s 무기교체 / %s 문·구속·락픽(누르기) / Shift+%s 약간 열기 / %s 발로 차기") % [
+			k.call("move_up"), k.call("move_left"), k.call("move_down"), k.call("move_right"), k.call("reload"), k.call("swap"),
+			k.call("interact"), k.call("interact"), k.call("kick")])
+		lines.append(tr("%s 문틈 카메라 / %s 테이저 / %s 손전등 / %s 레이저 / %s~%s 명령 / %s 증거 줍기·무전 보고 / 휠 확대 / Esc 메뉴·설정 (키 바꾸기)") % [
+			k.call("camera"), k.call("taser"), k.call("flashlight"), k.call("laser"), k.call("command_1"), k.call("command_4"), k.call("report")])
 		lines.append(tr("F1 조작법 숨기기 / F3 소리표시 / F4 디버그 / F5 2D/3D 전환 / F6 소리 끄기 / F7 소리 시험 / F8 그래픽 품질"))
 	else:
 		lines.append(tr("F1 조작법"))

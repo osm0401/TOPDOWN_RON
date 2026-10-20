@@ -73,6 +73,14 @@ const SCENARIOS := {
 		"events": {"host": [[0.1, "ready", 0], [0.2, "ambush_demo", 0], [3.0, "open_b", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 3.4, "final": 4.5,
 	},
+	"hostage": {  # a look at a hostage taker: the host in dark room D, light on; the enemy grabs the civilian beside it
+		"events": {"host": [[0.1, "ready", 0], [0.2, "hostage_demo", 0], [2.6, "aim_taker", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 3.5, "final": 4.5,
+	},
+	"evidence": {  # a look at the paperwork: the taker gives up, its pistol lies on the floor, the host stands by it
+		"events": {"host": [[0.1, "ready", 0], [0.2, "hostage_demo", 0], [2.6, "aim_taker", 0], [3.0, "hostage_give_up", 0]], "client": [[0.1, "ready", 0]]},
+		"shot": 4.0, "final": 5.0,
+	},
 	"outside": {  # a look at the street: the host stays at the spawn by the police car
 		"events": {"host": [[0.1, "ready", 0]], "client": [[0.1, "ready", 0]]},
 		"shot": 1.2, "final": 2.5,
@@ -1150,6 +1158,20 @@ func _auto_do(name: String, arg: int) -> void:
 			_auto_aim = deg_to_rad(-75.0)
 			director._params["ambush_chance"] = 1.0
 			_emit_sound(SoundProp.Kind.KICK, players[0].pos + Vector2(0, -20))
+		"hostage_demo":  # test aid: the host just inside room D, light on, aiming at the hostage taker
+			_bodies[0].position = Vector2(650, 590)
+			players[0].pos = Vector2(650, 590)
+			players[0].flash = true
+			players[0].hp = 99
+			_auto_aim = 2.2
+		"aim_taker":  # test aid: light and aim on the hostage taker
+			for a in director.agents:
+				if a.brain.state == NpcBrain.State.HOLD:
+					_auto_aim = (a.pos - players[0].pos).angle()
+		"hostage_give_up":  # test aid: the hostage taker lets go and surrenders; the host steps to its pistol
+			for a in director.agents:
+				if a.brain.state == NpcBrain.State.HOLD:
+					a.brain._surrender("test")  # (a sure surrender: the command roll is not the point here)
 		"open_b":  # test aid: room B's door swings open (the host's doing)
 			level.set_door_state(1, Level.DoorState.OPEN, 1)
 			_push_state()

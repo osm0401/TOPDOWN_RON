@@ -25,7 +25,7 @@ const MAX_TAKES := 4  ## voice_<command>_<line>_0.wav .. _3.wav (different voice
 const SAMPLE_KEYS: Array[String] = ["rifle", "rifle_far", "pistol", "pistol_far", "footstep", "door",
 		"door_ajar", "kick", "taser", "reload", "hit", "hurt", "siren", "scream", "radio", "heart", "hum",
 		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
-		"mag_out", "mag_in", "bolt", "rain", "thunder"]
+		"mag_out", "mag_in", "bolt", "rain", "thunder", "breath"]
 ## Where in a reload (0..1 of its time) each part sounds: the support hand reaches the magazine
 ## well, comes back with the new one, then works the bolt (CharacterAnim's reload hand timeline).
 const RELOAD_PARTS: Array = [["mag_out", 0.22], ["mag_in", 0.78], ["bolt", 0.92]]
@@ -34,7 +34,7 @@ const SCREAM_LINE := "꺄악!"
 const SYNTH_KEYS: Array[String] = ["rifle", "pistol", "footstep", "door", "door_ajar", "kick", "voice", "scream",
 		"taser", "siren", "reload", "hit", "hurt", "radio", "heart", "hum", "ring",
 		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
-		"mag_out", "mag_in", "bolt", "rain", "thunder"]
+		"mag_out", "mag_in", "bolt", "rain", "thunder", "breath"]
 
 static var _cache: Dictionary = {}  ## synthesized / loaded once per process
 static var _files: Dictionary = {}  ## keys whose sounds come from files (not stand-ins)
@@ -65,6 +65,9 @@ var _heart_t := 0.0
 var _amb: AudioStreamPlayer  ## room tone, looping
 var _rain: AudioStreamPlayer
 var _rain_in := 0.0  ## 0 outside .. 1 inside the building (eased)
+var _breath_t := 0.0
+var _breath_hit := false  ## the next breath is the gasp right after a hit
+var music: GameMusic
 var _last_reinforce := 0
 
 
@@ -105,6 +108,9 @@ func _ready() -> void:
 	var panel := AudioAudition.new()
 	panel.audio = self
 	add_child(panel)
+	music = GameMusic.new()
+	music.world = world
+	add_child(music)
 
 
 func _exit_tree() -> void:
@@ -232,6 +238,24 @@ func _update_alerts(delta: float) -> void:
 	if me.present and me.hp > 0 and me.hp * 5 <= me.max_hp * 2 and _heart_t <= 0.0:  # 40 % health or less
 		_play_ui("heart", float(_cfg["extra"]["heart_db"]))
 		_heart_t = lerpf(0.65, 1.1, float(me.hp) / maxf(me.max_hp * 0.4, 1.0))
+	_update_breath(me, delta)
+
+
+## Hard breathing while hurt: faster and louder the lower the health; a gasp just after a hit.
+func _update_breath(me: PlayerState, delta: float) -> void:
+	var bc: Dictionary = _cfg["breath"]
+	_breath_t -= delta
+	if not me.present or me.hp <= 0 or _breath_t > 0.0:
+		return
+	var k := HurtFeedback.breath(me.hp, me.max_hp, float(bc["below"]))
+	if k <= 0.0 and not _breath_hit:
+		return
+	var db := lerpf(float(bc["db"][0]), float(bc["db"][1]), k)
+	if _breath_hit:
+		db = maxf(db, float(bc["after_hit_db"]))
+	_breath_hit = false
+	_play_ui("breath", db)
+	_breath_t = lerpf(float(bc["gap_s"][0]), float(bc["gap_s"][1]), k)
 
 
 # ---- setup --------------------------------------------------------------------
@@ -312,6 +336,8 @@ static func prepare() -> void:
 		if not has_samples(key):
 			keys.append(key)
 	_synth_task = WorkerThreadPool.add_task(func() -> void: _synth = synthesize(keys), false, "sound stand-ins")
+	var music_files: Array = MusicSynth.LAYERS.filter(func(l: String) -> bool: return has_samples("music_" + l))
+	MusicSynth.prepare(music_files)  # the music loops, one worker task each
 
 
 ## The result of prepare(), waiting for it when it still runs ({} when it never started).
@@ -349,6 +375,7 @@ static func synthesize(keys: Array[String]) -> Dictionary:
 			"bolt": out[key] = [SfxSynth.bolt(115), SfxSynth.bolt(116)]
 			"rain": out[key] = [SfxSynth.rain()]
 			"thunder": out[key] = [SfxSynth.thunder(131)]
+			"breath": out[key] = [SfxSynth.breath(131), SfxSynth.breath(132), SfxSynth.breath(133)]
 			_:
 				if key.begins_with("footstep_"):  # one floor: four steps
 					var surf := key.trim_prefix("footstep_")
@@ -505,7 +532,8 @@ func _update_room_and_ears(me: Vector2, delta: float) -> void:
 	_ear_gap = maxf(_ear_gap - delta, 0.0)
 	var s := _ear * _ear * (3.0 - 2.0 * _ear)  # smoothstep: sharp onset, slow recovery
 	(AudioServer.get_bus_effect(sfx, FX_EAR) as AudioEffectLowPassFilter).cutoff_hz = exp(lerpf(log(20000.0), log(float(e["cutoff_hz"])), s))
-	AudioServer.set_bus_volume_db(sfx, float(_cfg["sfx_db"]) + float(e["duck_db"]) * s)
+	AudioServer.set_bus_volume_db(sfx, float(_cfg["sfx_db"]) + float(e["duck_db"]) * s
+			+ GameSettings.volume_db(float(GameSettings.value("audio", "sfx"))))
 	if _ring_player != null:
 		_ring_player.volume_db = float(e["ring_db"]) + linear_to_db(maxf(_ear, 0.0001))
 
@@ -634,3 +662,5 @@ func _on_shot(_shooter: int, _from: Vector2, to: Vector2, hit_npc: bool) -> void
 func _on_damaged(slot: int) -> void:
 	if slot == world.my_slot:
 		_play_ui("hurt", float(_cfg["extra"]["hurt_db"]))
+		_breath_hit = true
+		_breath_t = minf(_breath_t, 0.45)  # catch your breath right after the hit

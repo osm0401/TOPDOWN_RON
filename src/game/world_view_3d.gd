@@ -77,6 +77,7 @@ var _casing_mesh: CylinderMesh
 static var _tex: Dictionary = {}  ## generated effect textures: "hole", "blood", "puff"
 var _zoom := 1.0  ## eased toward _zoom_to
 var _t := 0.0  ## seconds since the view opened (breathing, idle sway)
+var _settings_rev := -1
 
 
 func _ready() -> void:
@@ -105,11 +106,14 @@ func _ready() -> void:
 		_npcs[i]["who"] = 2 + i
 	world.mouse_world = _mouse_ground
 	if quality == "":
+		quality = str(GameSettings.value("graphics", "quality"))
+	if quality == "":
 		quality = str(_cfg["graphics"]["quality"])
 	for arg in OS.get_cmdline_user_args():  # test aid: -- --quality=low
 		if arg.begins_with("--quality="):
 			quality = arg.substr(10)
 	_apply_quality()
+	_settings_rev = GameSettings.revision
 	world.sound_emitted.connect(_on_sound)
 	world.shot_fired.connect(_on_shot)
 	world.speech_emitted.connect(_on_speech)
@@ -1013,7 +1017,7 @@ func ground_at(screen: Vector2) -> Vector2:
 
 
 func _mouse_ground() -> Vector2:
-	return ground_at(get_viewport().get_mouse_position())
+	return ground_at(AimCursor.screen_pos(get_viewport()))
 
 
 # ---- events -----------------------------------------------------------------
@@ -1075,6 +1079,12 @@ func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
 
 func _process(delta: float) -> void:
 	_t += delta
+	if _settings_rev != GameSettings.revision:  # the settings menu may have changed the graphics level
+		_settings_rev = GameSettings.revision
+		var q := str(GameSettings.value("graphics", "quality"))
+		if q != "" and q != quality:
+			quality = q
+			_apply_quality()
 	_update_camera(delta)
 	_update_fog()
 	_update_level(delta)
@@ -1104,7 +1114,7 @@ func _update_camera(delta: float) -> void:
 	var off := Vector2.ZERO
 	if me.cam_door < 0 and world.auto_role == "":
 		var vp := get_viewport()
-		off = ((vp.get_mouse_position() - vp.get_visible_rect().size * 0.5) * 0.3).limit_length(160.0)
+		off = ((AimCursor.screen_pos(vp) - vp.get_visible_rect().size * 0.5) * 0.3).limit_length(160.0)
 	_zoom = lerpf(_zoom, _zoom_to, minf(delta * 10.0, 1.0))
 	off *= minf(_zoom, 1.0)  # zoomed in, look ahead less so the officer stays in view
 	_cam_off = _cam_off.lerp(off, step)
@@ -1116,6 +1126,10 @@ func _update_camera(delta: float) -> void:
 	var at := _p3(_cam_pos)
 	_cam.position = at + Vector3(0.0, sin(pitch), cos(pitch)) * float(c["distance_m"]) * _zoom
 	_cam.look_at(at)
+	var shake := view.shake_px()  # screen px -> metres at the focus distance
+	var m_per_px := 2.0 * float(c["distance_m"]) * _zoom * tan(deg_to_rad(_cam.fov * 0.5)) / maxf(get_viewport().get_visible_rect().size.y, 1.0)
+	_cam.h_offset = shake.x * m_per_px
+	_cam.v_offset = -shake.y * m_per_px
 	_cam_ring.visible = me.cam_door >= 0
 	_cam_ring.position = _p3(view._vis_origin, 0.04)
 	var here := world.display_pos(world.my_slot)
@@ -1269,9 +1283,9 @@ func _update_players(delta: float) -> void:
 			spot.global_position = light
 		else:
 			spot.position = Vector3(0.3, float(_cfg["lighting"]["flash"]["height_m"]), 0.0)
-		var text := "" if dead else "HP %d/%d" % [ps.hp, ps.max_hp]
-		if ps.busy():
-			text += "\n%s %d%%" % [WorldView.ACTION_LABELS[ps.action], int(100.0 * clampf(ps.action_t / ps.action_dur, 0.0, 1.0))]
+		var text := ""  # no health over the heads: being hurt shows on screen (ScreenFx), not as a number
+		if ps.busy() and not dead:
+			text = "%s %d%%" % [WorldView.ACTION_LABELS[ps.action], int(100.0 * clampf(ps.action_t / ps.action_dur, 0.0, 1.0))]
 		(n["label"] as Label3D).text = text
 		(n["label"] as Label3D).pixel_size = 0.006 * _zoom  # same size on screen at any zoom
 		_fan(n["cone"], view._cones[s], 0.02)

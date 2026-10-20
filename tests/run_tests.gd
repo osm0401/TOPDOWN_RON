@@ -16,6 +16,10 @@ func _initialize() -> void:
 	_test_clock_and_vote()
 	_test_sfx()
 	_test_audition_model()
+	_test_settings()
+	_test_tension()
+	_test_music()
+	_test_screen_feedback()
 	await _test_level()
 	await _test_props()
 	await _test_cover()
@@ -24,6 +28,112 @@ func _initialize() -> void:
 	await _test_director()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	quit(1 if _failed > 0 else 0)
+
+
+## Settings: defaults, clamping, save/load roundtrip, key rebinding with hand-over.
+func _test_settings() -> void:
+	var tmp := "user://test_settings.cfg"
+	GameSettings.path = tmp
+	GameSettings.reset_all()
+	_check(GameSettings.key("move_up") == KEY_W and GameSettings.action_for(KEY_R) == "reload", "default keys: W moves up, R reloads")
+	_check(GameSettings.action_for(KEY_ESCAPE) == "", "Esc belongs to no rebindable action")
+	GameSettings.set_value("audio", "music", 5.0)
+	GameSettings.set_value("controls", "sensitivity", 0.01)
+	_check(float(GameSettings.value("audio", "music")) == 1.0 and float(GameSettings.value("controls", "sensitivity")) == 0.2, "number settings are clamped to their range")
+	var rev := GameSettings.revision
+	_check(GameSettings.rebind("reload", KEY_G) == "" and GameSettings.key("reload") == KEY_G and GameSettings.revision > rev, "a free key binds and bumps the revision")
+	_check(GameSettings.rebind("reload", KEY_Q) == "swap" and GameSettings.key("reload") == KEY_Q and GameSettings.key("swap") == KEY_G,
+			"taking another action's key hands that action this one's old key")
+	_check(GameSettings.rebind("kick", KEY_ESCAPE) == "!" and GameSettings.key("kick") == KEY_X, "Esc and the F-keys cannot be bound")
+	GameSettings.set_value("graphics", "quality", "low")
+	GameSettings.set_value("graphics", "fullscreen", true)
+	_check(GameSettings.save_file() == OK, "settings save")
+	GameSettings.reset_all()
+	_check(GameSettings.key("reload") == KEY_R and str(GameSettings.value("graphics", "quality")) == "", "reset brings the defaults back")
+	GameSettings.load_file()
+	_check(GameSettings.key("reload") == KEY_Q and GameSettings.key("swap") == KEY_G and str(GameSettings.value("graphics", "quality")) == "low"
+			and bool(GameSettings.value("graphics", "fullscreen")) and float(GameSettings.value("audio", "music")) == 1.0, "settings load back as saved")
+	var cf := ConfigFile.new()  # a hand-edited file: wrong types and a reserved key are cleaned up
+	cf.set_value("audio", "master", "0.5")
+	cf.set_value("keys", "kick", KEY_F5)
+	cf.set_value("graphics", "max_fps", 9999)
+	cf.save(tmp)
+	GameSettings.reset_all()
+	GameSettings.load_file()
+	_check(float(GameSettings.value("audio", "master")) == 0.5 and GameSettings.key("kick") == KEY_X and int(GameSettings.value("graphics", "max_fps")) == 300,
+			"a hand-edited file is read safely (types fixed, reserved keys ignored, ranges kept)")
+	_check(GameSettings.volume_db(0.0) <= -79.0 and absf(GameSettings.volume_db(1.0)) < 0.001, "volume 0 is silence, 1 is unchanged")
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(tmp))
+	GameSettings.reset_all()
+	# mouse sensitivity: the crosshair moves by the motion times the sensitivity, inside the screen
+	var r := Rect2(0, 0, 1280, 720)
+	_check(GameSettings.aim_moved(Vector2(100, 100), Vector2(10, -4), 2.0, r) == Vector2(120, 92), "sensitivity 2 doubles the crosshair motion")
+	_check(GameSettings.aim_moved(Vector2(100, 100), Vector2(10, 0), 0.5, r) == Vector2(105, 100), "sensitivity 0.5 halves it")
+	_check(GameSettings.aim_moved(Vector2(1275, 5), Vector2(50, -50), 1.5, r) == Vector2(1279, 0), "the crosshair stays on screen")
+
+
+## Tension: events jump it up and hold it, it sinks slowly to the situation's floor.
+func _test_tension() -> void:
+	var m := TensionMeter.new()
+	m.configure({"rise_per_s": 2.0, "fall_per_s": 0.1, "hold_s": 3.0})
+	for i in 10:
+		m.update(0.1, 0.0)
+	_check(m.level == 0.0, "calm stays calm")
+	m.bump(0.9)
+	for i in 5:
+		m.update(0.1, 0.0)
+	_check(absf(m.level - 0.9) < 0.001, "a shot raises the tension within half a second")
+	for i in 20:
+		m.update(0.1, 0.0)
+	_check(m.level > 0.85, "the tension holds a while after the shot (%.2f)" % m.level)
+	for i in 30:
+		m.update(0.1, 0.4)
+	_check(m.level < 0.9 and m.level > 0.4, "then it sinks slowly (%.2f)" % m.level)
+	for i in 200:
+		m.update(0.1, 0.4)
+	_check(absf(m.level - 0.4) < 0.001, "but not below what the situation holds (enemies aware of you)")
+	m.bump(0.3)
+	_check(m._spike >= 0.3, "a smaller event never lowers what is held")
+	_check(TensionMeter.layer_gain(0.1, 0.2, 0.4) == 0.0 and TensionMeter.layer_gain(0.5, 0.2, 0.4) == 1.0 and absf(TensionMeter.layer_gain(0.3, 0.2, 0.4) - 0.5) < 0.01,
+			"a layer fades in between its from and full levels")
+	_check(TensionMeter.layer_gain(0.0, 0.0, 0.0) == 1.0, "a layer from 0 is always on")
+	var cfg: Dictionary = JsonData.load_dict("res://data/audio.json")["music"]
+	for layer in MusicSynth.LAYERS:
+		_check((cfg["layers"] as Dictionary).has(layer), "music layer %s has its levels in audio.json" % layer)
+
+
+## Music loops: equal length, looping, loud enough, no click at the loop point.
+func _test_music() -> void:
+	var t0 := Time.get_ticks_msec()
+	var n := int(MusicSynth.loop_seconds() * SfxSynth.RATE)
+	for layer in MusicSynth.LAYERS:
+		var s := MusicSynth.make(layer)
+		var count := s.data.size() / 2
+		var peak := 0
+		var biggest_step := 0.0
+		for i in range(1, count):
+			var a := s.data.decode_s16(i * 2)
+			peak = maxi(peak, absi(a))
+			biggest_step = maxf(biggest_step, absf(float(a) - float(s.data.decode_s16((i - 1) * 2))))
+		var seam := absf(float(s.data.decode_s16(0)) - float(s.data.decode_s16((count - 1) * 2)))
+		_check(count == n and s.loop_mode == AudioStreamWAV.LOOP_FORWARD and s.loop_end == count, "music %s loops over the shared %.0f s" % [layer, MusicSynth.loop_seconds()])
+		_check(peak > 8000, "music %s is audible" % layer)
+		_check(seam <= biggest_step * 1.2 + 200.0, "music %s has no click where it loops (%.0f vs %.0f)" % [layer, seam, biggest_step])
+	print("music synth: %d layers in %d ms" % [MusicSynth.LAYERS.size(), Time.get_ticks_msec() - t0])
+
+
+## Hurt feedback: the red rim and the breathing start below their share of health.
+func _test_screen_feedback() -> void:
+	_check(HurtFeedback.rim(100, 100, 0.5) == 0.0 and HurtFeedback.rim(50, 100, 0.5) == 0.0, "no red rim at half health or more")
+	_check(HurtFeedback.rim(25, 100, 0.5) > 0.4 and HurtFeedback.rim(5, 100, 0.5) > HurtFeedback.rim(25, 100, 0.5), "the rim grows as health drops")
+	_check(HurtFeedback.rim(0, 100, 0.5) == 0.0, "nothing once dead")
+	_check(HurtFeedback.breath(70, 100, 0.6) == 0.0 and HurtFeedback.breath(50, 100, 0.6) > 0.0, "hard breathing starts below 60 % health")
+	_check(HurtFeedback.breath(10, 100, 0.6) > HurtFeedback.breath(50, 100, 0.6), "and gets harder near death")
+	var b := SfxSynth.breath(1)
+	var peak := 0
+	for i in b.data.size() / 2:
+		peak = maxi(peak, absi(b.data.decode_s16(i * 2)))
+	_check(b.data.size() / 2 > SfxSynth.RATE and peak > 8000, "breath sound is a second-plus and audible")
 
 
 ## The take-picking tool's data: takes ordered by score, decisions kept, _pick copies in step.

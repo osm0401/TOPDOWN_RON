@@ -8,6 +8,7 @@ const GearModels := preload("res://src/game/gear_models.gd")
 var _lobby: Control
 var _status: Label
 var _code_edit: LineEdit
+var _settings_box: Control
 var _world: NetWorld
 var _auto_role := ""
 var _shot_path := ""
@@ -16,6 +17,7 @@ var _generation := 0  ## incremented on every retry so a fresh world can tell it
 
 
 func _ready() -> void:
+	GameSettings.apply_engine(get_viewport())
 	_build_lobby()
 	Session.client_connected.connect(_enter_world)
 	Session.join_failed.connect(_show_status)
@@ -26,6 +28,7 @@ func _ready() -> void:
 
 func _exit_tree() -> void:
 	GameAudio.wait_prepared()  # never leave the worker task running at quit
+	MusicSynth.wait_all()
 	CharacterModels.release()
 	GearModels.release()
 
@@ -83,9 +86,30 @@ func _build_lobby() -> void:
 	join_btn.pressed.connect(_on_join_pressed)
 	box.add_child(join_btn)
 
+	box.add_child(HSeparator.new())
+	var settings_btn := Button.new()
+	settings_btn.text = tr("설정 (소리, 그래픽, 키, 마우스 감도)")
+	settings_btn.pressed.connect(_open_settings)
+	box.add_child(settings_btn)
+
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_status)
+
+	_settings_box = CenterContainer.new()
+	_settings_box.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_settings_box.visible = false
+	layer.add_child(_settings_box)
+	var panel := SettingsPanel.new()
+	panel.closed.connect(func() -> void:
+		_settings_box.visible = false
+		_lobby.visible = true)
+	_settings_box.add_child(panel)
+
+
+func _open_settings() -> void:
+	_lobby.visible = false
+	_settings_box.visible = true
 
 
 func _gear_box(keys: Array, labels: Array, current: String, on_pick: Callable) -> OptionButton:
@@ -142,6 +166,7 @@ func _enter_world() -> void:
 	_world.lobby_requested.connect(_on_lobby_requested)
 	add_child(_world)
 	_lobby.hide()
+	_settings_box.hide()
 
 
 ## Vote chose "retry": rebuild the world on both sides; the connection stays open.
@@ -169,6 +194,7 @@ func _leave_to_lobby(msg: String) -> void:
 		_world.queue_free()
 		_world = null
 	_lobby.show()
+	_settings_box.hide()
 	_show_status(msg)
 	if _auto_role != "":  # scripted test run: the host finished first, nothing more to do
 		get_tree().quit()

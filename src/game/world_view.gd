@@ -95,7 +95,7 @@ func _ready() -> void:
 	panel_layer.add_child(panel)
 	_notice = Label.new()
 	_notice.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	_notice.position = Vector2(-300, -80)
+	_notice.position = Vector2(-300, -190)  # above the objectives box (bottom right), which it overlapped
 	_notice.size = Vector2(600, 40)
 	_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	layer.add_child(_notice)

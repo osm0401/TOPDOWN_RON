@@ -22,7 +22,10 @@ const GEAR_POINTS := {
 	"pistol": ["grip", "fore", "muzzle", "light", "mag"],
 	"camera": ["grip", "fore"],
 	"cuffs": [], "cap": [], "band": [],
+	"radio": [], "helmet_cam": [], "mic": [],
 }
+## Officers' kit: a file may replace the built-in shape, but none is asked for.
+const OPTIONAL_GEAR: Array[String] = ["radio", "helmet_cam", "mic"]
 const OUT := "res://tools/models/_out/"
 
 var set_name := "gemini"
@@ -230,7 +233,8 @@ func _check_gear(kind: String) -> void:
 	var path := GM.folder + _sub() + kind + ".glb"
 	var what := "gear/" + kind
 	if not FileAccess.file_exists(path):
-		_say("WARN", what, "missing: the game keeps the built-in shape")
+		if not OPTIONAL_GEAR.has(kind):
+			_say("WARN", what, "missing: the game keeps the built-in shape")
 		return
 	var raw := CM._load_glb(path)
 	if raw == null:
@@ -336,7 +340,7 @@ func _people_picture(have: Array[String]) -> void:
 	var H := CA.Hold
 	var who := func(n: String) -> String: return n if have.has(n) else ""
 	var poses: Array = [
-		["officer", S.STAND, H.RIFLE, {"hand": "rifle_lethal", "holster": "pistol"}, {}, "rifle"],
+		["officer", S.STAND, H.RIFLE, {"hand": "rifle_lethal", "holster": "pistol", "radio": "radio", "mic": "mic", "helmet_cam": "helmet_cam", "patch": "patch"}, {}, "rifle, kit"],
 		["officer", S.STAND, H.PISTOL, {"hand": "pistol", "back": "rifle_nonlethal"}, {}, "pistol"],
 		["officer", S.STAND, H.RIFLE, {"hand": "rifle_nonlethal", "holster": "pistol"}, {"reload": 0.4}, "reload"],
 		["officer", S.WORK, H.WORK, {"hand": "camera", "back": "rifle_lethal", "holster": "pistol"}, {}, "door camera"],
@@ -435,7 +439,7 @@ func _crowd_picture(have: Array[String]) -> void:
 ## right) and scaled to fit, with its points as dots: grip white, fore green, muzzle red, light
 ## yellow, stock blue, mag purple.
 func _gear_picture() -> void:
-	var vp := _viewport(Vector2i(1600, 800), "_gear.png")
+	var vp := _viewport(Vector2i(1600, 1200), "_gear.png")
 	var root := Node3D.new()
 	vp.add_child(root)
 	var colors := {"fore": Color.GREEN, "muzzle": Color.RED, "light": Color.YELLOW, "stock": Color.DODGER_BLUE, "mag": Color.MEDIUM_PURPLE}
@@ -478,7 +482,7 @@ func _gear_picture() -> void:
 		i += 1
 	var cam := Camera3D.new()
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
-	cam.size = 2.1
-	cam.position = Vector3(1.575, -0.5, 3.0)
+	cam.size = 3.15
+	cam.position = Vector3(1.575, -1.0, 3.0)
 	root.add_child(cam)
 	cam.make_current()

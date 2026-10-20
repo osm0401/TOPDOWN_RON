@@ -35,7 +35,7 @@ static var folder := DIR  ## where make() looks (tests point it elsewhere)
 static var _templates: Dictionary = {}  ## file path -> normalized model as a PackedScene, or null when missing / unreadable
 
 
-## A fresh copy of model `name`: {"node": Node3D, "overlay": StandardMaterial3D, "lie_y" / "lie_front":
+## A fresh copy of model `name`: {"node": Node3D, "overlay": StandardMaterial3D, "name": name, "lie_y" / "lie_front":
 ## float, "skeleton": Skeleton3D or null} (overlay tints every surface; lie_y / lie_front lift the
 ## figure lying on its back / front; skeleton is the auto-rig CharacterAnim poses). {} without a file.
 ## A hands-up model (<kind>_up) is fitted to up_height_m, fingertips included, so the body keeps the
@@ -83,7 +83,7 @@ static func _make(path: String, name: String, cfg: Dictionary) -> Dictionary:
 	overlay.albedo_color = Color(1, 1, 1, 0)
 	for mi in meshes(node):
 		mi.material_overlay = overlay
-	return {"node": node, "overlay": overlay, "lie_y": float(node.get_meta("lie_y", 0.15)),
+	return {"node": node, "overlay": overlay, "name": name, "lie_y": float(node.get_meta("lie_y", 0.15)),
 			"lie_front": float(node.get_meta("lie_front", 0.15)), "skeleton": node.get_node_or_null("skeleton") as Skeleton3D}
 
 

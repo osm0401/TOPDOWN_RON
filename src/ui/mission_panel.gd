@@ -23,7 +23,7 @@ const PICKER_H := 250.0  ## room kept under the floor plan for the gear picks
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_data = JsonData.load_dict("res://data/mission.json")
+	_data = JsonData.load_dict(str(Session.map_info()["mission"]))
 	_picker = LoadoutPicker.new()
 	_picker.world = world
 	_picker.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -117,6 +117,10 @@ func _draw_plan(area: Rect2) -> void:
 	draw_rect(Rect2(o + lv.building.position * s, lv.building.size * s), Color(0.2, 0.2, 0.22))
 	draw_rect(Rect2(o + lv.exit_zone.position * s, lv.exit_zone.size * s), Color(0.15, 0.55, 0.3, 0.7))
 	_text(o + lv.exit_zone.position * s + Vector2(6, 22), tr("탈출"), 15, Color(0.7, 1.0, 0.75))
+	for pr in lv.props:  # cover outside the building (cars, pumps, posts): where a fight in the open can hide
+		var pr_r: Rect2 = pr["rect"]
+		if pr["cover"] != "" and not lv.building.intersects(pr_r):
+			draw_rect(Rect2(o + pr_r.position * s, pr_r.size * s).grow(0.5), Color(0.42, 0.44, 0.5))
 	for rm in lv.rooms:
 		var rc := (rm["rect"] as Rect2).get_center() * s + o
 		_text(rc + Vector2(-8, 6), str(rm["name"]), 17, Color(0.8, 0.8, 0.85, 0.8))
@@ -127,7 +131,7 @@ func _draw_plan(area: Rect2) -> void:
 		draw_rect(Rect2(o + d.position * s, d.size * s).grow(1.0), Color(0.8, 0.6, 0.3))
 		if lv.is_locked(i):
 			draw_circle(o + d.get_center() * s, 3.5, Color(0.95, 0.2, 0.2))
-	_text(area.position + Vector2(0, area.size.y + 20), tr("갈색=문   빨간 점=잠긴 문   초록=탈출 구역"), 13, DIM)
+	_text(area.position + Vector2(0, area.size.y + 20), tr("갈색=문   빨간 점=잠긴 문   초록=탈출 구역   회색=바깥 엄폐물"), 13, DIM)
 
 
 # ---- live objectives --------------------------------------------------------

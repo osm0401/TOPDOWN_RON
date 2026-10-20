@@ -159,7 +159,8 @@ func _ready() -> void:
 	level = Level.new()
 	level.name = "Level"
 	add_child(level)
-	level.load_map("res://data/map_01.json")
+	level.load_map(str(Session.map_info()["map"]))
+	Session.log_line("map %s" % Session.map_info()["id"])
 	for s in 2:
 		var ps := PlayerState.new()
 		ps.pos = level.spawns[s]
@@ -175,7 +176,8 @@ func _ready() -> void:
 	var presets: Dictionary = JsonData.load_dict("res://data/difficulty.json")["presets"]
 	var diff: Dictionary = presets.get(Session.difficulty, presets["normal"])
 	director = NpcDirector.new(level, tuning, diff, players, 1234)
-	_rcfg = tuning["reinforcement"]
+	_rcfg = (tuning["reinforcement"] as Dictionary).duplicate()
+	_rcfg.merge(level.reinforce, true)  # where this map's reinforcements arrive and the siren sounds
 	clock = ReinforcementClock.new(float(diff["reinforce_s"]), float(_rcfg["min_warning_s"]), float(_rcfg["min_lead_after_noise_s"]))
 	vote = VoteState.new(float(tuning["vote"]["round_s"]), int(tuning["vote"]["max_rounds"]))
 	if is_host:

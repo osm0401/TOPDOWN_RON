@@ -20,16 +20,22 @@ var solo := false         ## single player: no network peer, the second officer 
 var solo_loadout := {"primary": "rifle_lethal", "ammo": "fmj", "tools": ["lockpick", "taser"]}
 var my_loadout := {}  ## this PC's last online picks (briefing), kept across retries; {} = the slot's default
 var difficulty := "normal"  ## preset key in data/difficulty.json (only the host's value matters)
+var map_id := ""  ## data/maps.json id ("" = the first); the host's pick is sent to the joiner before its world opens
+var maps: Array = []  ## data/maps.json maps: {id, name, map, mission}
 
 var _log: FileAccess
 var _thread: Thread
 var _upnp_gen := 0
 var _upnp: UPNP
 var _mapped_port := 0
+var _joined := false  ## (client) connected to the host, waiting for its map
+var _got_map := false  ## (client) the host's map arrived
 
 
 func _ready() -> void:
 	cfg = JsonData.load_dict("res://data/net.json")
+	maps = JsonData.load_dict("res://data/maps.json").get("maps", [])
+	multiplayer.peer_connected.connect(_on_peer_joined)
 	multiplayer.connected_to_server.connect(_on_connected)
 	multiplayer.connection_failed.connect(_on_connect_failed)
 	multiplayer.server_disconnected.connect(_on_server_gone)
@@ -107,9 +113,19 @@ func leave() -> void:
 		multiplayer.multiplayer_peer = null
 	is_hosting = false
 	solo = false
+	_joined = false
+	_got_map = false
 	room_code = ""
 	route = ""
 	host_note = ""
+
+
+## The chosen map's catalog entry (data/maps.json); the first one when map_id is unknown.
+func map_info() -> Dictionary:
+	for m: Dictionary in maps:
+		if str(m["id"]) == map_id:
+			return m
+	return maps[0] if not maps.is_empty() else {"id": "house", "name": "", "map": "res://data/map_01.json", "mission": "res://data/mission.json"}
 
 
 func log_line(msg: String) -> void:
@@ -177,7 +193,30 @@ func _open_log(role: String) -> void:
 
 func _on_connected() -> void:
 	log_line("connected to host")
-	client_connected.emit()
+	_joined = true
+	_enter_if_ready()
+
+
+## (host) A player joined: tell them which map to open.
+func _on_peer_joined(id: int) -> void:
+	if is_hosting:
+		_rpc_map.rpc_id(id, map_info()["id"])
+
+
+## (client) The host's map. The world opens once both the connection and the map are here.
+@rpc("authority", "call_remote", "reliable")
+func _rpc_map(id: String) -> void:
+	map_id = id
+	_got_map = true
+	log_line("host map: %s" % id)
+	_enter_if_ready()
+
+
+func _enter_if_ready() -> void:
+	if _joined and _got_map:
+		_joined = false
+		_got_map = false
+		client_connected.emit()
 
 
 func _on_connect_failed() -> void:

@@ -131,9 +131,10 @@
   - 사무실: `desk`, `office_chair`, `filing_cabinet`, `water_cooler`, `whiteboard`, `printer_table`
   - 부엌: `fridge`, `counter`, `island`(가운데 아일랜드 식탁), `sink`, `stove`, `dining_table`, `chair`, `pantry`, `trash_bin`
   - 창고: `shelving`, `crate`, `pallet`, `workbench`, `barrel`
-  - 바깥: `cone`, `street_lamp`, `police_car`
+  - 바깥: `cone`, `street_lamp`, `police_car`, `car`(일반 승용차)
+  - 주유소: `fuel_pump`(주유기, 앞뒤 양면에 가격판·화면), `canopy_post`(주유소 지붕 기둥, 꼭대기에 아래로 비추는 조명. 게임이 그 자리에 불빛을 단다)
 - 원점: 바닥에 닿는 면(발자국)의 가운데. 앞면은 +Z(Blender −Y), 위는 +Y, 단위는 미터.
-- 크기: 실제 크기로 만든다. 게임이 맵의 사각형에 맞게 비율을 지켜 줄이거나 키운다. 크기 참고: `data/map_01.json` props의 rect(px, 50 px = 1 m).
+- 크기: 실제 크기로 만든다. 게임이 맵의 사각형에 맞게 비율을 지켜 줄이거나 키운다. 크기 참고: `data/map_01.json`, `data/map_02_apartment.json`, `data/map_03_gas_station.json` props의 rect(px, 50 px = 1 m).
 - 벽에 거는 것(`picture`, `whiteboard`): 뒷면을 −Z 쪽에 붙이고, 바닥에서 1.15 m 높이 언저리에 둔다.
 - 경찰차: 앞이 +Z. 경광등은 지붕 위 가운데(게임이 빨강·파랑 불빛을 그 자리에 단다).
 - 삼각형: 가구 하나 4,000개 이하, 경찰차 15,000개 이하.

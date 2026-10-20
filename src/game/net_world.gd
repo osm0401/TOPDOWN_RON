@@ -361,6 +361,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_send(Act.SWAP, 0)
 		"reload":
 			_request_reload()
+		"report":
+			var acts: Dictionary = Act  # evidence pick-up / radio report: Act.REPORT comes with the hostage & evidence work
+			if acts.has("REPORT"):
+				_send(int(acts["REPORT"]), 0)
 		"command_1", "command_2", "command_3", "command_4":
 			var n := int(act.substr(8)) - 1
 			if mission.phase == MissionState.Phase.RESULT:
@@ -1100,6 +1104,10 @@ func _auto_do(name: String, arg: int) -> void:
 			_request_fire()
 		"reload":
 			_request_reload()
+		"report":
+			var acts: Dictionary = Act  # evidence pick-up / radio report: Act.REPORT comes with the hostage & evidence work
+			if acts.has("REPORT"):
+				_send(int(acts["REPORT"]), 0)
 		"teleport_c":  # test aid: put the host inside room C to look at the suspect and the decoys
 			_bodies[0].position = Vector2(1100, 340)
 			players[0].pos = Vector2(1100, 340)

@@ -22,7 +22,7 @@ const ACTIONS: Array = [
 	["move_up", "앞으로", KEY_W], ["move_down", "뒤로", KEY_S], ["move_left", "왼쪽", KEY_A], ["move_right", "오른쪽", KEY_D],
 	["reload", "재장전", KEY_R], ["swap", "무기 교체", KEY_Q], ["interact", "문·구속·락픽 (Shift: 살짝 열기)", KEY_E],
 	["kick", "발로 차기", KEY_X], ["camera", "문틈 카메라", KEY_C], ["taser", "테이저", KEY_T],
-	["flashlight", "손전등", KEY_F], ["laser", "레이저", KEY_L], ["ready", "준비 완료", KEY_ENTER],
+	["flashlight", "손전등", KEY_F], ["laser", "레이저", KEY_L], ["report", "증거 줍기·무전 보고", KEY_V], ["ready", "준비 완료", KEY_ENTER],
 	["command_1", "명령 1 (결과: 다시 하기)", KEY_1], ["command_2", "명령 2 (결과: 로비로)", KEY_2],
 	["command_3", "명령 3", KEY_3], ["command_4", "명령 4", KEY_4],
 ]

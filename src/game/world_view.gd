@@ -532,8 +532,8 @@ func _update_hud() -> void:
 		lines.append(tr("%s%s%s%s 이동 / 클릭 사격 / %s 재장전 / %s 무기교체 / %s 문·구속·락픽(누르기) / Shift+%s 약간 열기 / %s 발로 차기") % [
 			k.call("move_up"), k.call("move_left"), k.call("move_down"), k.call("move_right"), k.call("reload"), k.call("swap"),
 			k.call("interact"), k.call("interact"), k.call("kick")])
-		lines.append(tr("%s 문틈 카메라 / %s 테이저 / %s 손전등 / %s 레이저 / %s~%s 명령 / 휠 확대 / Esc 메뉴·설정 (키 바꾸기)") % [
-			k.call("camera"), k.call("taser"), k.call("flashlight"), k.call("laser"), k.call("command_1"), k.call("command_4")])
+		lines.append(tr("%s 문틈 카메라 / %s 테이저 / %s 손전등 / %s 레이저 / %s~%s 명령 / %s 증거 줍기·무전 보고 / 휠 확대 / Esc 메뉴·설정 (키 바꾸기)") % [
+			k.call("camera"), k.call("taser"), k.call("flashlight"), k.call("laser"), k.call("command_1"), k.call("command_4"), k.call("report")])
 		lines.append(tr("F1 조작법 숨기기 / F3 소리표시 / F4 디버그 / F5 2D/3D 전환 / F6 소리 끄기 / F7 소리 시험 / F8 그래픽 품질"))
 	else:
 		lines.append(tr("F1 조작법"))

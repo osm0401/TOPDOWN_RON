@@ -35,6 +35,7 @@ var bounds := Rect2()
 var building := Rect2()
 var exit_zone := Rect2()
 var spawns: Array[Vector2] = []
+var reinforce: Dictionary = {}         ## the map's own "reinforcement" keys (target, siren_at) over data/tuning.json's
 var wall_rects: Array[Rect2] = []
 var door_rects: Array[Rect2] = []
 var door_actor: Array[int] = []        ## who touched the door last: 0 nobody/NPC, 1 host, 2 client
@@ -42,7 +43,6 @@ var rooms: Array[Dictionary] = []      ## {name, rect, dark, floor, wall} (floor
 var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid, cover ("full" / "hard" / "soft" / "")}
 var ground: Array[Dictionary] = []     ## outdoor surfaces in drawing order {rect, surface, h (m, raised kerbs)}
 var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns}
-var reinforce: Dictionary = {}         ## the map's own "reinforcement" keys (target, siren_at) over data/tuning.json's
 
 var _door_state: Array[int] = []
 var _door_locked: Array[bool] = []

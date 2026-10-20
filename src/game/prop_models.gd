@@ -456,7 +456,7 @@ static func _build(kind: String, w: float, d: float, key: String, lit: bool) -> 
 			meta["lamp"] = Vector3(0, 4.05, 1.25)
 			h = 4.4
 		"car":
-			h = _car(b, w, d, ["car_red", "car_silver", "car_blue", "car_white", "car_black"][rng.randi() % 5])
+			h = _car(b, w, d, ["car_red", "car_silver", "car_blue", "car_white", "car_black"][roundi(d * 50.0) % 5])  # paint by length (cm / 2)
 		"fuel_pump":
 			h = _fuel_pump(b, w, d)
 		"canopy_post":  # a square column of the gas station canopy with a flood light on top (meta "lamp")

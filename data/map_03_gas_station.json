@@ -48,11 +48,11 @@
     {"kind": "trash_bin", "rect": [418, 470, 18, 18]},
     {"kind": "trash_bin", "rect": [678, 590, 18, 18]},
 
-    {"kind": "car", "rect": [470, 290, 94, 236], "face": "n"},
+    {"kind": "car", "rect": [470, 290, 94, 232], "face": "n"},
     {"kind": "car", "rect": [730, 600, 90, 226], "face": "s"},
     {"kind": "car", "rect": [270, 620, 96, 244], "face": "n"},
     {"kind": "car", "rect": [780, 40, 92, 230], "face": "s"},
-    {"kind": "car", "rect": [1050, 900, 220, 88], "face": "w"},
+    {"kind": "car", "rect": [1050, 900, 223, 88], "face": "w"},
 
     {"kind": "barrel", "rect": [872, 300, 24, 24]},
     {"kind": "crate", "rect": [874, 640, 24, 60], "solid": true},

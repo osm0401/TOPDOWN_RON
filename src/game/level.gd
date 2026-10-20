@@ -1,6 +1,6 @@
 class_name Level
 extends Node2D
-## Gray-box map built from data/map_01.json: wall/door physics bodies, door states
+## Gray-box map built from a map file (data/maps.json lists them; data/map_01.json is the first): wall/door physics bodies, door states
 ## (closed / ajar / open + locked), rooms with lighting, sound blockers, rays, fog polygon
 ## and an A* grid for NPCs. Closed doors block movement and rays; an ajar door leaves a
 ## narrow slit (rays pass, bodies do not); open doors block nothing.
@@ -19,9 +19,9 @@ const PROP_LAYER := 4  ## solid furniture: player bodies collide with it, rays (
 const FLAT_PROPS: Array[String] = ["rug", "picture", "whiteboard", "cone"]
 ## Cover each kind gives (a map entry's "cover" overrides); kinds not listed give none.
 const COVER_KINDS := {
-	"full": ["wardrobe", "bookshelf", "fridge", "pantry", "shelving", "filing_cabinet"],
+	"full": ["wardrobe", "bookshelf", "fridge", "pantry", "shelving", "filing_cabinet", "canopy_post"],
 	"hard": ["counter", "island", "sink", "stove", "crate", "barrel", "pallet", "workbench", "dresser", "desk", "tv_stand",
-			"nightstand", "water_cooler", "police_car"],
+			"nightstand", "water_cooler", "police_car", "car", "fuel_pump"],
 	"soft": ["sofa", "armchair", "bed"],
 }
 const RAY_EPS := 0.0001
@@ -42,6 +42,7 @@ var rooms: Array[Dictionary] = []      ## {name, rect, dark, floor, wall} (floor
 var props: Array[Dictionary] = []      ## furniture {kind, rect, face ("n" / "e" / "s" / "w": where its front looks), solid, cover ("full" / "hard" / "soft" / "")}
 var ground: Array[Dictionary] = []     ## outdoor surfaces in drawing order {rect, surface, h (m, raised kerbs)}
 var npc_defs: Array[Dictionary] = []   ## {role, pos, facing, feigns}
+var reinforce: Dictionary = {}         ## the map's own "reinforcement" keys (target, siren_at) over data/tuning.json's
 
 var _door_state: Array[int] = []
 var _door_locked: Array[bool] = []
@@ -64,6 +65,7 @@ func load_map(path: String) -> bool:
 	exit_zone = _rect(d["exit_zone"])
 	for s in d["spawns"]:
 		spawns.append(_vec(s))
+	reinforce = d.get("reinforcement", {})
 	for rm in d["rooms"]:
 		rooms.append({"name": str(rm["name"]), "rect": _rect(rm["rect"]), "dark": bool(rm["dark"]),
 				"floor": str(rm.get("floor", "")), "wall": str(rm.get("wall", ""))})

@@ -17,6 +17,7 @@ func _initialize() -> void:
 	_test_sfx()
 	_test_audition_model()
 	await _test_level()
+	_test_maps()
 	await _test_props()
 	await _test_cover()
 	await _test_tactics()
@@ -327,6 +328,92 @@ func _test_clock_and_vote() -> void:
 	var mc := MissionState.new()
 	mc.unpack(m.pack())
 	_check(mc.reinforce == 2, "mission state carries the reinforcement phase")
+
+
+## Every map in data/maps.json: loads with its briefing, fits the door bits, rooms and furniture
+## sit where they should, and every person, room and the exit can be walked to from the spawn.
+func _test_maps() -> void:
+	var maps: Array = JsonData.load_dict("res://data/maps.json").get("maps", [])
+	_check(maps.size() >= 3, "maps: the catalog lists the house, the apartment and the gas station")
+	var ids := {}
+	for m: Dictionary in maps:
+		var id := str(m["id"])
+		_check(not ids.has(id), "maps: %s: id is unique" % id)
+		ids[id] = true
+		var lv := Level.new()
+		if not lv.load_map(str(m["map"])):
+			_check(false, "maps: %s: map file loads" % id)
+			lv.free()
+			continue
+		var brief := JsonData.load_dict(str(m["mission"]))
+		_check(brief.has("title") and brief.has("intro") and brief.has("objectives") and brief.has("rules") and brief.has("fail_reasons"),
+				"maps: %s: briefing has title, intro, objectives, rules and fail reasons" % id)
+		var clue_ids: Array = (brief.get("clues", []) as Array).map(func(c: Dictionary) -> String: return str(c["id"]))
+		_check(lv.door_rects.size() <= 16, "maps: %s: %d doors fit the 16 door slots" % [id, lv.door_rects.size()])
+		_check(lv.bounds.encloses(lv.building) and lv.bounds.encloses(lv.exit_zone) and not lv.building.intersects(lv.exit_zone),
+				"maps: %s: building and exit zone inside the map, the exit outside the building" % id)
+		var rooms_ok := true
+		for i in lv.rooms.size():
+			var r: Rect2 = lv.rooms[i]["rect"]
+			rooms_ok = rooms_ok and lv.building.encloses(r)
+			for j in range(i + 1, lv.rooms.size()):
+				rooms_ok = rooms_ok and not r.intersects(lv.rooms[j]["rect"])
+			for w in lv.wall_rects:
+				rooms_ok = rooms_ok and not r.intersects(w)
+		_check(rooms_ok, "maps: %s: rooms are inside the building, apart from each other and from the walls" % id)
+		var props_ok := true
+		var bad := ""
+		for i in lv.props.size():
+			var pr: Dictionary = lv.props[i]
+			var r: Rect2 = pr["rect"]
+			var hit := not lv.bounds.encloses(r)
+			if pr["solid"]:
+				for w in lv.wall_rects:
+					hit = hit or r.intersects(w)
+				for d in lv.door_rects:  # the doorway and a step either side stay clear
+					var horiz := d.size.x >= d.size.y
+					hit = hit or r.intersects(d.grow_individual(0, 24, 0, 24) if horiz else d.grow_individual(24, 0, 24, 0))
+				for j in range(i + 1, lv.props.size()):
+					hit = hit or (lv.props[j]["solid"] and r.intersects(lv.props[j]["rect"]))
+			if hit:
+				props_ok = false
+				bad += " %s%s" % [pr["kind"], r]
+		_check(props_ok, "maps: %s: furniture inside the map, clear of walls, doorways and each other%s" % [id, bad])
+		for i in lv.door_rects.size():  # every door reachable, locked ones too (picked or kicked open)
+			lv.set_locked(i, false)
+		var from := lv.spawns[0]
+		var lost := ""
+		for s in lv.spawns:
+			if lv.find_path(from, s).is_empty():
+				lost += " spawn%s" % s
+		if lv.find_path(from, lv.exit_zone.get_center()).is_empty():
+			lost += " exit"
+		for rm in lv.rooms:
+			if lv.find_path(from, (rm["rect"] as Rect2).get_center()).is_empty():
+				lost += " room " + str(rm["name"])
+		var suspects := 0
+		var npc_bad := ""
+		for n in lv.npc_defs:
+			var p: Vector2 = n["pos"]
+			var cell := Vector2i(int(floor(p.x / Level.CELL)), int(floor(p.y / Level.CELL)))
+			if lv._grid.is_point_solid(cell) or lv.find_path(from, p).is_empty():
+				lost += " npc%s" % p
+			if n["suspect"]:
+				suspects += 1
+			var clues: Array = n["clues"]
+			if (clues.has("cap") and clues.has("band")) != bool(n["suspect"]):
+				npc_bad += " clues%s" % p
+			for c in clues:
+				if not clue_ids.has(c):
+					npc_bad += " unknown clue %s" % c
+			if n["reinforcement"] and lv.building.has_point(p):
+				npc_bad += " reinforcement inside%s" % p
+		_check(lost == "", "maps: %s: spawns, exit, every room and every person can be walked to from the spawn%s" % [id, lost])
+		_check(suspects == 1 and npc_bad == "", "maps: %s: one suspect, the only one with both clues, reinforcements outside%s" % [id, npc_bad])
+		if lv.reinforce.has("target"):
+			var t: Array = lv.reinforce["target"]
+			_check(not lv.find_path(from, Vector2(float(t[0]), float(t[1]))).is_empty(), "maps: %s: the reinforcements' target can be walked to" % id)
+		lv.free()
 
 
 func _test_level() -> void:

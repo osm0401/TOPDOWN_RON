@@ -1,9 +1,11 @@
 extends RefCounted
-## Furniture, door leaves and frames, the padlock and the police car for the 3D view, built from
+## Furniture, door leaves and frames, the padlock, the police car, parked cars and the gas station's
+## pumps and canopy posts for the 3D view, built from
 ## boxes, cylinders and spheres (no asset files) and sized to the map: make(kind, w, d) returns a
 ## MeshInstance3D whose origin is the middle of the footprint on the floor, front toward +Z, w wide
 ## (X) and d deep (Z), in meters. Metadata: "h" (height, m); the police car also "lights" (light bar
-## red and blue points) and "light_mats" (their two materials, which the view flashes).
+## red and blue points) and "light_mats" (their two materials, which the view flashes); street lamps
+## and canopy posts "lamp" (where their light hangs).
 ## A model file assets/props/<set>/<kind>.glb replaces a shape (set_name: data/view3d.json
 ## characters.set): it is scaled evenly to fit the footprint and stood on the floor, front +Z.
 ## Meshes are cached per kind and size, so equal pieces share one. Guide for model files:
@@ -16,7 +18,7 @@ const DIR := "res://assets/props/"
 const KINDS: Array[String] = ["sofa", "armchair", "coffee_table", "dining_table", "desk", "office_chair", "chair", "tv_stand",
 	"bookshelf", "wardrobe", "dresser", "bed", "nightstand", "plant", "floor_lamp", "picture", "whiteboard", "filing_cabinet",
 	"water_cooler", "printer_table", "fridge", "counter", "island", "sink", "stove", "pantry", "trash_bin", "shelving", "crate", "pallet",
-	"workbench", "barrel", "cone", "rug", "police_car", "padlock", "street_lamp"]
+	"workbench", "barrel", "cone", "rug", "police_car", "padlock", "street_lamp", "car", "fuel_pump", "canopy_post"]
 ## Pieces the view lowers with the walls when they stand between the camera and the officer:
 ## tall enough to hide a person, or hung on a wall.
 const TALL: Array[String] = ["bookshelf", "wardrobe", "fridge", "pantry", "shelving", "workbench", "water_cooler", "floor_lamp",
@@ -248,6 +250,12 @@ static func _plain(key: String) -> StandardMaterial3D:
 		"bar_blue": c = Color(0.02, 0.05, 0.5); glow = Color(0.1, 0.3, 1.0); glow_e = 0.2
 		"lock_red": c = Color(0.85, 0.08, 0.06); glow = Color(1.0, 0.08, 0.05); glow_e = 0.7; rough = 0.3
 		"street_glow": c = Color(0.9, 0.94, 1.0); glow = Color(0.85, 0.92, 1.0); glow_e = 3.0
+		"car_red": c = Color(0.45, 0.04, 0.04); rough = 0.25; metal = 0.3
+		"car_silver": c = Color(0.55, 0.56, 0.58); rough = 0.25; metal = 0.5
+		"car_blue": c = Color(0.06, 0.12, 0.3); rough = 0.25; metal = 0.3
+		"pump_red": c = Color(0.62, 0.06, 0.05); rough = 0.4
+		"sign_glow": c = Color(0.95, 0.9, 0.8); glow = Color(1.0, 0.9, 0.7); glow_e = 1.2
+		"price_glow": c = Color(0.1, 0.05, 0.02); glow = Color(1.0, 0.45, 0.1); glow_e = 1.0
 	m.albedo_color = c
 	m.roughness = rough
 	m.metallic = metal
@@ -447,6 +455,19 @@ static func _build(kind: String, w: float, d: float, key: String, lit: bool) -> 
 			b.box(Vector3(0.24, 0.02, 0.45), "street_glow", Vector3(0, 4.155, 1.25))
 			meta["lamp"] = Vector3(0, 4.05, 1.25)
 			h = 4.4
+		"car":
+			h = _car(b, w, d, ["car_red", "car_silver", "car_blue", "car_white", "car_black"][rng.randi() % 5])
+		"fuel_pump":
+			h = _fuel_pump(b, w, d)
+		"canopy_post":  # a square column of the gas station canopy with a flood light on top (meta "lamp")
+			var s := minf(w, d)
+			b.box(Vector3(s * 1.4, 0.25, s * 1.4), "stone", Vector3(0, 0.125, 0))
+			b.box(Vector3(s, 4.4, s), "white", Vector3(0, 2.45, 0))
+			b.box(Vector3(s + 0.02, 0.6, s + 0.02), "pump_red", Vector3(0, 1.0, 0))  # a red band at bumper height
+			b.box(Vector3(s * 2.4, 0.16, s * 2.4), "dark_grey", Vector3(0, 4.7, 0))
+			b.box(Vector3(s * 2.2, 0.02, s * 2.2), "street_glow", Vector3(0, 4.615, 0))
+			meta["lamp"] = Vector3(0, 4.5, 0)
+			h = 4.8
 		"padlock":
 			b.box(Vector3(0.12, 0.1, 0.05), "lock_red", Vector3(0, 0.05, 0))
 			b.ring(0.035, 0.05, "steel", Vector3(0, 0.1, 0), Vector3(90, 0, 0))
@@ -816,6 +837,56 @@ static func _workbench(b: Builder, w: float, d: float) -> float:
 	b.box(Vector3(0.42, 0.02, 0.06), "black", Vector3(-w * 0.2, h + 0.19, 0.02))
 	b.box(Vector3(0.25, 0.02, 0.04), "black", Vector3(0.05, h + 0.01, 0.12), Vector3(0, 25, 0))  # hammer
 	return h + 0.88
+
+
+## A parked four-door car along Z (front +Z), w wide: painted body, glass cabin, lights.
+static func _car(b: Builder, w: float, d: float, paint: String) -> float:
+	var wheel := 0.32
+	for sz: float in [-1.0, 1.0]:
+		for sx: float in [-1.0, 1.0]:
+			var at := Vector3(sx * (w * 0.5 - 0.13), wheel, sz * (d * 0.5 - 0.8))
+			b.tube(wheel, 0.22, "rubber", at, Vector3(0, 0, 90), 18)
+			b.tube(wheel * 0.6, 0.225, "steel", at, Vector3(0, 0, 90), 12)
+	b.box(Vector3(w, 0.55, d), paint, Vector3(0, 0.6, 0))
+	b.box(Vector3(w - 0.1, 0.12, d - 0.1), "rubber", Vector3(0, 0.27, 0))  # sills
+	for s: float in [-1.0, 1.0]:
+		b.box(Vector3(w + 0.02, 0.16, 0.08), "dark_grey", Vector3(0, 0.42, s * (d * 0.5 + 0.02)))
+		for sx: float in [-1.0, 1.0]:
+			b.box(Vector3(0.26, 0.09, 0.04), "headlight" if s > 0 else "taillight", Vector3(sx * (w * 0.5 - 0.2), 0.74, s * (d * 0.5 + 0.005)))
+	var cab_len := d * 0.48
+	var cab_z := -d * 0.04
+	var glass := CylinderMesh.new()
+	glass.bottom_radius = 0.5
+	glass.top_radius = 0.36
+	glass.height = 0.46
+	glass.radial_segments = 4
+	glass.rings = 1
+	var half := 0.5 / sqrt(2.0)
+	b.add(glass, "glass", Transform3D(Basis.from_scale(Vector3((w - 0.12) * 0.5 / half, 1.0, cab_len * 0.5 / half)) * Basis(Vector3.UP, PI * 0.25),
+			Vector3(0, 1.1, cab_z)))
+	b.box(Vector3(w - 0.24, 0.05, cab_len - 0.55), paint, Vector3(0, 1.35, cab_z))
+	for sx: float in [-1.0, 1.0]:  # mirrors
+		b.box(Vector3(0.12, 0.08, 0.05), paint, Vector3(sx * (w * 0.5 + 0.05), 0.95, cab_z + cab_len * 0.5 - 0.1))
+	return 1.4
+
+
+## A fuel dispenser on its island: plinth, red body with a lit price panel and screen on the
+## front (+Z) and back, nozzles and hoses on both sides, a lit sign on top.
+static func _fuel_pump(b: Builder, w: float, d: float) -> float:
+	b.box(Vector3(w, 0.12, d), "stone", Vector3(0, 0.06, 0))
+	b.box(Vector3(w * 0.9, 1.5, d * 0.7), "pump_red", Vector3(0, 0.87, 0))
+	b.box(Vector3(w * 0.94, 0.3, d * 0.74), "sign_glow", Vector3(0, 1.77, 0))
+	b.box(Vector3(w * 0.96, 0.05, d * 0.76), "dark_grey", Vector3(0, 1.945, 0))
+	for s: float in [-1.0, 1.0]:
+		var z := s * (d * 0.35 + 0.006)
+		b.box(Vector3(w * 0.6, 0.3, 0.012), "price_glow", Vector3(0, 1.3, z))
+		b.box(Vector3(w * 0.3, 0.18, 0.012), "screen", Vector3(-w * 0.15, 0.95, z))
+		b.box(Vector3(w * 0.7, 0.3, 0.012), "steel", Vector3(0, 0.45, z))
+	for sx: float in [-1.0, 1.0]:  # a nozzle in its holder on each side, the hose looping down
+		var x := sx * (w * 0.45 + 0.04)
+		b.box(Vector3(0.06, 0.22, 0.14), "black", Vector3(x, 1.0, 0))
+		b.tube(0.018, 0.7, "black", Vector3(x, 0.65, d * 0.12), Vector3(8, 0, 0), 8)
+	return 1.97
 
 
 static func _police_car(b: Builder, w: float, d: float, meta: Dictionary) -> float:

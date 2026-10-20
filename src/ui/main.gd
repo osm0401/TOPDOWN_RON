@@ -1,6 +1,6 @@
 extends Node
 ## Lobby (host / join by room code) and NetWorld lifecycle.
-## Test flags (after "--"): --auto-host, --auto-join  (localhost room code, scripted play).
+## Test flags (after "--"): --auto-host, --auto-join  (localhost room code, scripted play), --map=<id> (data/maps.json).
 
 const CharacterModels := preload("res://src/game/character_models.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
@@ -8,6 +8,7 @@ const GearModels := preload("res://src/game/gear_models.gd")
 var _lobby: Control
 var _status: Label
 var _code_edit: LineEdit
+var _map_box: OptionButton
 var _world: NetWorld
 var _auto_role := ""
 var _shot_path := ""
@@ -53,6 +54,14 @@ func _build_lobby() -> void:
 	diff_box.item_selected.connect(func(i: int) -> void: Session.difficulty = str(diff_box.get_item_metadata(i)))
 	box.add_child(diff_box)
 
+	_map_box = OptionButton.new()  # the host's pick decides; a joiner opens the host's map
+	for m: Dictionary in Session.maps:
+		_map_box.add_item(tr("맵: %s") % str(m["name"]))
+		_map_box.set_item_metadata(_map_box.item_count - 1, str(m["id"]))
+	_map_box.item_selected.connect(func(i: int) -> void: Session.map_id = str(_map_box.get_item_metadata(i)))
+	box.add_child(_map_box)
+	_sync_map_box()
+
 	box.add_child(HSeparator.new())
 	var solo_title := Label.new()
 	solo_title.text = tr("싱글 플레이 (혼자)  -  장비 선택")
@@ -86,6 +95,14 @@ func _build_lobby() -> void:
 	_status = Label.new()
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(_status)
+
+
+## Shows the map Session will open (after joining someone, theirs).
+func _sync_map_box() -> void:
+	var id := str(Session.map_info()["id"])
+	for i in _map_box.item_count:
+		if str(_map_box.get_item_metadata(i)) == id:
+			_map_box.select(i)
 
 
 func _gear_box(keys: Array, labels: Array, current: String, on_pick: Callable) -> OptionButton:
@@ -169,6 +186,7 @@ func _leave_to_lobby(msg: String) -> void:
 		_world.queue_free()
 		_world = null
 	_lobby.show()
+	_sync_map_box()
 	_show_status(msg)
 	if _auto_role != "":  # scripted test run: the host finished first, nothing more to do
 		get_tree().quit()
@@ -181,6 +199,9 @@ func _run_auto() -> void:
 			_shot_path = a.substr(7)
 		elif a.begins_with("--difficulty="):
 			Session.difficulty = a.substr(13)
+		elif a.begins_with("--map="):
+			Session.map_id = a.substr(6)
+			_sync_map_box()
 		elif a.begins_with("--scenario="):
 			_scenario = a.substr(11)
 		elif a.begins_with("--lobby-shot="):

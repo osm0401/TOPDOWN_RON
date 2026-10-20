@@ -1,0 +1,8 @@
+{
+  "_note": "고를 수 있는 맵 목록(로비의 '맵' 칸, 실행 인자 --map=<id>). map: 맵 파일, mission: 브리핑 문구 파일. 방장(호스트)이 고른 맵을 참가자에게 보내 두 PC가 같은 맵을 연다. 첫 줄이 기본 맵.",
+  "maps": [
+    {"id": "house", "name": "주택", "map": "res://data/map_01.json", "mission": "res://data/mission.json"},
+    {"id": "apartment", "name": "아파트 2층", "map": "res://data/map_02_apartment.json", "mission": "res://data/mission_02_apartment.json"},
+    {"id": "gas_station", "name": "주유소", "map": "res://data/map_03_gas_station.json", "mission": "res://data/mission_03_gas_station.json"}
+  ]
+}

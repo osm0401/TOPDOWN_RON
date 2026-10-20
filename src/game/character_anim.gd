@@ -12,6 +12,7 @@ extends RefCounted
 ## No class_name: preloaded (see character_models.gd).
 
 const CM := preload("res://src/game/character_models.gd")
+const MC := preload("res://src/game/motion_clips.gd")
 
 enum Stance { STAND, CROUCH, KNEEL, WORK, PRONE, DEAD }  ## PRONE / DEAD: WorldView3D lays the figure on its front / back
 enum Hold { NONE, RIFLE, PISTOL, PISTOL_ONE, PISTOL_LOW, WORK, CUFFED, COVER, HANDS_HEAD, STARTLED, HANDS_UP }
@@ -31,7 +32,8 @@ enum Hold { NONE, RIFLE, PISTOL, PISTOL_ONE, PISTOL_LOW, WORK, CUFFED, COVER, HA
 ## Gear goes in model["gear"]: {"hand": gun or camera in the hands, "back": slung rifle, "holster":
 ## pistol on the thigh, "cuffs", "cap", "band"}. Afterwards model["muzzle"] / model["light"] hold the
 ## gun's muzzle and weapon light (skeleton space, gun's basis) while a gun is in the hands.
-## cfg: data/view3d.json characters ("walk" and "pose").
+## cfg: data/view3d.json characters ("walk", "pose" and "clips": motion-capture clips that replace
+## the built-in walk, idle, hands-up and reload movement where a file exists, see _clip_layer).
 static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	var sk := model.get("skeleton") as Skeleton3D
 	if sk == null or sk.get_bone_count() != CM.BONE_NAMES.size():
@@ -87,6 +89,21 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	q[CM.Bone.SPINE] = Quaternion(Vector3.UP, twist * 0.5) * Quaternion(swing, -lean) * Quaternion(Vector3.RIGHT, bend * 0.5 - back * 0.6)
 	q[CM.Bone.CHEST] = Quaternion(Vector3.UP, twist * 0.5 + blade + deg_to_rad(4.0) * flinch + shake) \
 			* Quaternion(Vector3.RIGHT, bend * 0.5 + breath - back * 0.4 + shake * 0.5)
+	if int(model.get("hold_now", -1)) != hold:  # when the hold began (a hands-up clip plays from there)
+		model["hold_now"] = hold
+		model["hold_since"] = t
+	var clip := _clip_layer(model, r, s, cfg, stance, hold, amount, run, phase, dir, t)
+	if not clip.is_empty():
+		var w: float = clip["w"]
+		var qc: Array[Quaternion] = clip["q"]
+		var body_w := w * (0.35 if aiming else 1.0)
+		var chest_w := w if hold == Hold.NONE or hold == Hold.PISTOL_LOW else 0.0
+		for b in [CM.Bone.THIGH_L, CM.Bone.SHIN_L, CM.Bone.FOOT_L, CM.Bone.THIGH_R, CM.Bone.SHIN_R, CM.Bone.FOOT_R]:
+			q[b] = q[b].slerp(qc[b], w)
+		for b in [CM.Bone.HIPS, CM.Bone.SPINE]:
+			q[b] = q[b].slerp(qc[b], body_w)
+		q[CM.Bone.CHEST] = q[CM.Bone.CHEST].slerp(qc[CM.Bone.CHEST], chest_w)
+		hip_off = hip_off.lerp(clip["hip"], w)
 	var gr: Array[Quaternion] = []
 	var gp: Array[Vector3] = []
 	_fk(r, q, hip_off, gr, gp)
@@ -110,6 +127,8 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	head_g = head_g * Quaternion(Vector3.RIGHT, -deg_to_rad(float(pc["flinch_deg"])) * 0.6 * flinch) \
 			* Quaternion(Vector3.UP, shake * 1.5)
 	q[CM.Bone.HEAD] = gr[CM.Bone.CHEST].inverse() * head_g
+	if not clip.is_empty() and look.length_squared() < 0.5 and stance == Stance.STAND:  # the clip's own head movement
+		q[CM.Bone.HEAD] = q[CM.Bone.HEAD].slerp((clip["q"] as Array)[CM.Bone.HEAD], float(clip["w"]) * float(clip["head"]))
 	_fk(r, q, hip_off, gr, gp)
 
 	# arms and the gear in the hands
@@ -118,6 +137,7 @@ static func pose(model: Dictionary, s: Dictionary, cfg: Dictionary) -> void:
 	var gun_xf := Transform3D()
 	if r["arms"]:
 		var place := _arms(r, q, gr, gp, hold, s, pc, gun, amount, phase, run, dir, gait, t)
+		_clip_arms(model, r, q, s, cfg, clip, hold, t)
 		_fk(r, q, hip_off, gr, gp)
 		if gun != null:
 			gun_xf = place if place != Transform3D() else _in_hand(r, gr, gp, 1, hold)
@@ -456,7 +476,8 @@ static func _in_hand(r: Dictionary, gr: Array[Quaternion], gp: Array[Vector3], s
 ## right thigh, cuffs between the wrists, cap on the head, armband on the left upper arm; and what
 ## people wear (sized from the body profile found at load): "hat" (beanie), "eyes" (glasses),
 ## "mask" (bandana) on the head, "pack" (backpack) on the back, "radio" on the chest, "patch" on the
-## right upper arm.
+## right upper arm; the officers' "helmet_cam" on the right of the helmet and "mic" on the left
+## shoulder strap.
 static func _place_worn(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], gp: Array[Vector3], h: float, hold: int) -> void:
 	var rest: Array[Vector3] = r["rest"]
 	var chest := Transform3D(Basis(gr[CM.Bone.CHEST]), gp[CM.Bone.CHEST])
@@ -528,6 +549,15 @@ static func _place_wear(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], 
 	var radio := gear.get("radio") as Node3D
 	if radio != null:
 		radio.transform = chest_bone * Transform3D(Basis(Vector3.BACK, deg_to_rad(-8.0)), Vector3(gx - 0.075 * h, 0.755 * h, torso.call(0.755, "front") + 0.012 * h))
+	var mic := gear.get("mic") as Node3D
+	if mic != null:  # on the left shoulder strap, facing up toward the mouth a little
+		mic.transform = chest_bone * Transform3D(Basis(Vector3.UP, deg_to_rad(-12.0)) * Basis(Vector3.RIGHT, -deg_to_rad(18.0)),
+				Vector3(gx + 0.07 * h, 0.79 * h, torso.call(0.79, "front") - 0.025 * h))
+	var cam := gear.get("helmet_cam") as Node3D
+	if cam != null:  # on the right side of the helmet, above the ear, lens forward
+		var half := maxf(float(prof["head_half"]), 0.04 * h)
+		var mid_z := (float(prof["face_z"]) + float(prof["head_back"])) * 0.5
+		cam.transform = head_bone * Transform3D(Basis.IDENTITY, Vector3(gx - half - 0.002 * h, float(prof["head_top"]) - 0.055 * h, mid_z + 0.012 * h))
 	var patch := gear.get("patch") as Node3D
 	if patch != null and r["arms"]:
 		var c: Dictionary = (r["arm"] as Array)[1]  # the right arm (the officer model wears its own badge on the left)
@@ -536,3 +566,162 @@ static func _place_wear(r: Dictionary, gear: Dictionary, gr: Array[Quaternion], 
 		var at: Vector3 = rest[c["a"]] + ra * float(c["la"]) * 0.32 + out * 0.03 * h
 		var basis := Basis.looking_at(-out, -ra)  # its face (+Z) outward, its top up the arm
 		patch.transform = Transform3D(Basis(gr[c["a"]]) * basis, gp[c["a"]] + gr[c["a"]] * (at - rest[c["a"]]))
+
+
+# ---- motion-capture clips (MotionClips) ---------------------------------------
+
+## The clip file to use for `slot` (data/view3d.json characters.clips) on this model: the file
+## "<file>_<model name>" (walk_officer), then "<file>_<kind>" (walk_civilian for civilian_woman),
+## then "<file>" itself. {} when the slot or every file is missing. Remembered per figure.
+static func _clip_for(model: Dictionary, cfg: Dictionary, slot: String) -> Dictionary:
+	var have: Dictionary = model.get_or_add("clip_files", {})
+	if have.has(slot):
+		return have[slot]
+	var found := {}
+	var cc: Dictionary = cfg.get("clips", {})
+	var spec = cc.get(slot)
+	if spec is Dictionary and bool((spec as Dictionary).get("on", true)):
+		var stem := str(spec.get("file", slot))
+		var name := str(model.get("name", ""))
+		for cand: String in [stem + "_" + name, stem + "_" + name.get_slice("_", 0), stem]:
+			if name == "" and cand != stem:
+				continue
+			var c := MC.get_clip(cand, str(spec.get("take", "")))
+			if not c.is_empty():
+				found = c
+				break
+	have[slot] = found
+	return found
+
+
+## Turns a sampled clip pose into local bone rotations of this rig (directions for the limbs, turns
+## for hips, spine, chest, head and feet).
+static func _clip_q(r: Dictionary, smp: Dictionary) -> Array[Quaternion]:
+	var q: Array[Quaternion] = []
+	q.resize(CM.BONE_NAMES.size())
+	q.fill(Quaternion.IDENTITY)
+	var rots: Array[Quaternion] = smp["rots"]
+	var dirs: PackedVector3Array = smp["dirs"]
+	var g_hips := rots[MC.Rot.HIPS]
+	var g_spine := rots[MC.Rot.SPINE]
+	var g_chest := rots[MC.Rot.CHEST]
+	q[CM.Bone.HIPS] = g_hips
+	q[CM.Bone.SPINE] = g_hips.inverse() * g_spine
+	q[CM.Bone.CHEST] = g_spine.inverse() * g_chest
+	q[CM.Bone.HEAD] = g_chest.inverse() * rots[MC.Rot.HEAD]
+	var legs: Array[Dictionary] = r["leg"]
+	for i in 2:
+		var leg := legs[i]
+		_chain(q, leg, g_hips, dirs[MC.Dir.THIGH_L if i == 0 else MC.Dir.THIGH_R], dirs[MC.Dir.SHIN_L if i == 0 else MC.Dir.SHIN_R])
+		q[leg["f"]] = (g_hips * q[leg["a"]] * q[leg["b"]]).inverse() * rots[MC.Rot.FOOT_L if i == 0 else MC.Rot.FOOT_R]
+	var arms: Array[Dictionary] = r["arm"]
+	for i in 2:
+		_chain(q, arms[i], g_chest, dirs[MC.Dir.UPPER_ARM_L if i == 0 else MC.Dir.UPPER_ARM_R],
+				dirs[MC.Dir.FOREARM_L if i == 0 else MC.Dir.FOREARM_R])
+	return q
+
+
+## Two sampled clip poses mixed: k = 0 all a, 1 all b.
+static func _clip_mix(a: Dictionary, b: Dictionary, k: float) -> Dictionary:
+	if a.is_empty():
+		return b
+	if b.is_empty() or k <= 0.0:
+		return a
+	var dirs := PackedVector3Array()
+	var da: PackedVector3Array = a["dirs"]
+	var db: PackedVector3Array = b["dirs"]
+	dirs.resize(da.size())
+	for i in da.size():
+		dirs[i] = da[i].slerp(db[i], k) if da[i].dot(db[i]) < 0.9999 else da[i]
+	var rots: Array[Quaternion] = []
+	for i in (a["rots"] as Array).size():
+		rots.append((a["rots"][i] as Quaternion).slerp(b["rots"][i], k))
+	return {"dirs": dirs, "rots": rots, "rise": lerpf(a["rise"], b["rise"], k), "sway": lerpf(a["sway"], b["sway"], k)}
+
+
+## Walking, running and standing from clips (slots "walk", "run", "idle"), while standing up. The
+## walk and run play in step with the game's stride (phase): the moment the clip's left foot is
+## furthest ahead lines up with the built-in walk's; walking backwards plays the walk in reverse.
+## Walking sideways keeps the built-in legs (a forward clip turned sideways bends the knees wrong).
+## {"q": local rotations, "hip": hips offset, "w": how much replaces the built-in pose, "head": share
+## of it the head follows}, or {} when no clip applies.
+static func _clip_layer(model: Dictionary, r: Dictionary, _s: Dictionary, cfg: Dictionary, stance: int, _hold: int, amount: float,
+		run: float, phase: float, dir: Vector3, t: float) -> Dictionary:
+	if stance != Stance.STAND or not cfg.has("clips"):
+		return {}
+	var cc: Dictionary = cfg["clips"]
+	var idle := _clip_for(model, cfg, "idle")
+	var walk := _clip_for(model, cfg, "walk")
+	var running := _clip_for(model, cfg, "run")
+	if idle.is_empty() and walk.is_empty() and running.is_empty():
+		return {}
+	var fwd := clampf((absf(dir.z) - 0.3) / 0.5, 0.0, 1.0)
+	var back := dir.z < 0.0
+	var at := func(c: Dictionary) -> Dictionary:  # a walk / run in step with the stride
+		var len: float = c["len"]
+		var into := (phase - PI * 0.5) / TAU * len
+		var time: float = float(c["step"]) + (len * 0.5 - into if back else into)
+		return MC.sample(c, time, true)
+	var move := {}
+	if not walk.is_empty() and not running.is_empty():
+		move = _clip_mix(at.call(walk), at.call(running), run)
+	elif not walk.is_empty():
+		move = at.call(walk)
+	elif not running.is_empty():
+		move = at.call(running)
+	var w_move := amount * fwd if not move.is_empty() else 0.0
+	var still := {}
+	if not idle.is_empty():
+		var spec: Dictionary = cc["idle"]
+		still = MC.sample(idle, t * float(spec.get("speed", 1.0)), true)
+	var w_idle := (1.0 - amount) if not still.is_empty() else 0.0
+	var w := w_idle + w_move
+	if w <= 0.001:
+		return {}
+	var smp := _clip_mix(still, move, w_move / w) if not still.is_empty() else move
+	var leg_len: float = r["leg_len"]
+	var strength := float(cc.get("strength", 1.0))
+	return {"q": _clip_q(r, smp), "hip": Vector3(float(smp["sway"]) * leg_len, float(smp["rise"]) * leg_len, 0.0),
+			"w": clampf(w, 0.0, 1.0) * strength, "head": float(cc.get("head", 1.0)), "smp": smp}
+
+
+## Arms from clips: relaxed arms follow the walk / idle clip; with the hands up ("hands_up" slot,
+## played once from when the hands went up, then held on its last frame) both arms and the chest
+## follow that clip; while reloading ("reload" slot, stretched over the reload) the support arm does.
+## Arms holding a gun on the aim keep the built-in grip.
+static func _clip_arms(model: Dictionary, r: Dictionary, q: Array[Quaternion], s: Dictionary, cfg: Dictionary, clip: Dictionary,
+		hold: int, t: float) -> void:
+	if not cfg.has("clips"):
+		return
+	var cc: Dictionary = cfg["clips"]
+	var strength := float(cc.get("strength", 1.0))
+	var arms_of := func(qc: Array[Quaternion], sides: Array, w: float) -> void:
+		for i: int in sides:
+			var c: Dictionary = (r["arm"] as Array)[i]
+			q[c["a"]] = q[c["a"]].slerp(qc[c["a"]], w)
+			q[c["b"]] = q[c["b"]].slerp(qc[c["b"]], w)
+	if hold == Hold.HANDS_UP:
+		var up := _clip_for(model, cfg, "hands_up")
+		if not up.is_empty():
+			var spec: Dictionary = cc["hands_up"]
+			var since := t - float(model.get("hold_since", t))
+			var qc := _clip_q(r, MC.sample(up, float(spec.get("from", 0.0)) + since * float(spec.get("speed", 1.0)), bool(spec.get("loop", false))))
+			q[CM.Bone.CHEST] = q[CM.Bone.CHEST].slerp(qc[CM.Bone.CHEST], strength)
+			arms_of.call(qc, [0, 1], strength)
+		return
+	var reload := float(s.get("reload", -1.0))
+	if reload >= 0.0 and (hold == Hold.RIFLE or hold == Hold.PISTOL):
+		var rl := _clip_for(model, cfg, "reload")
+		if not rl.is_empty():
+			var env := smoothstep(0.0, 0.15, reload) * (1.0 - smoothstep(0.85, 1.0, reload))  # in and out of the grip
+			var qc := _clip_q(r, MC.sample(rl, reload * float(rl["len"]), false))
+			arms_of.call(qc, [0], env * strength)
+		return
+	if clip.is_empty() or not clip.has("smp"):
+		return
+	var qc: Array[Quaternion] = clip["q"]
+	var w: float = clip["w"]
+	if hold == Hold.NONE:
+		arms_of.call(qc, [0, 1], w)
+	elif hold == Hold.PISTOL_LOW:
+		arms_of.call(qc, [0], w)

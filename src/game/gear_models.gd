@@ -3,7 +3,10 @@ extends RefCounted
 ## the officers' rifles (rifle_lethal black, rifle_nonlethal with orange less-lethal furniture) and
 ## pistol, the suspects' pistol, handcuffs, the red cap and yellow armband clues, the door camera;
 ## and what people wear (ACCESSORIES): a beanie, glasses, sunglasses, a bandana over the face, a
-## backpack, the officers' shoulder patch and radio. Beanie, bandana and glasses are built to a unit
+## backpack, the officers' shoulder patch, radio, helmet camera and shoulder microphone. Kit with a
+## small light ("led" point: the radio's channel light, the helmet camera's recording light) gets
+## it as a child node "led" with its own material, so each officer's light blinks on its own
+## (set_led). Beanie, bandana and glasses are built to a unit
 ## head (1 across) and scaled to each wearer (CharacterAnim); the view tints beanie, bandana,
 ## backpack and patch per person (material_override). (Hair is painted on: character.gdshader.)
 ## make() returns a MeshInstance3D whose local frame is: origin where the right hand grips, +Z out of
@@ -20,8 +23,8 @@ extends RefCounted
 const CharacterModels := preload("res://src/game/character_models.gd")
 const ACCESSORIES: Array[String] = ["beanie", "glasses", "sunglasses", "bandana", "backpack", "patch", "radio"]
 const KINDS: Array[String] = ["rifle_lethal", "rifle_nonlethal", "pistol", "cuffs", "cap", "band", "camera",
-	"beanie", "glasses", "sunglasses", "bandana", "backpack", "patch", "radio"]
-const POINTS: Array[String] = ["fore", "muzzle", "light", "stock", "mag"]
+	"beanie", "glasses", "sunglasses", "bandana", "backpack", "patch", "radio", "helmet_cam", "mic"]
+const POINTS: Array[String] = ["fore", "muzzle", "light", "stock", "mag", "led"]
 const DIR := "res://assets/gear/"
 
 static var folder := DIR  ## where model files are looked for (tests point it elsewhere)
@@ -44,7 +47,38 @@ static func make(kind: String) -> MeshInstance3D:
 	var meta: Dictionary = _meshes[key][1]
 	for k: String in meta:
 		mi.set_meta(k, meta[k])
+	if meta.has("led"):
+		var led := MeshInstance3D.new()
+		led.name = "led"
+		var dot := SphereMesh.new()
+		dot.radius = 0.0045
+		dot.height = 0.009
+		dot.radial_segments = 8
+		dot.rings = 4
+		led.mesh = dot
+		var m := StandardMaterial3D.new()
+		m.albedo_color = LED_OFF
+		m.roughness = 0.3
+		m.emission_enabled = true
+		m.emission = Color.BLACK
+		m.emission_energy_multiplier = 4.0
+		led.material_override = m
+		led.position = meta["led"]
+		mi.add_child(led)
 	return mi
+
+
+const LED_OFF := Color(0.06, 0.05, 0.05)
+
+
+## Lights gear `g`'s "led" child (made by make) in `color`; Color.BLACK turns it off.
+static func set_led(g: Node, color: Color) -> void:
+	var led := g.get_node_or_null("led") as MeshInstance3D
+	if led == null:
+		return
+	var m := led.material_override as StandardMaterial3D
+	m.emission = color
+	m.albedo_color = LED_OFF if color == Color.BLACK else color
 
 
 ## True when gear `kind` comes from a model file (for the model check tool).
@@ -396,11 +430,27 @@ static func _build(kind: String) -> Array:
 		"patch":  # shoulder patch in the officer's player colour, with a light rim
 			b.box(Vector3(0.07, 0.08, 0.006), "cloth", Vector3.ZERO)
 			b.box(Vector3(0.078, 0.088, 0.003), "steel", Vector3(0, 0, -0.002))
-		"radio":  # shoulder radio: body, push-to-talk, antenna
+		"radio":  # chest radio: body, display, push-to-talk, channel knob, antenna, a channel light on top
 			b.box(Vector3(0.055, 0.1, 0.03), "polymer", Vector3(0, 0, 0))
+			b.box(Vector3(0.042, 0.022, 0.003), "screen", Vector3(0.0, 0.028, 0.0155))
 			b.box(Vector3(0.02, 0.03, 0.012), "polymer", Vector3(0.0, -0.02, 0.02))
+			b.box(Vector3(0.057, 0.012, 0.032), "metal", Vector3(0.0, -0.036, 0.0))  # belt clip band
+			b.tube(0.0065, 0.014, "metal", Vector3(-0.014, 0.057, 0.0), Vector3.ZERO, 10)  # channel knob
 			b.tube(0.004, 0.13, "polymer", Vector3(0.015, 0.11, 0), Vector3.ZERO, 6)
 			b.tube(0.007, 0.015, "polymer", Vector3(0.015, 0.18, 0), Vector3.ZERO, 6)
+			meta = {"led": Vector3(0.002, 0.052, 0.006)}
+		"helmet_cam":  # helmet camera on the side rail: origin on the helmet, the camera out to -X, lens to +Z
+			b.box(Vector3(0.008, 0.026, 0.055), "polymer", Vector3(-0.004, 0.0, 0.0))  # rail mount
+			b.box(Vector3(0.028, 0.03, 0.07), "polymer", Vector3(-0.022, 0.0, 0.006))  # body
+			b.tube(0.011, 0.012, "metal", Vector3(-0.022, 0.0, 0.045))  # lens barrel
+			b.tube(0.008, 0.003, "glass", Vector3(-0.022, 0.0, 0.052))
+			b.box(Vector3(0.01, 0.006, 0.012), "metal", Vector3(-0.022, 0.017, -0.014))  # record button
+			meta = {"led": Vector3(-0.022, 0.016, 0.028)}
+		"mic":  # speaker-microphone clipped to the vest strap: origin on the strap, out to +Z, cable down
+			b.box(Vector3(0.042, 0.058, 0.024), "polymer", Vector3(0.0, 0.0, 0.012))
+			b.box(Vector3(0.032, 0.026, 0.003), "metal", Vector3(0.0, 0.008, 0.0245))  # speaker grille
+			b.box(Vector3(0.012, 0.02, 0.008), "polymer", Vector3(0.024, -0.004, 0.012))  # talk button
+			b.tube(0.0035, 0.09, "strap", Vector3(-0.012, -0.07, 0.006), Vector3.ZERO, 6)  # coiled cable to the radio
 		"camera":  # door camera: handle, screen, probe forward
 			b.box(Vector3(0.035, 0.11, 0.04), "polymer", Vector3(0, -0.02, 0.0))
 			b.box(Vector3(0.1, 0.07, 0.02), "polymer", Vector3(0, 0.07, 0.01), Vector3(-30, 0, 0))

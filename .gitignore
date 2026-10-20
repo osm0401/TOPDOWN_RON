@@ -45,3 +45,7 @@ assets/textures/**/*.import
 
 # exported game builds (export_presets.cfg is tracked: it holds no passwords or keys)
 build/
+# motion clips (assets/anim/): the editor's import files are rebuilt on import
+assets/anim/*.import
+assets/anim/*.png
+assets/anim/*.jpg

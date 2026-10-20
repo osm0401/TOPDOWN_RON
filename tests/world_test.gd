@@ -7,6 +7,7 @@ extends Node
 const CharacterModels := preload("res://src/game/character_models.gd")
 const CharacterAnim := preload("res://src/game/character_anim.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
+const MotionClips := preload("res://src/game/motion_clips.gd")
 const PeopleLooks := preload("res://src/game/people_looks.gd")
 
 var _failed := 0
@@ -602,6 +603,7 @@ func _character_model_tests() -> void:
 	(up["node"] as Node).free()
 	_walk_rig_tests(dir)
 	_model_set_tests(dir)
+	_clip_tests(dir)
 
 	# in the 3D view: models replace the shapes and follow the NPC state
 	CharacterModels.folder = dir
@@ -619,6 +621,15 @@ func _character_model_tests() -> void:
 	var tint: Color = rim.get_shader_parameter("tint")
 	_check(CharacterModels.meshes(v3._players[0]["model"]["node"])[0].material_overlay == rim and is_equal_approx(tint.b, WorldView.PLAYER_COLORS[0].b)
 			and is_equal_approx(float(rim.get_shader_parameter("rim")), float(v3._cfg["characters"]["player_rim"])), "3D view: the officer keeps its player colour as a rim glow")
+	var kit: Dictionary = (v3._players[0]["model"] as Dictionary).get("gear_nodes", {})
+	_check(kit.has("helmet_cam") and kit.has("mic") and kit.has("radio") and (kit["helmet_cam"] as Node).has_node("led"),
+			"3D view: officers wear a helmet camera (with a recording light), a radio and a shoulder microphone")
+	if kit.has("radio"):
+		v3._on_speech("Police!", _w.players[0].pos, false)
+		v3._update_players(0.016)
+		var led: StandardMaterial3D = ((kit["radio"] as Node).get_node("led") as MeshInstance3D).material_override
+		_check(led.emission.r > 0.9 and led.emission.g < 0.3, "3D view: an officer who talks keys the radio (its light goes red)")
+		v3._players[0]["talk"] = 0.0
 	var i := 0
 	while _agent(i).dormant or _agent(i).brain.role != NpcBrain.Role.ENEMY:
 		i += 1
@@ -766,6 +777,130 @@ func _box_node(name: String, size: Vector3, at: Vector3) -> MeshInstance3D:
 ## Model sets (data/view3d.json characters.set): a model in the set folder wins, a missing one comes
 ## from the folder itself; a model that brings its own skeleton is re-rigged; gear model files with
 ## marker nodes replace the built-in shapes, and a file made in centimetres is scaled to size.
+## A test clip skeleton (Mixamo names) exported Z-up and facing -Y like a Blender file: the left
+## thigh swings forward 30 degrees at 0.5 s of a 1 s loop.
+func _test_clip_scene() -> Node3D:
+	var to_clip := Basis(Vector3.RIGHT, PI * 0.5)  # model space (Y up, +Z front) -> clip space (Z up, -Y front)
+	var at := {"Hips": Vector3(0, 1.0, 0), "Spine": Vector3(0, 1.1, 0), "Spine1": Vector3(0, 1.25, 0), "Spine2": Vector3(0, 1.4, 0),
+		"Neck": Vector3(0, 1.55, 0), "Head": Vector3(0, 1.65, 0), "LeftShoulder": Vector3(0.05, 1.5, 0), "LeftArm": Vector3(0.18, 1.5, 0),
+		"LeftForeArm": Vector3(0.45, 1.5, 0), "LeftHand": Vector3(0.7, 1.5, 0), "RightShoulder": Vector3(-0.05, 1.5, 0),
+		"RightArm": Vector3(-0.18, 1.5, 0), "RightForeArm": Vector3(-0.45, 1.5, 0), "RightHand": Vector3(-0.7, 1.5, 0),
+		"LeftUpLeg": Vector3(0.1, 0.95, 0), "LeftLeg": Vector3(0.1, 0.5, 0), "LeftFoot": Vector3(0.1, 0.08, 0),
+		"RightUpLeg": Vector3(-0.1, 0.95, 0), "RightLeg": Vector3(-0.1, 0.5, 0), "RightFoot": Vector3(-0.1, 0.08, 0)}
+	var parent := {"Spine": "Hips", "Spine1": "Spine", "Spine2": "Spine1", "Neck": "Spine2", "Head": "Neck", "LeftShoulder": "Spine2",
+		"LeftArm": "LeftShoulder", "LeftForeArm": "LeftArm", "LeftHand": "LeftForeArm", "RightShoulder": "Spine2", "RightArm": "RightShoulder",
+		"RightForeArm": "RightArm", "RightHand": "RightForeArm", "LeftUpLeg": "Hips", "LeftLeg": "LeftUpLeg", "LeftFoot": "LeftLeg",
+		"RightUpLeg": "Hips", "RightLeg": "RightUpLeg", "RightFoot": "RightLeg"}
+	var root := Node3D.new()
+	root.name = "clip"
+	var sk := Skeleton3D.new()
+	sk.name = "Skeleton3D"
+	root.add_child(sk)
+	for bone: String in at:
+		var b := sk.add_bone("mixamorig_" + bone)
+		var origin: Vector3 = at[bone] - (at[parent[bone]] if parent.has(bone) else Vector3.ZERO)
+		if parent.has(bone):
+			sk.set_bone_parent(b, sk.find_bone("mixamorig_" + parent[bone]))
+		sk.set_bone_rest(b, Transform3D(Basis(), to_clip * origin))
+	sk.reset_bone_poses()
+	var skin := Skin.new()  # a small skinned triangle: a glTF file keeps a skeleton only with a skin
+	for bone in sk.get_bone_count():
+		skin.add_bind(bone, sk.get_bone_global_rest(bone).affine_inverse())
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = PackedVector3Array([Vector3(0, 0, 1), Vector3(0.1, 0, 1), Vector3(0, 0.1, 1)])
+	arr[Mesh.ARRAY_BONES] = PackedInt32Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+	arr[Mesh.ARRAY_WEIGHTS] = PackedFloat32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+	var mi := MeshInstance3D.new()
+	mi.name = "body"
+	mi.mesh = mesh
+	mi.skin = skin
+	sk.add_child(mi)
+	mi.skeleton = NodePath("..")
+	var anim := Animation.new()
+	anim.length = 1.0
+	anim.loop_mode = Animation.LOOP_LINEAR
+	var tr := anim.add_track(Animation.TYPE_ROTATION_3D)
+	anim.track_set_path(tr, NodePath("Skeleton3D:mixamorig_LeftUpLeg"))
+	var fwd := Quaternion(to_clip * Vector3.LEFT, deg_to_rad(30.0))  # turning about model -X swings a hanging leg to +Z
+	anim.rotation_track_insert_key(tr, 0.0, Quaternion.IDENTITY)
+	anim.rotation_track_insert_key(tr, 0.5, fwd)
+	anim.rotation_track_insert_key(tr, 1.0, Quaternion.IDENTITY)
+	var lib := AnimationLibrary.new()
+	lib.add_animation("Walking", anim)
+	var ap := AnimationPlayer.new()
+	ap.name = "AnimationPlayer"
+	root.add_child(ap)
+	ap.add_animation_library("", lib)
+	return root
+
+
+## Motion-capture clips: baked from any facing, played in step with the stride on the auto-rig.
+func _clip_tests(dir: String) -> void:
+	var scene := _test_clip_scene()
+	var clip := MotionClips.bake_scene(scene)
+	scene.free()
+	_check(not clip.is_empty() and int(clip["frames"]) == 31, "clip: a Mixamo-named skeleton with an animation is baked (31 frames at 30 fps)")
+	if clip.is_empty():
+		return
+	var d0: PackedVector3Array = clip["dirs"][0]
+	var d15: PackedVector3Array = clip["dirs"][15]
+	_check(d0[MotionClips.Dir.UPPER_ARM_L].x > 0.99 and d0[MotionClips.Dir.THIGH_L].y < -0.99,
+			"clip: a Z-up file facing -Y is turned to the model's frame (left arm along +X, thighs down)")
+	_check(d15[MotionClips.Dir.THIGH_L].z > 0.45 and d15[MotionClips.Dir.THIGH_R].z < 0.01, "clip: the left thigh swings forward (+Z) at 0.5 s, the right stays")
+	_check(absf(float(clip["step"]) - 0.5) < 0.04, "clip: the left foot's furthest step is found (%.2f s)" % float(clip["step"]))
+	_check((clip["rots"][15][MotionClips.Rot.HIPS] as Quaternion).is_equal_approx(Quaternion.IDENTITY), "clip: a still pelvis stays unturned")
+	var half := MotionClips.sample(clip, 0.25, true)
+	_check(absf((half["dirs"] as PackedVector3Array)[MotionClips.Dir.THIGH_L].z - sin(deg_to_rad(15.0))) < 0.03, "clip: sampling between frames eases")
+	# through a .glb file, as the game loads it
+	var path := dir + "walk_test.glb"
+	scene = _test_clip_scene()
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	doc.append_from_scene(scene, state)
+	var wrote := doc.write_to_filesystem(state, ProjectSettings.globalize_path(path))
+	scene.free()
+	MotionClips.folder = dir
+	MotionClips.release()
+	var from_file := MotionClips.get_clip("walk_test")
+	_check(wrote == OK and not from_file.is_empty() and ((from_file["dirs"][15] as PackedVector3Array)[MotionClips.Dir.THIGH_L].z > 0.45),
+			"clip: the same clip read back from a .glb file")
+	_check(MotionClips.get_clip("walk_test", "walking").size() > 0 and MotionClips.get_clip("walk_test", "nope").is_empty(),
+			"clip: a take is picked by name (case ignored); an unknown take gives none")
+	_check(MotionClips.get_clip("missing").is_empty(), "clip: no file, no clip (the built-in walk stays)")
+	# on a figure: the left foot leads at phase PI/2 like the built-in walk, and the clip replaces it
+	var cfg := (JsonData.load_dict("res://data/view3d.json")["characters"] as Dictionary).duplicate(true)
+	cfg["set"] = ""
+	cfg["clips"] = {"walk": {"file": "walk_test"}}
+	var m := CharacterModels.make("civilian", cfg, "res://assets/characters/")
+	var sk := m.get("skeleton") as Skeleton3D
+	_check(sk != null, "clip: a real character model is rigged for the clip test")
+	if sk != null:
+		var foot_z := func(phase: float, amount: float) -> float:
+			CharacterAnim.pose(m, {"phase": phase, "amount": amount, "speed": 1.4, "dir": Vector3.BACK}, cfg)
+			var gr: Array[Quaternion] = []
+			var gp: Array[Vector3] = []
+			var q: Array[Quaternion] = []
+			q.assign(m["shown_q"])
+			CharacterAnim._fk(m["rig"], q, m["shown_hip"], gr, gp)
+			return gp[CharacterModels.Bone.FOOT_L].z - gp[CharacterModels.Bone.FOOT_R].z
+		var lead := float(foot_z.call(PI * 0.5, 1.0))
+		var level := float(foot_z.call(PI * 1.5, 1.0))
+		_check(lead > 0.15, "clip: at phase PI/2 the clip's left foot is ahead (%.2f m)" % lead)
+		_check(absf(level) < 0.06, "clip: half a stride later the clip's legs are together (the built-in walk would have the right foot ahead) (%.2f m)" % level)
+		var still := float(foot_z.call(PI * 0.5, 0.0))
+		var clips: Dictionary = cfg["clips"]
+		cfg.erase("clips")
+		var built_in := float(foot_z.call(PI * 0.5, 0.0))
+		cfg["clips"] = clips
+		_check(absf(still - built_in) < 0.002, "clip: standing still (no idle clip) the built-in standing pose is kept (%.3f / %.3f m)" % [still, built_in])
+		(m["node"] as Node).free()
+	MotionClips.folder = MotionClips.DIR
+	MotionClips.release()
+
+
 func _model_set_tests(dir: String) -> void:
 	var slim := Node3D.new()
 	slim.add_child(_box_node("body", Vector3(0.2, 2.0, 0.3), Vector3.ZERO))

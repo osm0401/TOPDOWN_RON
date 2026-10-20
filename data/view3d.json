@@ -197,6 +197,7 @@
     "up_height_m": 1.9,
     "yaw_deg": 90.0,
     "surrender_model": false,
+    "police_kit": {"_note": "경찰 장구: mic 어깨 무전 마이크, helmet_cam 헬멧 카메라(켜면 녹화 불빛이 rec_blink_s초마다 깜빡임). 가슴 무전기 불빛은 radio_blink_s초마다 초록으로 짧게 깜빡이고, 경찰이 말하면(명령, 보고) talk_s초 동안 빨강.", "mic": true, "helmet_cam": true, "rec_blink_s": 1.0, "radio_blink_s": 2.0, "talk_s": 1.5},
     "player_tint": 0.0,
     "player_rim": 0.3,
     "walk": {
@@ -230,6 +231,16 @@
       "fall_s": 0.45,
       "muzzle_s": 0.06,
       "hands_up_lift": 0.2
+    },
+    "clips": {
+      "_note": "모션 캡처 동작(docs/15-mocap-and-police-kit.md). assets/anim/<file>.glb(.gltf, .fbx)이 있으면 그 칸의 코드 동작 대신 쓴다. 없으면 지금처럼 코드 동작. 인물별로 다르게: <file>_<모델 이름>(walk_officer), <file>_<종류>(walk_civilian)를 먼저 찾는다. take: 파일 하나에 동작이 여럿일 때 쓸 동작 이름. speed: 재생 속도(idle, hands_up). from: 시작(초). loop: 반복(hands_up은 false면 마지막 자세로 멈춤). on: false면 끔. strength: 코드 동작 대신 쓰는 정도(0~1). head: 머리도 따라가는 정도(0~1, 누구를 보고 있을 때는 따라가지 않음).",
+      "strength": 1.0,
+      "head": 1.0,
+      "walk": {"file": "walk"},
+      "run": {"file": "run"},
+      "idle": {"file": "idle", "speed": 1.0},
+      "hands_up": {"file": "hands_up", "loop": false, "from": 0.0, "speed": 1.0},
+      "reload": {"file": "reload"}
     }
   },
   "surfaces": {

@@ -1064,6 +1064,13 @@ func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
 
 
 func _on_speech(text: String, pos: Vector2, from_npc: bool) -> void:
+	if not from_npc:  # the officer who spoke keys the radio: its light goes red for a moment
+		var best := -1
+		for s in world.players.size():
+			if world.players[s].present and (best < 0 or world.players[s].pos.distance_to(pos) < world.players[best].pos.distance_to(pos)):
+				best = s
+		if best >= 0 and best < _players.size():
+			_players[best]["talk"] = float(_cfg["characters"].get("police_kit", {}).get("talk_s", 1.5))
 	var l := _label(0.006, Color(1, 1, 0.8))
 	l.text = text
 	l.no_depth_test = true
@@ -1512,7 +1519,9 @@ func _fade(n: Dictionary, key: String, secs_key: String, delta: float) -> float:
 
 
 ## An officer's pose: rifle or pistol on the aim (the other one slung or holstered), reloading,
-## taking a knee to pick a lock, restrain or use the door camera, limp when dead.
+## taking a knee to pick a lock, restrain or use the door camera, limp when dead. The kit
+## (characters.police_kit): radio with its channel light (blinks green, red while the officer talks),
+## shoulder microphone, helmet camera with its recording light.
 func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	var model: Dictionary = n["model"]
 	var dead := ps.dead()
@@ -1543,6 +1552,11 @@ func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 		slots = {"hand": "pistol", "back": rifle}
 	slots["patch"] = "patch"
 	slots["radio"] = "radio"
+	var kit_cfg: Dictionary = _cfg["characters"].get("police_kit", {})
+	if bool(kit_cfg.get("mic", true)):
+		slots["mic"] = "mic"
+	if bool(kit_cfg.get("helmet_cam", true)):
+		slots["helmet_cam"] = "helmet_cam"
 	var w: WeaponState = ps.weapons[ps.active] if ps.active < ps.weapons.size() else null
 	if w != null and w.reloading and not dead and not ps.busy():
 		n["reload_t"] = float(n.get("reload_t", 0.0)) + delta
@@ -1550,6 +1564,23 @@ func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	else:
 		n["reload_t"] = 0.0
 	_pose(model, s, slots)
+	_kit_lights(n, model, dead, delta)
+
+
+## The radio's channel light (a short green blink every couple of seconds; red while the officer
+## talks: n["talk"] counts down after a call) and the helmet camera's recording light (blinking red).
+func _kit_lights(n: Dictionary, model: Dictionary, dead: bool, delta: float) -> void:
+	var kc: Dictionary = _cfg["characters"].get("police_kit", {})
+	var kit: Dictionary = model.get("gear_nodes", {})
+	var talk := maxf(float(n.get("talk", 0.0)) - delta, 0.0)
+	n["talk"] = talk
+	var offset := 0.37 * float(n.get("who", 0))  # the two officers do not blink in step
+	if kit.has("radio"):
+		var idle := fmod(_t + offset, float(kc.get("radio_blink_s", 2.0))) < 0.12
+		GearModels.set_led(kit["radio"], Color.BLACK if dead else (Color(1.0, 0.12, 0.08) if talk > 0.0 else (Color(0.15, 1.0, 0.3) if idle else Color.BLACK)))
+	if kit.has("helmet_cam"):
+		var rec := fmod(_t + offset, float(kc.get("rec_blink_s", 1.0)))
+		GearModels.set_led(kit["helmet_cam"], Color(1.0, 0.04, 0.04) if rec < float(kc.get("rec_blink_s", 1.0)) * 0.5 else Color.BLACK)
 
 
 ## An NPC's pose from its state: pistol low or on the officer it threatens, startled hands, cowering

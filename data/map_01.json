@@ -100,7 +100,7 @@
     {"role": "enemy", "pos": [1200, 300], "facing": 3.14, "suspect": true, "clues": ["cap", "band"], "style": "runner"},
     {"role": "enemy", "pos": [90, 280], "facing": 0.0, "reinforcement": true},
     {"role": "enemy", "pos": [90, 720], "facing": 0.0, "reinforcement": true},
-    {"role": "enemy", "pos": [590, 680], "facing": -1.57, "style": "hostage"}
+    {"role": "enemy", "pos": [590, 650], "facing": -1.57, "style": "hostage"}
   ],
   "walls": [
     [200, 150, 1200, 20],

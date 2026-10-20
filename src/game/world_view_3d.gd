@@ -11,6 +11,7 @@ extends Node3D
 
 ## A foot lands (walk cycle): at (px), speed (m/s), who (officer slot, or 2 + NPC index).
 signal footstep(at: Vector2, speed: float, who: int)
+signal lightning(delay_s: float)  ## a flash far off: its thunder is heard delay_s later
 
 const FOG := Color(0.02, 0.02, 0.03)
 const FAR := 5000.0
@@ -22,6 +23,9 @@ const CharacterModels := preload("res://src/game/character_models.gd")
 const CharacterAnim := preload("res://src/game/character_anim.gd")
 const GearModels := preload("res://src/game/gear_models.gd")
 const PropModels := preload("res://src/game/prop_models.gd")
+const PeopleLooks := preload("res://src/game/people_looks.gd")
+const POST := preload("res://src/game/post.gdshader")
+const Weather := preload("res://src/game/weather.gd")
 
 static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
 static var tex_folder := "res://assets/textures/"  ## where surface pictures are looked for (tests point it elsewhere)
@@ -46,6 +50,7 @@ var _fog_origin := Vector2.INF
 var _ring := TorusMesh.new()
 var _cam_ring: MeshInstance3D
 var _sil_ring: MeshInstance3D  ## outline range around the local officer in a dark room
+var _last_npc_shot := Vector2.INF  ## where the latest NPC shot came from (the officer it hit bleeds on that side)
 var _walls: Array[MeshInstance3D] = []
 var _wall_cut: Array[float] = []  ## per-wall height factor, lowered while it hides the local player
 var _doors: Array[Dictionary] = []
@@ -58,6 +63,12 @@ var _props_dirty := true  ## the sight polygon changed: furniture visibility to 
 var _police: Array[Dictionary] = []  ## police car light bars: {lights: [red, blue OmniLight3D], mats}
 var _surf_cache: Dictionary = {}  ## surface key -> shared material
 var _env: Environment
+var _post: ShaderMaterial  ## vignette, film grain, lens fringes over the picture
+var _moon: DirectionalLight3D
+var _rain: Dictionary = {}  ## Weather.build(): the rain over the ground outside
+var _bolt_rng := RandomNumberGenerator.new()
+var _bolt_next := -1.0  ## when the next lightning flashes (_t)
+var _bolt_t := -1.0  ## seconds since the flash began (< 0: none)
 var _wear: Array[Decal] = []  ## grime, scuffs, cracks, papers, stains (static)
 var _holes: Array[Decal] = []  ## bullet holes in walls and doors, oldest first (capped)
 var _stains: Array[Decal] = []  ## blood on the floor, oldest first (capped)
@@ -89,9 +100,9 @@ func _ready() -> void:
 	for s in 2:
 		_players.append(_make_player(s))
 		_players[s]["who"] = s
-	for a in world.director.agents:
-		_npcs.append(_make_npc(a))
-		_npcs[_npcs.size() - 1]["who"] = 1 + _npcs.size()
+	for i in world.director.agents.size():
+		_npcs.append(_make_npc(world.director.agents[i], i))
+		_npcs[i]["who"] = 2 + i
 	world.mouse_world = _mouse_ground
 	if quality == "":
 		quality = str(_cfg["graphics"]["quality"])
@@ -160,6 +171,10 @@ func _surface_mat(key: String) -> ShaderMaterial:
 	for k in ["scale", "tile_m", "rough_min", "rough_max", "bump", "grime_m", "plank_len", "dirt", "speckle", "bevel", "tex_m"]:
 		if s.has(k):
 			m.set_shader_parameter(k, float(s[k]))
+	var wet: Dictionary = (_cfg.get("weather", {}) as Dictionary).get("wet", {})
+	if wet.has(key):  # out in the rain: darker, glossy, puddles where drops ring
+		m.set_shader_parameter("wet", float(wet[key]))
+		m.set_shader_parameter("puddles", float(_cfg["weather"].get("puddles", 0.0)))
 	var tex := _surface_tex(key)
 	if tex != null:
 		m.set_shader_parameter("use_tex", true)
@@ -300,12 +315,18 @@ func _build_environment() -> void:
 	env.glow_bloom = 0.04
 	env.glow_hdr_threshold = 1.1
 	env.volumetric_fog_density = float(lc["haze_density"])
-	env.volumetric_fog_albedo = Color(0.7, 0.75, 0.85)
+	env.volumetric_fog_albedo = _col(lc.get("haze_color", [0.7, 0.75, 0.85]))
+	env.volumetric_fog_anisotropy = 0.2  # light scatters forward: halos round lamps, the torch beam
 	env.tonemap_mode = Environment.TONE_MAPPER_AGX
 	env.tonemap_exposure = float(gc["exposure"])
+	# the grade (graphics.grade): flatter colours, firmer contrast, cold shadows and a warm edge to
+	# the highlights, like night footage
+	var grade: Dictionary = gc.get("grade", {})
 	env.adjustment_enabled = true
-	env.adjustment_contrast = 1.06
-	env.adjustment_saturation = 0.92
+	env.adjustment_contrast = float(grade.get("contrast", 1.06))
+	env.adjustment_saturation = float(grade.get("saturation", 0.92))
+	if grade.has("shadows") and grade.has("highlights"):
+		env.adjustment_color_correction = grade_lut(_col(grade["shadows"]), _col(grade["highlights"]))
 	env.ssr_max_steps = 48
 	env.ssr_fade_in = 0.15
 	env.ssr_fade_out = 2.0
@@ -321,18 +342,20 @@ func _build_environment() -> void:
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
-	var vignette := CanvasLayer.new()  # darker corners under the HUD (the HUD's layers draw on top)
-	vignette.layer = -1
+	var post := CanvasLayer.new()  # lens and film under the HUD (the HUD's layers draw on top)
+	post.layer = -1
 	var vr := ColorRect.new()
 	vr.set_anchors_preset(Control.PRESET_FULL_RECT)
 	vr.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var vm := ShaderMaterial.new()
-	vm.shader = Shader.new()
-	vm.shader.code = "shader_type canvas_item;\nuniform float strength = 0.35;\nvoid fragment() {\n\tfloat d = length((UV - 0.5) * vec2(1.6, 1.2));\n\tCOLOR = vec4(0.0, 0.0, 0.0, smoothstep(0.55, 1.15, d) * strength);\n}\n"
-	vm.set_shader_parameter("strength", float(gc["vignette"]))
+	vm.shader = POST
+	vm.set_shader_parameter("vignette", float(gc["vignette"]))
+	vm.set_shader_parameter("grain", float(grade.get("grain", 0.0)))
+	vm.set_shader_parameter("aberration", float(grade.get("aberration", 0.0)))
 	vr.material = vm
-	vignette.add_child(vr)
-	add_child(vignette)
+	post.add_child(vr)
+	add_child(post)
+	_post = vm
 	_cam = Camera3D.new()
 	_cam.fov = float(_cfg["camera"]["fov_deg"])
 	_cam.far = 300.0
@@ -391,6 +414,7 @@ func _build_level() -> void:
 	_build_props()
 	_build_wear()
 	_build_lights()
+	_rain = Weather.build(self, lv.bounds, lv.building, _k, _cfg.get("weather", {}))
 	_add(_fog, _mat(FOG, true))
 
 
@@ -657,6 +681,73 @@ func _build_props() -> void:
 			_police.append({"lights": lights, "mats": mi.get_meta("light_mats")})
 
 
+## Lightning far off now and then (weather.lightning): the moonlight flares twice, then the
+## thunder follows (the lightning signal, for the sound) a few seconds later.
+func _flash_lightning(delta: float) -> void:
+	var lc: Dictionary = (_cfg.get("weather", {}) as Dictionary).get("lightning", {})
+	if lc.is_empty() or _moon == null:
+		return
+	if _bolt_next < 0.0:
+		_bolt_next = _t + _bolt_rng.randf_range(float(lc["every_s"][0]), float(lc["every_s"][1]))
+	if _t >= _bolt_next:
+		_bolt_next = _t + _bolt_rng.randf_range(float(lc["every_s"][0]), float(lc["every_s"][1]))
+		_bolt_t = 0.0
+		lightning.emit(_bolt_rng.randf_range(float(lc["thunder_delay_s"][0]), float(lc["thunder_delay_s"][1])))
+	var flare := 0.0
+	if _bolt_t >= 0.0:
+		_bolt_t += delta
+		if _bolt_t < 0.07 or (_bolt_t > 0.16 and _bolt_t < 0.24):
+			flare = 1.0
+		elif _bolt_t < 0.6:
+			flare = 0.12 * (0.6 - _bolt_t) / 0.6
+		else:
+			_bolt_t = -1.0
+	_moon.light_energy = float(_cfg["lighting"]["moon"]["energy"]) + flare * float(lc["flash_energy"])
+
+
+## A worn-out light: on most of the time, then for a moment it stutters on and off (lighting.flicker:
+## how often, how long, how dim when off).
+func _flicker_lights() -> void:
+	var fc: Dictionary = _cfg["lighting"].get("flicker", {})
+	if fc.is_empty():
+		return
+	for l in _lights:
+		if not l.has("flicker"):
+			continue
+		var f: Dictionary = l["flicker"]
+		if _t >= float(f["end"]):
+			var rng: RandomNumberGenerator = f["rng"]
+			f["start"] = _t + rng.randf_range(float(fc["every_s"][0]), float(fc["every_s"][1]))
+			f["end"] = float(f["start"]) + rng.randf_range(float(fc["length_s"][0]), float(fc["length_s"][1]))
+		var on := true
+		if _t >= float(f["start"]):  # stuttering: on or off every few hundredths of a second
+			on = fposmod(sin(floorf(_t * 24.0) * 12.9898 + float(f["start"])) * 43758.5453, 1.0) > 0.45
+		(l["node"] as OmniLight3D).light_energy = float(f["base"]) * (1.0 if on else float(fc["low"]))
+
+
+## The colour grade as a per-channel curve (Environment.adjustment_color_correction): `shadows`
+## pulls the darks toward its colour and `highlights` the lights (0.5 in a channel: unchanged).
+static func grade_lut(shadows: Color, highlights: Color) -> GradientTexture1D:
+	var offsets := PackedFloat32Array()
+	var colors := PackedColorArray()
+	for i in 33:
+		var x := i / 32.0
+		var dark := 6.75 * x * (1.0 - x) * (1.0 - x)  # 1 at a third
+		var light := 6.75 * x * x * (1.0 - x)  # 1 at two thirds
+		var c := Color(x, x, x)
+		for ch in 3:
+			c[ch] = clampf(x + (shadows[ch] - 0.5) * dark + (highlights[ch] - 0.5) * light, 0.0, 1.0)
+		offsets.append(x)
+		colors.append(c)
+	var g := Gradient.new()
+	g.offsets = offsets
+	g.colors = colors
+	var tex := GradientTexture1D.new()
+	tex.gradient = g
+	tex.width = 256
+	return tex
+
+
 ## Light bar pattern: red flashes twice, then blue twice, over period_s.
 func _flash_police() -> void:
 	if _police.is_empty():
@@ -672,20 +763,48 @@ func _flash_police() -> void:
 
 
 ## Ceiling lights in lit rooms only (long rooms get one per spacing_m), a street lamp at
-## the exit. Dark rooms get none, so light spills in only through open doors.
+## the exit. Dark rooms get none, so light spills in only through open doors. Each room's light
+## after its floor (lighting.room_kinds: warm bulbs at home, cold tubes in the office and the
+## corridor), falling off with distance (pools of light, darker corners); some lights stutter now
+## and then (flicker). Outside, moonlight; a roof that only casts shadows keeps it out of the rooms.
 func _build_lights() -> void:
 	var lc: Dictionary = _cfg["lighting"]
 	var rc: Dictionary = lc["room"]
+	var kinds: Dictionary = lc.get("room_kinds", {})
 	for rm in world.level.rooms:
 		if rm["dark"]:
 			continue
+		var kc: Dictionary = rc.duplicate()
+		kc.merge(kinds.get(str(rm["floor"]), {}), true)
 		var r: Rect2 = rm["rect"]
 		var along_x := r.size.x >= r.size.y
-		var n := maxi(1, roundi((r.size.x if along_x else r.size.y) * _k / float(rc["spacing_m"])))
+		var n := maxi(1, roundi((r.size.x if along_x else r.size.y) * _k / float(kc["spacing_m"])))
 		for i in n:
 			var t := (float(i) + 0.5) / float(n)
-			_add_omni(r.position + (Vector2(r.size.x * t, r.size.y * 0.5) if along_x else Vector2(r.size.x * 0.5, r.size.y * t)),
-					float(rc["height_m"]), float(rc["energy"]), float(rc["range_m"]), _col(rc["color"]))
+			var l := _add_omni(r.position + (Vector2(r.size.x * t, r.size.y * 0.5) if along_x else Vector2(r.size.x * 0.5, r.size.y * t)),
+					float(kc["height_m"]), float(kc["energy"]), float(kc["range_m"]), _col(kc["color"]))
+			l.omni_attenuation = float(kc.get("attenuation", 1.0))
+			var rng := RandomNumberGenerator.new()  # the same lights flicker on both screens
+			rng.seed = hash("light/%s/%d" % [rm["name"], i])
+			if rng.randf() < float(kc.get("flicker", 0.0)):
+				_lights[-1]["flicker"] = {"rng": rng, "base": l.light_energy, "start": INF, "end": -INF}
+	var mc: Dictionary = lc.get("moon", {})
+	if not mc.is_empty():
+		_moon = DirectionalLight3D.new()
+		_moon.light_color = _col(mc["color"])
+		_moon.light_energy = float(mc["energy"])
+		_moon.rotation_degrees = Vector3(float(mc["pitch_deg"]), float(mc["yaw_deg"]), 0.0)
+		_moon.shadow_enabled = true
+		_moon.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+		_moon.directional_shadow_max_distance = 80.0
+		_moon.light_bake_mode = Light3D.BAKE_DISABLED  # no moonlight bouncing into the rooms
+		add_child(_moon)
+		var b := world.level.building
+		var caster_h := float(lc["shadow_caster_h"])
+		var roof := _add(_box(Vector3(b.size.x * _k, 0.1, b.size.y * _k)), _surface_mat("wall"))
+		roof.position = _p3(b.get_center(), caster_h + 0.05)
+		roof.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_SHADOWS_ONLY
+		roof.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
 	var sc: Dictionary = lc["street"]
 	var lamps := 0
 	for p in _props:  # street lamps hang their light from the lamp head (not from the pole: the cutaway lowers that)
@@ -749,6 +868,7 @@ func _make_player(slot: int) -> Dictionary:
 	if not model.is_empty():
 		for mi in CharacterModels.meshes(model["node"]):
 			mi.layers = 2  # people take no decals (bullet holes, blood on the floor)
+		model["look"] = {"tints": {"patch": WorldView.PLAYER_COLORS[slot]}}  # shoulder patch in the player's colour
 	var rim: ShaderMaterial = null
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
@@ -792,19 +912,27 @@ func _make_player(slot: int) -> Dictionary:
 		"dot": _add(_sphere(0.05), _mat(Color(1.0, 0.2, 0.2), true))}
 
 
-func _make_npc(a: NpcDirector.Agent) -> Dictionary:
+## NPC number `index`: its own look (clothes, skin, build, what it wears; PeopleLooks) on one of the
+## model files of its kind (enemy, enemy_2, enemy_3 ... when they exist).
+func _make_npc(a: NpcDirector.Agent, index: int) -> Dictionary:
 	var root := Node3D.new()
 	add_child(root)
 	var rig := Node3D.new()
 	root.add_child(rig)
 	var mat := _mat(WorldView.ENEMY_COLOR)
 	var kind := "enemy" if a.brain.role == NpcBrain.Role.ENEMY else "civilian"
-	var model := CharacterModels.make(kind, _cfg["characters"])
+	var look := PeopleLooks.pick(kind, index, _cfg.get("people", {}))
+	var names := CharacterModels.variants(kind, _cfg["characters"])
+	var model_name: String = names[int(look["variant"]) % names.size()]
+	var model := CharacterModels.make(model_name, _cfg["characters"])
 	if not model.is_empty():
 		for mi in CharacterModels.meshes(model["node"]):
 			mi.layers = 2  # people take no decals (bullet holes, blood on the floor)
+		PeopleLooks.apply(model, look)
 	var separate_up := bool(_cfg["characters"]["surrender_model"])  # else the model itself raises its hands
-	var model_up := CharacterModels.make(kind + "_up", _cfg["characters"]) if separate_up and not model.is_empty() else {}
+	var model_up := CharacterModels.make(model_name + "_up", _cfg["characters"]) if separate_up and not model.is_empty() else {}
+	if not model_up.is_empty():
+		PeopleLooks.apply(model_up, look)
 	if model.is_empty():
 		_add(_capsule(), mat, rig).position.y = _body_h * 0.5
 		_add(_sphere(0.17), mat, rig).position.y = _body_h + 0.12
@@ -900,6 +1028,7 @@ func _on_sound(kind: int, pos: Vector2) -> void:
 
 
 func _on_shot(shooter: int, from: Vector2, to: Vector2, _hit_npc: bool) -> void:
+	_wound_from_shot(shooter, from, to, _hit_npc)
 	var m := _mat(Color(1.0, 0.35, 0.3) if shooter >= 2 else Color(1.0, 0.95, 0.5), true)
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	var mi := _add(_box(Vector3(0.04, 0.04, 1.0)), m)
@@ -1054,6 +1183,8 @@ func _update_level(delta: float) -> void:
 			p["cut"] = lerpf(float(p["cut"]), float(_cfg["cutaway"]["low"]) if hides else 1.0, step)
 			(p["node"] as Node3D).scale.y = p["cut"]
 	_flash_police()
+	_flicker_lights()
+	_flash_lightning(delta)
 	for i in _doors.size():
 		var d: Dictionary = _doors[i]
 		var st := lv.get_door_state(i)
@@ -1213,7 +1344,9 @@ func _update_npcs(delta: float) -> void:
 		var model_up: Dictionary = n["model_up"]
 		var hands_up := st == S.SURRENDER and not model_up.is_empty()
 		if lying:  # a model lies face down (hands behind its head) when down, on its back when dead
-			n["prone"] = st == S.DOWN and not model.is_empty()
+			# down: face down, hands behind the head; dead: on its back, or on its face when the shot came
+			# from behind (it falls away from the shooter)
+			n["prone"] = not model.is_empty() and (st == S.DOWN or (st == S.DEAD and float(n.get("hit_from_z", 1.0)) < -0.25))
 		var prone: bool = n.get("prone", false)
 		var lie := _fall(n, lying, delta)
 		rig.basis = Basis(Vector3.BACK, (-PI * 0.5 if prone else PI * 0.5) * lie)
@@ -1351,6 +1484,7 @@ func _gear(model: Dictionary, kind: String) -> Node3D:
 		var g := GearModels.make(kind)
 		g.layers = 2
 		g.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+		PeopleLooks.tint(g, kind, model.get("look", {}))  # this person's hair, beanie, bag colour; the officer's patch
 		(model["skeleton"] as Skeleton3D).add_child(g)
 		have[kind] = g
 	return have[kind]
@@ -1407,6 +1541,8 @@ func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	else:
 		s["hold"] = H.PISTOL
 		slots = {"hand": "pistol", "back": rifle}
+	slots["patch"] = "patch"
+	slots["radio"] = "radio"
 	var w: WeaponState = ps.weapons[ps.active] if ps.active < ps.weapons.size() else null
 	if w != null and w.reloading and not dead and not ps.busy():
 		n["reload_t"] = float(n.get("reload_t", 0.0)) + delta
@@ -1428,12 +1564,20 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 		return
 	var CS := CharacterAnim.Stance
 	var H := CharacterAnim.Hold
+	var scared := 0.0  # civilians shake when they give up or hide; a surrendered enemy a little
+	if st in [S.SURRENDER, S.HIDE, S.DOWN, S.RESTRAINED]:
+		scared = 1.0 if b.role == NpcBrain.Role.CIVILIAN else (0.35 if not b.armed else 0.0)
+	s["tremble"] = lerpf(float(n.get("tremble", 0.0)), scared, minf(delta * 2.0, 1.0))
+	n["tremble"] = s["tremble"]
 	s["vel"] = n["walk_v"]
 	s["flinch"] = _fade(n, "flinch", "flinch_s", delta)
 	s["recoil"] = _fade(n, "recoil", "recoil_s", delta)
 	var slots := {}
+	for slot: String in ((model.get("look", {}) as Dictionary).get("acc", {}) as Dictionary):  # what this person wears
+		slots[slot] = model["look"]["acc"][slot]
 	if a.clues.has("cap"):
 		slots["cap"] = "cap"
+		slots.erase("hat")  # the red cap is the clue: nothing else on the head
 	if a.clues.has("band"):
 		slots["band"] = "band"
 	var to_officer := Vector3.ZERO
@@ -1507,6 +1651,41 @@ func _gun_dir(model: Dictionary) -> Vector3:
 func _on_damaged(slot: int) -> void:
 	if slot >= 0 and slot < _players.size():
 		_players[slot]["flinch"] = 1.0
+		var model: Dictionary = _players[slot]["model"]
+		if not model.is_empty() and _last_npc_shot != Vector2.INF:  # blood on the officer's side facing the shooter
+			var ps: PlayerState = world.players[slot]
+			PeopleLooks.add_wound(model, _to_model(model, _p3(_last_npc_shot - world.display_pos(slot), 0.0)),
+					randf_range(0.55, 0.8), float(_cfg["effects"]["wound"]["radius"]), randf_range(-1.0, 1.0))
+
+
+## A shot that hit an NPC leaves a wound on it (on the side toward the shooter); a less-lethal round
+## leaves none. NPC shots are remembered for the officer they may hit (_on_damaged).
+func _wound_from_shot(shooter: int, from: Vector2, to: Vector2, hit_npc: bool) -> void:
+	if shooter >= 2:
+		_last_npc_shot = from
+		return
+	if not hit_npc or shooter < 0 or shooter >= world.players.size():
+		return
+	var ps: PlayerState = world.players[shooter]
+	if ps.weapon_kinds.size() > ps.active and ps.weapon_kinds[ps.active] == "rifle_nonlethal":
+		return
+	var best := -1
+	var best_d := 40.0
+	for i in mini(_npcs.size(), world.director.agents.size()):
+		var d := world.director.agents[i].pos.distance_to(to)
+		if d < best_d:
+			best = i
+			best_d = d
+	if best < 0:
+		return
+	var model: Dictionary = _npcs[best]["model"]
+	if model.is_empty():
+		return
+	var at := world.director.agents[best].pos
+	var toward := _to_model(model, _p3(from - at, 0.0))
+	if world.director.agents[best].brain.alive():
+		_npcs[best]["hit_from_z"] = toward.z  # (a killing shot from behind drops it on its face)
+	PeopleLooks.add_wound(model, toward, randf_range(0.52, 0.8), float(_cfg["effects"]["wound"]["radius"]), randf_range(-1.0, 1.0))
 
 
 ## Tint laid over an NPC model: white flash when hit, grey when dead, darker while down, hiding
@@ -1774,6 +1953,8 @@ func _update_casings(delta: float) -> void:
 ## A dead body bleeds a pool that spreads under its chest over pool_s.
 func _pool(n: Dictionary, a: NpcDirector.Agent, delta: float) -> void:
 	var fx: Dictionary = _cfg["effects"]
+	if not (n["model"] as Dictionary).is_empty():  # the clothes soak up more as it lies there
+		PeopleLooks.spread_wounds(n["model"], delta * float(fx["wound"]["spread_per_s"]), float(fx["wound"]["max_radius"]))
 	if not n.has("pool"):
 		var chest := a.pos + Vector2(-0.8 / _k, 0.0).rotated(a.brain.facing)  # lying on its back, head behind it
 		n["pool"] = {"decal": _stain(chest, 0.2), "age": 0.0}

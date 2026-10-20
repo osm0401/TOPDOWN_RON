@@ -89,6 +89,22 @@ func _test_sfx() -> void:
 	_check(hum.loop_mode == AudioStreamWAV.LOOP_FORWARD and hum.loop_end == count, "hum loops over its whole length")
 	var seam := absf(float(hum.data.decode_s16(0)) - float(hum.data.decode_s16((count - 1) * 2))) / 32768.0
 	_check(seam < 0.1, "hum loop seam is continuous")
+	var rain := SfxSynth.rain()
+	var rc := rain.data.size() / 2
+	var rain_seam := absi(rain.data.decode_s16(0) - rain.data.decode_s16((rc - 1) * 2))
+	var inner := 0  # hiss jumps from sample to sample anyway: the seam must not jump more than that
+	for i in range(1, rc):
+		inner = maxi(inner, absi(rain.data.decode_s16(i * 2) - rain.data.decode_s16((i - 1) * 2)))
+	_check(rain.loop_mode == AudioStreamWAV.LOOP_FORWARD and rain.loop_end == rc and rain_seam <= inner, "rain loops over its whole length without a click")
+	var thunder := SfxSynth.thunder(131)
+	var tn := thunder.data.size() / 2
+	var early := 0
+	var late := 0
+	for i in range(int(0.2 * SfxSynth.RATE), int(1.0 * SfxSynth.RATE)):
+		early = maxi(early, absi(thunder.data.decode_s16(i * 2)))
+	for i in range(tn - int(0.3 * SfxSynth.RATE), tn):
+		late = maxi(late, absi(thunder.data.decode_s16(i * 2)))
+	_check(tn >= 4 * SfxSynth.RATE and early > 8000 and late < early / 4, "thunder rolls loud, then dies out")
 
 
 func _test_weapon() -> void:
@@ -555,7 +571,9 @@ func _test_tactics() -> void:
 	var ab := _new_brain(E)
 	p = _brain_params()
 	p["ambush_chance"] = 1.0
-	ab = NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded := RandomNumberGenerator.new()
+	seeded.seed = 11  # (the roll is capped at 95 %: a fixed seed keeps the test from failing now and then)
+	ab = NpcBrain.new(E, p, seeded, false)
 	ab.hear("door", Vector2(400, 0), 0.5, true)
 	ab.tick(0.05)
 	ab.set_ambush(Vector2(50, 50), Vector2(300, 50))
@@ -568,7 +586,9 @@ func _test_tactics() -> void:
 	_run_brain(ab, float((p["ambush_s"] as Array)[1]) + 0.2)
 	out = ab.tick(0.05)
 	_check(ab.state == S.INVESTIGATE and not ab.aiming and out["move_to"] == Vector2(400, 0), "nobody came: leaves the ambush and goes to look")
-	var sb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded2 := RandomNumberGenerator.new()
+	seeded2.seed = 11
+	var sb := NpcBrain.new(E, p, seeded2, false)
 	sb.hear("door", Vector2(400, 0), 0.5, true)
 	sb.tick(0.05)
 	sb.set_ambush(Vector2.INF, Vector2(300, 0))
@@ -579,7 +599,9 @@ func _test_tactics() -> void:
 	p = _brain_params()
 	p["hurt_surrender_chance"] = 0.0
 	p["retreat_chance"] = 1.0
-	var rb := NpcBrain.new(E, p, RandomNumberGenerator.new(), false)
+	var seeded3 := RandomNumberGenerator.new()
+	seeded3.seed = 11
+	var rb := NpcBrain.new(E, p, seeded3, false)
 	rb.see_player(Vector2(200, 0))
 	_run_brain(rb, 1.4, Vector2(200, 0))
 	rb.on_hit(2, false, Vector2(200, 0))

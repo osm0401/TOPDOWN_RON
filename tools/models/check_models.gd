@@ -3,12 +3,14 @@ extends SceneTree
 ## assets/characters/<set>/ and assets/gear/<set>/ the way the game does, prints one line per check
 ## (PASS / WARN / FAIL, with what to change) and, unless run with --headless, saves pictures:
 ## tools/models/_out/<set>_characters.png (every character from the front and the side at rest, then
-## in the game's poses with the set's gear) and <set>_gear.png (every gear model with its points).
+## in the game's poses with the set's gear), <set>_people.png (a crowd dressed the way the game does,
+## enemy_2 / civilian_2 ... files mixed in) and <set>_gear.png (every gear model with its points).
 ##   Godot --path <project> --script res://tools/models/check_models.gd -- [--set=gemini]
 ## Exit code 1 when a check failed, else 0. Missing files are not failures: the game keeps the old
 ## model for them.
 
 const CM := preload("res://src/game/character_models.gd")
+const PL := preload("res://src/game/people_looks.gd")
 const CA := preload("res://src/game/character_anim.gd")
 const GM := preload("res://src/game/gear_models.gd")
 const PEOPLE: Array[String] = ["officer", "enemy", "civilian", "enemy_up", "civilian_up"]
@@ -44,6 +46,10 @@ func _init() -> void:
 	for name in PEOPLE:
 		if _check_person(name):
 			have.append(name)
+	for kind: String in ["enemy", "civilian"]:  # more people of a kind: enemy_2.glb, civilian_2.glb ...
+		for name in CM.variants(kind, cfg).slice(1):
+			if _check_person(name):
+				have.append(name)
 	for kind: String in GEAR_POINTS:
 		_check_gear(kind)
 	print("RESULT: %d PASS, %d WARN, %d FAIL" % [counts["PASS"], counts["WARN"], counts["FAIL"]])
@@ -53,6 +59,7 @@ func _init() -> void:
 		return
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(OUT))
 	_people_picture(have)
+	_crowd_picture(have)
 	_gear_picture()
 
 
@@ -313,6 +320,8 @@ func _people_picture(have: Array[String]) -> void:
 	for f in figs.duplicate():
 		var m: Dictionary = f[0]
 		var node: Node3D = m["node"]
+		if not PEOPLE.has(String(node.name)):  # enemy_2, civilian_2 ...: shown in the crowd picture
+			continue
 		root.add_child(node)
 		node.position = Vector3(x, 0, 0)
 		var name := String(node.name)
@@ -366,6 +375,58 @@ func _people_picture(have: Array[String]) -> void:
 	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
 	cam.size = 7.4
 	cam.position = Vector3(3.9, -1.55, 10.0)
+	root.add_child(cam)
+	cam.make_current()
+
+
+## What the game makes of the models: eight enemies and eight civilians as the game dresses them
+## (PeopleLooks: clothes, skin, build, what they wear), a wounded one, and an officer with the
+## shoulder patch and radio.
+func _crowd_picture(have: Array[String]) -> void:
+	var people: Dictionary = JsonData.load_dict("res://data/view3d.json").get("people", {})
+	var vp := _viewport(Vector2i(1800, 900), "_people.png")
+	var root := Node3D.new()
+	vp.add_child(root)
+	var S := CA.Stance
+	var H := CA.Hold
+	var row := 0
+	for kind: String in ["enemy", "civilian"]:
+		if not have.has(kind):
+			continue
+		for i in 9:
+			var look := PL.pick(kind, i, people)
+			var names := CM.variants(kind, cfg)  # the model file the game would give this person
+			var m := CM.make(names[int(look["variant"]) % names.size()], cfg)
+			PL.apply(m, look)
+			var sk: Skeleton3D = m["skeleton"]
+			var gear := {}
+			var slots: Dictionary = (look["acc"] as Dictionary).duplicate()
+			if kind == "enemy" and i % 3 == 0:
+				slots["hand"] = "pistol"
+			for slot: String in slots:
+				var g := GM.make(slots[slot])
+				PL.tint(g, slots[slot], look)
+				sk.add_child(g)
+				gear[slot] = g
+			m["gear"] = gear
+			if i == 8:  # shot twice from the front, once from the side
+				PL.add_wound(m, Vector3(0, 0, 1), 0.7, 0.04, 0.3)
+				PL.add_wound(m, Vector3(0, 0, 1), 0.6, 0.03, -0.6)
+				PL.add_wound(m, Vector3(1, 0, 0), 0.75, 0.03, 0.0)
+			var s := {"stance": S.STAND, "hold": H.PISTOL_LOW if slots.has("hand") else H.NONE, "t": float(i)}
+			if i % 4 == 3:
+				s.merge({"phase": 1.0 + i, "amount": 1.0, "speed": 1.5}, true)
+			var node: Node3D = m["node"]
+			root.add_child(node)
+			node.position = Vector3(i * 1.0, -row * 2.3, 0)
+			node.rotation_degrees.y = 20.0
+			figs.append([m, s])
+		_label(kind + " x9 (last: wounded)", Vector3(4.0, 2.05 - row * 2.3, 0), root)
+		row += 1
+	var cam := Camera3D.new()
+	cam.projection = Camera3D.PROJECTION_ORTHOGONAL
+	cam.size = 4.6
+	cam.position = Vector3(4.0, -0.25, 10.0)
 	root.add_child(cam)
 	cam.make_current()
 

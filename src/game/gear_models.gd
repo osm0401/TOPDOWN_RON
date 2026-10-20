@@ -1,7 +1,11 @@
 extends RefCounted
 ## Gear the 3D view puts on the character models, built from boxes and cylinders (no asset files):
 ## the officers' rifles (rifle_lethal black, rifle_nonlethal with orange less-lethal furniture) and
-## pistol, the suspects' pistol, handcuffs, the red cap and yellow armband clues, the door camera.
+## pistol, the suspects' pistol, handcuffs, the red cap and yellow armband clues, the door camera;
+## and what people wear (ACCESSORIES): a beanie, glasses, sunglasses, a bandana over the face, a
+## backpack, the officers' shoulder patch and radio. Beanie, bandana and glasses are built to a unit
+## head (1 across) and scaled to each wearer (CharacterAnim); the view tints beanie, bandana,
+## backpack and patch per person (material_override). (Hair is painted on: character.gdshader.)
 ## make() returns a MeshInstance3D whose local frame is: origin where the right hand grips, +Z out of
 ## the muzzle, +Y up. Its metadata holds the points CharacterAnim needs, in that frame: "fore" (where
 ## the support hand holds), "muzzle", "light" (weapon light lens) and "stock" (butt end, rifles).
@@ -14,7 +18,9 @@ extends RefCounted
 ## No class_name: preloaded (see character_models.gd).
 
 const CharacterModels := preload("res://src/game/character_models.gd")
-const KINDS: Array[String] = ["rifle_lethal", "rifle_nonlethal", "pistol", "cuffs", "cap", "band", "camera"]
+const ACCESSORIES: Array[String] = ["beanie", "glasses", "sunglasses", "bandana", "backpack", "patch", "radio"]
+const KINDS: Array[String] = ["rifle_lethal", "rifle_nonlethal", "pistol", "cuffs", "cap", "band", "camera",
+	"beanie", "glasses", "sunglasses", "bandana", "backpack", "patch", "radio"]
 const POINTS: Array[String] = ["fore", "muzzle", "light", "stock", "mag"]
 const DIR := "res://assets/gear/"
 
@@ -161,12 +167,32 @@ static func _mat(key: String) -> StandardMaterial3D:
 		"red":
 			m.albedo_color = Color(0.85, 0.08, 0.07)
 			m.roughness = 0.8
+		"dark_red":
+			m.albedo_color = Color(0.45, 0.04, 0.04)
+			m.roughness = 0.85
 		"yellow":  # armband: a clue, so it glows a little to stay readable in the dark
 			m.albedo_color = Color(1.0, 0.85, 0.15)
 			m.roughness = 0.8
 			m.emission_enabled = true
 			m.emission = Color(1.0, 0.8, 0.1)
 			m.emission_energy_multiplier = 0.25
+		"cloth":  # tinted per person (material_override); this is the colour without one
+			m.albedo_color = Color(0.2, 0.2, 0.22)
+			m.roughness = 0.95
+		"frame":
+			m.albedo_color = Color(0.05, 0.05, 0.05)
+			m.roughness = 0.35
+		"clear_lens":
+			m.albedo_color = Color(0.85, 0.9, 0.95, 0.25)
+			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			m.roughness = 0.05
+		"dark_lens":
+			m.albedo_color = Color(0.03, 0.03, 0.04)
+			m.metallic = 0.5
+			m.roughness = 0.08
+		"strap":
+			m.albedo_color = Color(0.06, 0.06, 0.07)
+			m.roughness = 0.9
 		"screen":
 			m.albedo_color = Color(0.1, 0.3, 0.25)
 			m.emission_enabled = true
@@ -202,6 +228,32 @@ class Builder:
 		m.radial_segments = sides
 		m.rings = 1
 		add(m, mat, at, rot_deg)
+
+	## A band round the Y axis from from_deg to to_deg (0 = +Z, the face), open, both sides drawn:
+	## the part of a bandana or a hat brim that wraps a head.
+	func arc(radius: float, top: float, bottom: float, from_deg: float, to_deg: float, mat: String, at := Vector3.ZERO, steps := 14, depth := -1.0) -> void:
+		var rz := radius if depth < 0.0 else depth  # an oval: radius across (x), depth front to back (z)
+		var key := mat + "#arc"  # its own surface: hand-made vertices do not mix with appended shapes
+		if not tools.has(key):
+			var st0 := SurfaceTool.new()
+			st0.begin(Mesh.PRIMITIVE_TRIANGLES)
+			tools[key] = st0
+		var st: SurfaceTool = tools[key]
+		for i in steps:
+			var a0 := deg_to_rad(lerpf(from_deg, to_deg, float(i) / steps))
+			var a1 := deg_to_rad(lerpf(from_deg, to_deg, float(i + 1) / steps))
+			var p: Array[Vector3] = [Vector3(sin(a0) * radius, top, cos(a0) * rz), Vector3(sin(a1) * radius, top, cos(a1) * rz),
+					Vector3(sin(a1) * radius, bottom, cos(a1) * rz), Vector3(sin(a0) * radius, bottom, cos(a0) * rz)]
+			var nrm: Array[Vector3] = [Vector3(sin(a0), 0, cos(a0)), Vector3(sin(a1), 0, cos(a1)), Vector3(sin(a1), 0, cos(a1)), Vector3(sin(a0), 0, cos(a0))]
+			var uv: Array[Vector2] = [Vector2(float(i) / steps, 0), Vector2(float(i + 1) / steps, 0), Vector2(float(i + 1) / steps, 1), Vector2(float(i) / steps, 1)]
+			for idx in [0, 1, 2, 0, 2, 3]:  # outside
+				st.set_normal(nrm[idx])
+				st.set_uv(uv[idx])
+				st.add_vertex(at + p[idx])
+			for idx in [0, 2, 1, 0, 3, 2]:  # inside
+				st.set_normal(-nrm[idx])
+				st.set_uv(uv[idx])
+				st.add_vertex(at + p[idx])
 
 	## One surface per material key, in the order of `tools`.
 	func commit() -> ArrayMesh:
@@ -242,14 +294,25 @@ static func _build(kind: String) -> Array:
 			b.tube(0.013, 0.004, "lens", Vector3(0.04, 0.07, 0.402))
 			meta = {"fore": Vector3(0.0, 0.01, 0.3), "muzzle": Vector3(0, 0.07, 0.6), "light": Vector3(0.04, 0.07, 0.405), "stock": Vector3(0, 0.03, -0.33),
 					"mag": Vector3(0, 0.0, 0.08)}
-		"pistol":  # polymer striker pistol with an underbarrel light
-			b.box(Vector3(0.03, 0.033, 0.19), "metal", Vector3(0, 0.05, 0.06))  # slide
-			b.box(Vector3(0.028, 0.025, 0.15), "polymer", Vector3(0, 0.022, 0.05))  # frame
-			b.box(Vector3(0.03, 0.11, 0.05), "polymer", Vector3(0, -0.025, -0.005), Vector3(-18, 0, 0))  # grip
-			b.box(Vector3(0.01, 0.028, 0.04), "polymer", Vector3(0, 0.0, 0.035))  # trigger guard
-			b.box(Vector3(0.03, 0.028, 0.065), "polymer", Vector3(0, 0.0, 0.11))  # light
-			b.box(Vector3(0.024, 0.02, 0.004), "lens", Vector3(0, 0.0, 0.144))
-			meta = {"fore": Vector3(0.022, -0.012, 0.0), "muzzle": Vector3(0, 0.05, 0.156), "light": Vector3(0, 0.0, 0.146), "mag": Vector3(0, -0.08, -0.02)}
+		"pistol":  # polymer striker pistol: slide with serrations, ejection port and sights, railed frame with a light
+			b.box(Vector3(0.03, 0.032, 0.19), "metal", Vector3(0, 0.05, 0.06))  # slide
+			for k in 5:  # rear serrations
+				b.box(Vector3(0.032, 0.026, 0.003), "polymer", Vector3(0, 0.051, -0.02 + k * 0.007))
+			b.box(Vector3(0.002, 0.012, 0.04), "polymer", Vector3(0.0155, 0.055, 0.075))  # ejection port
+			b.box(Vector3(0.006, 0.008, 0.008), "polymer", Vector3(0, 0.07, 0.145))  # front sight
+			b.box(Vector3(0.018, 0.008, 0.008), "polymer", Vector3(0, 0.07, -0.025))  # rear sight
+			b.tube(0.0055, 0.004, "polymer", Vector3(0, 0.05, 0.156))  # muzzle
+			b.box(Vector3(0.028, 0.024, 0.15), "polymer", Vector3(0, 0.022, 0.05))  # frame
+			b.box(Vector3(0.024, 0.006, 0.05), "polymer", Vector3(0, 0.008, 0.1))  # accessory rail
+			b.box(Vector3(0.03, 0.105, 0.05), "polymer", Vector3(0, -0.026, -0.006), Vector3(-18, 0, 0))  # grip
+			b.box(Vector3(0.031, 0.06, 0.03), "metal", Vector3(0, -0.03, -0.012), Vector3(-18, 0, 0))  # grip texture panel
+			b.box(Vector3(0.032, 0.008, 0.052), "polymer", Vector3(0, -0.079, -0.024), Vector3(-18, 0, 0))  # magazine base plate
+			b.box(Vector3(0.008, 0.028, 0.004), "polymer", Vector3(0, 0.0, 0.055))  # trigger guard front
+			b.box(Vector3(0.008, 0.004, 0.04), "polymer", Vector3(0, -0.013, 0.035))  # trigger guard bottom
+			b.box(Vector3(0.005, 0.018, 0.006), "metal", Vector3(0, 0.0, 0.028), Vector3(15, 0, 0))  # trigger
+			b.box(Vector3(0.03, 0.028, 0.065), "polymer", Vector3(0, -0.002, 0.11))  # light
+			b.box(Vector3(0.024, 0.02, 0.004), "lens", Vector3(0, -0.002, 0.144))
+			meta = {"fore": Vector3(0.022, -0.012, 0.0), "muzzle": Vector3(0, 0.05, 0.158), "light": Vector3(0, 0.0, 0.146), "mag": Vector3(0, -0.08, -0.02)}
 		"cuffs":  # two rings side by side along X, chained
 			for x: float in [-0.045, 0.045]:
 				var ring := TorusMesh.new()
@@ -259,16 +322,24 @@ static func _build(kind: String) -> Array:
 				ring.ring_segments = 6
 				b.add(ring, "steel", Vector3(x, 0, 0), Vector3(0, 0, 90))
 			b.box(Vector3(0.03, 0.008, 0.008), "steel", Vector3.ZERO)
-		"cap":  # baseball cap: dome on the head, brim toward +Z (the face)
+		"cap":  # baseball cap: six-panel dome with seams, a button and eyelets, a curved brim toward +Z (the face)
 			var dome := SphereMesh.new()
 			dome.radius = 0.105
 			dome.height = 0.105
 			dome.is_hemisphere = true
-			dome.radial_segments = 16
-			dome.rings = 6
+			dome.radial_segments = 20
+			dome.rings = 7
 			b.add(dome, "red", Vector3.ZERO)
-			b.box(Vector3(0.17, 0.012, 0.1), "red", Vector3(0, 0.004, 0.13), Vector3(-6, 0, 0))
+			for k in 3:  # panel seams over the crown
+				b.box(Vector3(0.004, 0.003, 0.2), "dark_red", Vector3(0, 0.07, 0), Vector3(-0.0, k * 60.0, 0))
+			for k in 6:  # sewn eyelets
+				var a := deg_to_rad(30.0 + k * 60.0)
+				b.tube(0.005, 0.004, "dark_red", Vector3(sin(a) * 0.07, 0.07, cos(a) * 0.07), Vector3(0, 0, 0), 8)
 			b.tube(0.012, 0.012, "red", Vector3(0, 0.105, 0), Vector3.ZERO, 8)  # button
+			for k in 5:  # the brim, in slats that curve down at the sides
+				var x := (k - 2) * 0.034
+				b.box(Vector3(0.036, 0.008, 0.1), "red", Vector3(x, 0.004 - absf(x) * 0.18, 0.135 - absf(x) * 0.12), Vector3(-8, -x * 160.0, -x * 220.0))
+			b.box(Vector3(0.16, 0.012, 0.012), "dark_red", Vector3(0, 0.006, 0.09))  # sweatband edge over the brim
 		"band":  # open sleeve around an arm, axis along Y
 			var sleeve := CylinderMesh.new()
 			sleeve.top_radius = 0.066
@@ -279,6 +350,57 @@ static func _build(kind: String) -> Array:
 			sleeve.cap_top = false
 			sleeve.cap_bottom = false
 			b.add(sleeve, "yellow", Vector3.ZERO)
+		"beanie":  # knit cap pulled over the crown, with a folded cuff
+			var dome := SphereMesh.new()
+			dome.radius = 0.55
+			dome.height = 0.72  # a dome 0.36 tall, just over the crown
+			dome.is_hemisphere = true
+			dome.radial_segments = 20
+			dome.rings = 8
+			b.add(dome, "cloth", Vector3(0, 0.17, -0.03), Vector3(-12, 0, 0))
+			var cuff := CylinderMesh.new()  # the fold across the forehead
+			cuff.top_radius = 0.56
+			cuff.bottom_radius = 0.57
+			cuff.height = 0.13
+			cuff.radial_segments = 20
+			cuff.rings = 1
+			b.add(cuff, "cloth", Vector3(0, 0.2, -0.03), Vector3(-12, 0, 0))
+		"glasses", "sunglasses":  # two lenses, a bridge and the arms back to the ears (unit head)
+			var lens := "dark_lens" if kind == "sunglasses" else "clear_lens"
+			for x: float in [-0.21, 0.21]:
+				var rim := TorusMesh.new()
+				rim.inner_radius = 0.105 if kind == "glasses" else 0.12
+				rim.outer_radius = 0.125 if kind == "glasses" else 0.14
+				rim.rings = 16
+				rim.ring_segments = 4
+				b.add(rim, "frame", Vector3(x, 0, 0), Vector3(90, 0, 0))
+				var glass := CylinderMesh.new()
+				glass.top_radius = rim.inner_radius
+				glass.bottom_radius = rim.inner_radius
+				glass.height = 0.01
+				glass.radial_segments = 16
+				glass.rings = 1
+				b.add(glass, lens, Vector3(x, 0, 0), Vector3(90, 0, 0))
+				b.box(Vector3(0.02, 0.025, 0.55), "frame", Vector3(x * 2.25, 0.02, -0.27))  # arm to the ear
+			b.box(Vector3(0.18, 0.025, 0.02), "frame", Vector3(0, 0.03, 0))  # bridge
+		"bandana":  # cloth over the nose and mouth, round the front of a unit head, a point under the chin
+			b.arc(0.47, 0.0, -0.36, -118.0, 118.0, "cloth", Vector3.ZERO, 18, 0.6)  # over the nose, clear of the lips and beard
+			b.arc(0.42, -0.36, -0.46, -60.0, 60.0, "cloth", Vector3(0, 0, 0.02), 10, 0.5)  # the loose fold under the chin
+		"backpack":  # a small daypack (meters): body, front pocket, top handle, straps up over the shoulders
+			b.box(Vector3(0.3, 0.4, 0.13), "cloth", Vector3(0, 0, -0.065))
+			b.box(Vector3(0.24, 0.17, 0.05), "cloth", Vector3(0, -0.08, -0.15))
+			b.box(Vector3(0.26, 0.02, 0.012), "strap", Vector3(0, 0.0, -0.176))  # pocket zip
+			b.tube(0.01, 0.08, "strap", Vector3(0, 0.205, -0.06), Vector3(0, 0, 90))
+			for x: float in [-0.08, 0.08]:
+				b.box(Vector3(0.045, 0.02, 0.16), "strap", Vector3(x, 0.205, 0.05), Vector3(-20, 0, 0))  # over the shoulder
+		"patch":  # shoulder patch in the officer's player colour, with a light rim
+			b.box(Vector3(0.07, 0.08, 0.006), "cloth", Vector3.ZERO)
+			b.box(Vector3(0.078, 0.088, 0.003), "steel", Vector3(0, 0, -0.002))
+		"radio":  # shoulder radio: body, push-to-talk, antenna
+			b.box(Vector3(0.055, 0.1, 0.03), "polymer", Vector3(0, 0, 0))
+			b.box(Vector3(0.02, 0.03, 0.012), "polymer", Vector3(0.0, -0.02, 0.02))
+			b.tube(0.004, 0.13, "polymer", Vector3(0.015, 0.11, 0), Vector3.ZERO, 6)
+			b.tube(0.007, 0.015, "polymer", Vector3(0.015, 0.18, 0), Vector3.ZERO, 6)
 		"camera":  # door camera: handle, screen, probe forward
 			b.box(Vector3(0.035, 0.11, 0.04), "polymer", Vector3(0, -0.02, 0.0))
 			b.box(Vector3(0.1, 0.07, 0.02), "polymer", Vector3(0, 0.07, 0.01), Vector3(-30, 0, 0))
@@ -289,6 +411,6 @@ static func _build(kind: String) -> Array:
 	var mesh := b.commit()
 	var i := 0
 	for key: String in b.tools:
-		mesh.surface_set_material(i, _mat(key))
+		mesh.surface_set_material(i, _mat(key.get_slice("#", 0)))
 		i += 1
 	return [mesh, meta]

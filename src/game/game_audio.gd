@@ -15,6 +15,7 @@ const BUS_SFX := "Sfx"  ## clear sounds; also holds the ear low-pass and the roo
 const BUS_MID := "SfxMid"  ## farther sounds, slightly dull
 const BUS_FAR := "SfxFar"  ## far sounds, dull
 const BUS_MUFFLED := "SfxMuffled"  ## behind a wall or closed door
+const BUS_RAIN := "Rain"  ## the rain outside: dull and quiet from inside the building
 const FX_EAR := 0  ## effect slots on the Sfx bus
 const FX_REVERB := 1
 const SAMPLE_DIR := "res://assets/audio/"
@@ -24,7 +25,7 @@ const MAX_TAKES := 4  ## voice_<command>_<line>_0.wav .. _3.wav (different voice
 const SAMPLE_KEYS: Array[String] = ["rifle", "rifle_far", "pistol", "pistol_far", "footstep", "door",
 		"door_ajar", "kick", "taser", "reload", "hit", "hurt", "siren", "scream", "radio", "heart", "hum",
 		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
-		"mag_out", "mag_in", "bolt"]
+		"mag_out", "mag_in", "bolt", "rain", "thunder"]
 ## Where in a reload (0..1 of its time) each part sounds: the support hand reaches the magazine
 ## well, comes back with the new one, then works the bolt (CharacterAnim's reload hand timeline).
 const RELOAD_PARTS: Array = [["mag_out", 0.22], ["mag_in", 0.78], ["bolt", 0.92]]
@@ -33,7 +34,7 @@ const SCREAM_LINE := "꺄악!"
 const SYNTH_KEYS: Array[String] = ["rifle", "pistol", "footstep", "door", "door_ajar", "kick", "voice", "scream",
 		"taser", "siren", "reload", "hit", "hurt", "radio", "heart", "hum", "ring",
 		"footstep_wood", "footstep_tile", "footstep_carpet", "footstep_concrete", "footstep_grass", "footstep_asphalt",
-		"mag_out", "mag_in", "bolt"]
+		"mag_out", "mag_in", "bolt", "rain", "thunder"]
 
 static var _cache: Dictionary = {}  ## synthesized / loaded once per process
 static var _files: Dictionary = {}  ## keys whose sounds come from files (not stand-ins)
@@ -61,6 +62,9 @@ var _reverb_now := {"room_size": 0.1, "wet": 0.04, "damping": 0.7}
 var _last_pick: Dictionary = {}
 var _voice_quiet := 0.0  ## a recorded line just played: skip the synthesized shout that follows
 var _heart_t := 0.0
+var _amb: AudioStreamPlayer  ## room tone, looping
+var _rain: AudioStreamPlayer
+var _rain_in := 0.0  ## 0 outside .. 1 inside the building (eased)
 var _last_reinforce := 0
 
 
@@ -74,12 +78,21 @@ func _ready() -> void:
 	if not _enabled:
 		return
 	_build_bank()
-	var amb := AudioStreamPlayer.new()
-	amb.stream = _bank["hum"][0]
-	amb.bus = BUS_SFX
-	amb.volume_db = float(_cfg["ambient_db"])
-	add_child(amb)
-	amb.play()
+	_amb = AudioStreamPlayer.new()
+	_amb.stream = _bank["hum"][0]
+	_amb.bus = BUS_SFX
+	_amb.volume_db = float(_cfg["ambient_db"])
+	add_child(_amb)
+	_amb.play()
+	var rc: Dictionary = _cfg.get("rain", {})
+	if bool(rc.get("on", false)):
+		_rain = AudioStreamPlayer.new()
+		_rain.stream = _bank["rain"][0]
+		_rain.bus = BUS_RAIN
+		add_child(_rain)
+		_rain_in = 1.0 if world.level.building.has_point(world.display_pos(world.my_slot)) else 0.0
+		_update_rain(world.display_pos(world.my_slot), 0.0)
+		_rain.play()
 	_ring_player = AudioStreamPlayer.new()
 	_ring_player.stream = _bank["ring"][0]
 	_ring_player.bus = "Master"  # the ringing is inside your head: not dulled by the Sfx bus
@@ -92,6 +105,12 @@ func _ready() -> void:
 	var panel := AudioAudition.new()
 	panel.audio = self
 	add_child(panel)
+
+
+func _exit_tree() -> void:
+	for p in [_amb, _rain]:  # a looping sound still playing at exit stays allocated
+		if p != null:
+			p.stop()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -107,9 +126,41 @@ func _process(delta: float) -> void:
 		return
 	_voice_quiet = maxf(_voice_quiet - delta, 0.0)
 	_update_room_and_ears(me, delta)
+	_update_rain(me, delta)
 	for s in 2:
 		_update_reload(s, delta)
 	_update_alerts(delta)
+
+
+## The rain: full outside, quiet and dull inside the building (data/audio.json "rain").
+func _update_rain(me: Vector2, delta: float) -> void:
+	if _rain == null:
+		return
+	var rc: Dictionary = _cfg["rain"]
+	var inside := 1.0 if world.level.building.has_point(me) else 0.0
+	_rain_in = move_toward(_rain_in, inside, delta * float(rc["ease_per_s"])) if delta > 0.0 else inside
+	_rain.volume_db = lerpf(float(rc["out_db"]), float(rc["in_db"]), _rain_in)
+	var lp := AudioServer.get_bus_effect(AudioServer.get_bus_index(BUS_RAIN), 0) as AudioEffectLowPassFilter
+	lp.cutoff_hz = lerpf(12000.0, float(rc["in_hz"]), _rain_in)
+
+
+## Thunder after a lightning flash (WorldView3D.lightning), `delay_s` later: the flash was that
+## far away.
+func play_thunder(delay_s: float) -> void:
+	if not _enabled or not _bank.has("thunder"):
+		return
+	await get_tree().create_timer(delay_s).timeout
+	if not is_inside_tree():
+		return
+	var p := AudioStreamPlayer.new()
+	var takes: Array = _bank["thunder"]
+	p.stream = takes[_rng.randi() % takes.size()]
+	p.bus = BUS_RAIN
+	p.volume_db = float(_cfg["rain"].get("thunder_db", -8.0)) + _rng.randf_range(-3.0, 1.0)
+	p.pitch_scale = _rng.randf_range(0.85, 1.05)
+	add_child(p)
+	p.finished.connect(p.queue_free)
+	p.play()
 
 
 ## Reload sounds for officer `slot`: the parts as the hands get there, or one full take when only
@@ -198,6 +249,11 @@ func _setup_buses() -> void:
 	ear.cutoff_hz = 20000.0
 	AudioServer.add_bus_effect(sfx, ear)  # slot FX_EAR
 	AudioServer.add_bus_effect(sfx, AudioEffectReverb.new())  # slot FX_REVERB, eased per room
+	AudioServer.add_bus()  # the rain: its own low-pass, opened outside and closed inside
+	var rain_bus := AudioServer.bus_count - 1
+	AudioServer.set_bus_name(rain_bus, BUS_RAIN)
+	AudioServer.set_bus_send(rain_bus, BUS_SFX)
+	AudioServer.add_bus_effect(rain_bus, AudioEffectLowPassFilter.new())
 	var dull: Dictionary = _cfg["dull"]
 	for entry in [[BUS_MID, float(dull["mid_hz"]), "mid"], [BUS_FAR, float(dull["far_hz"]), "far"], [BUS_MUFFLED, float(_cfg["muffle_hz"]), ""]]:
 		AudioServer.add_bus()
@@ -231,7 +287,7 @@ func _build_bank() -> void:
 		for key in SAMPLE_KEYS:  # files replace the stand-in of the same name; no file keeps it
 			var files := sample_streams(key)
 			if not files.is_empty():
-				if key == "hum":  # room tone loops over its whole length
+				if key == "hum" or key == "rain":  # room tone and rain loop over their whole length
 					for f in files:
 						loop_whole(f)
 				_cache[key] = files
@@ -291,6 +347,8 @@ static func synthesize(keys: Array[String]) -> Dictionary:
 			"mag_out": out[key] = [SfxSynth.mag_out(111), SfxSynth.mag_out(112)]
 			"mag_in": out[key] = [SfxSynth.mag_in(113), SfxSynth.mag_in(114)]
 			"bolt": out[key] = [SfxSynth.bolt(115), SfxSynth.bolt(116)]
+			"rain": out[key] = [SfxSynth.rain()]
+			"thunder": out[key] = [SfxSynth.thunder(131)]
 			_:
 				if key.begins_with("footstep_"):  # one floor: four steps
 					var surf := key.trim_prefix("footstep_")

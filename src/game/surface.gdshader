@@ -28,6 +28,16 @@ uniform float bevel = 0.0;      // tiles: width (m) of the rounded edge each til
 uniform bool use_tex = false;
 uniform sampler2D tex_albedo : source_color, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform float tex_m = 2.0;
+// optional maps that go with the picture (assets/textures/<set>/<key>_normal / _rough / _ao):
+// a normal map (OpenGL style, green up) gives the real bumps instead of the brightness, a
+// roughness map says where it shines, an occlusion map darkens the cracks.
+uniform bool use_normal = false;
+uniform sampler2D tex_normal : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform float normal_strength = 1.0;
+uniform bool use_rough = false;
+uniform sampler2D tex_rough : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
+uniform bool use_ao = false;
+uniform sampler2D tex_ao : hint_default_white, filter_linear_mipmap_anisotropic, repeat_enable;
 // rain (outside): wet 0..1 darkens and glosses the surface; puddles 0..1 is how much of the ground
 // holds standing water, mirror-smooth, with rings where the drops land.
 uniform float wet = 0.0;
@@ -98,6 +108,17 @@ void fragment() {
 	} else {
 		uv = wpos.xy;
 	}
+	// pictures: upright on walls (image up = world up), and the directions the picture's right and
+	// up point in, for its normal map
+	vec2 tuv = uv;
+	vec3 tan_u = vec3(1.0, 0.0, 0.0);
+	vec3 tan_v = vec3(0.0, 0.0, -1.0);
+	if (!(an.y >= an.x && an.y >= an.z)) {
+		tuv.y = -uv.y;
+		tan_u = an.x >= an.z ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+		tan_v = vec3(0.0, 1.0, 0.0);
+	}
+	tuv /= tex_m;
 	float aa = max(length(dFdx(uv)), length(dFdy(uv)));  // pixel footprint in meters: keeps thin joints from shimmering
 	float n = fbm(uv * scale);
 	float fine = vnoise(uv * scale * 9.0);
@@ -160,9 +181,18 @@ void fragment() {
 		rough = mix(rough_min, rough_max, fine);
 	}
 	if (use_tex) {  // a picture of the real surface instead of the pattern's colours
-		vec3 t = texture(tex_albedo, uv / tex_m).rgb;
+		vec3 t = texture(tex_albedo, tuv).rgb;
 		col = t * (0.92 + 0.16 * n);
 		h = dot(t, vec3(0.3, 0.5, 0.2)) * 1.4 + fine * 0.05;
+	}
+	if (use_normal) {
+		h = 0.0;  // the normal map carries the bumps
+	}
+	if (use_rough) {
+		rough = texture(tex_rough, tuv).r;
+	}
+	if (use_ao) {
+		AO = texture(tex_ao, tuv).r;
 	}
 	if (speckle > 0.0) {
 		float g1 = vnoise(uv * 90.0);
@@ -197,6 +227,19 @@ void fragment() {
 	ALBEDO = col * tint;
 	ROUGHNESS = rough;
 	SPECULAR = 0.3;
+	if (use_normal) {  // the picture's own bumps, turned from its tangent frame into view space
+		vec2 nxy = (texture(tex_normal, tuv).rg * 2.0 - 1.0) * normal_strength;
+		float nz = sqrt(max(1.0 - dot(nxy, nxy), 0.05));
+		vec3 nrm = normalize(wnrm);
+		vec3 tu = normalize(tan_u - nrm * dot(tan_u, nrm));
+		vec3 tv = normalize(tan_v - nrm * dot(tan_v, nrm));
+		vec3 m = normalize(tu * nxy.x + tv * nxy.y + nrm * nz);
+		if (object_space) {
+			m = (MODEL_MATRIX * vec4(m, 0.0)).xyz;
+		}
+		m = (VIEW_MATRIX * vec4(m, 0.0)).xyz;
+		NORMAL = normalize(m);
+	}
 	// bump from the height field (surface-gradient method, view space)
 	vec3 dpdx = dFdx(VERTEX);
 	vec3 dpdy = dFdy(VERTEX);

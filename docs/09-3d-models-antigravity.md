@@ -141,7 +141,16 @@
 
 ## 3-2. 바닥·벽 사진 질감 (선택, 인물 다음으로 효과가 큼)
 
-지금 바닥과 벽 무늬는 코드로 그린 것이다. `assets/textures/gemini/<이름>.png`(또는 `.jpg`)를 넣으면 그 무늬 대신 사진을 쓴다. 울퉁불퉁함은 사진의 밝기에서 만든다.
+지금 바닥과 벽 무늬는 코드로 그린 것이다. `assets/textures/gemini/<이름>.png`(또는 `.jpg`)를 넣으면 그 무늬 대신 사진을 쓴다. 같은 이름 뒤에 `_normal`(노멀맵, OpenGL 방식), `_rough`(거칠기), `_ao`(틈새 그늘)를 붙인 그림이 있으면 함께 쓴다. 노멀맵이 없으면 울퉁불퉁함은 사진의 밝기에서 만든다.
+
+**가장 쉬운 길: 무료 사진 질감 받기** (ambientCG, Poly Haven: CC0, 누구나 무료로 쓰고 출처 표시도 필요 없음)
+1. `tools\textures\import_textures.bat --list`로 이름과 검색어를 본다.
+2. ambientcg.com 또는 polyhaven.com/textures에서 검색어로 찾아 **1K 또는 2K JPG** zip을 받는다.
+3. 받은 zip 이름을 게임 이름으로 바꿔 `assets\textures\_download\`에 넣는다(예: `floor_wood.zip`).
+4. `tools\textures\import_textures.bat`를 실행하면 색·노멀·거칠기·그늘 그림이 알맞은 이름으로 `assets/textures/gemini/`에 들어간다.
+5. Godot 에디터를 한 번 열어(그림 가져오기) 게임을 켜고 본다. 마음에 안 들면 다른 질감을 같은 이름으로 다시 넣고 4번.
+
+가구 재질도 같은 방법으로 바꿀 수 있다(사진 한 장이 가구 1 m를 덮음): `wood_dark`, `wood_mid`, `wood_light`, `crate_wood`, `door_wood`, `fabric_grey`, `fabric_green`, `fabric_blue`, `fabric_red`, `fabric_beige`, `linen`, `stone`, `plaster`.
 
 | 이름 | 무엇 |
 |---|---|

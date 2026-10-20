@@ -45,3 +45,5 @@ assets/textures/**/*.import
 
 # exported game builds (export_presets.cfg is tracked: it holds no passwords or keys)
 build/
+# downloaded texture zips (tools/textures/import_textures.py reads them; the pictures it writes are tracked)
+assets/textures/_download/

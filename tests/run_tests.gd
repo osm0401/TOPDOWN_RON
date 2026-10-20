@@ -12,6 +12,7 @@ func _initialize() -> void:
 	_test_weapon()
 	_test_geom_sound_light()
 	_test_brain()
+	_test_styles()
 	_test_mission()
 	_test_clock_and_vote()
 	_test_sfx()
@@ -836,6 +837,63 @@ func _test_brain() -> void:
 	_check(ok and civ.state == S.DOWN and civ.restrainable(), "civilian ordered down: lies down and can be restrained")
 
 
+func _new_styled(style: String, seed_value: int = 7) -> NpcBrain:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_value
+	return NpcBrain.new(NpcBrain.Role.ENEMY, _brain_params(), rng, false, style)
+
+
+func _test_styles() -> void:
+	var S := NpcBrain.State
+	_check(NpcDirector.pick_style({"fighter": 1.0, "runner": 1.0}, 0.2) == "fighter" and NpcDirector.pick_style({"fighter": 1.0, "runner": 1.0}, 0.7) == "runner", "style dice follow the weights")
+	_check(NpcDirector.pick_style({}, 0.5) == "fighter", "no weights: fighter")
+	_check(_new_styled("bogus").style == "fighter" and _new_styled("feigner").feigns, "unknown style falls back; a feigner feigns")
+
+	var r := _new_styled("runner")
+	r.hear("gunshot", Vector2(300, 0), 0.8, true)
+	r.tick(0.05)
+	_check(r.state == S.FLEE and r.armed, "runner: a gunshot sends it running, gun in hand")
+
+	var h := _new_styled("hostage")
+	_run_brain(h, 1.0, Vector2(200, 0))
+	_check(h.needs_hostage and h.state == S.SPOTTED, "hostage taker: asks for a civilian to grab")
+	h.offer_hostage(Vector2.INF)
+	_run_brain(h, 0.1, Vector2(200, 0))
+	_check(h.state == S.THREAT, "nobody to grab: it threatens like anyone")
+	h = _new_styled("hostage")
+	_run_brain(h, 1.0, Vector2(200, 0))
+	h.offer_hostage(Vector2(-30, 0))
+	_check(h.state == S.HOLD and not h.has_hostage, "a civilian in reach: goes for them")
+	h.grabbed()
+	var out := h.tick(0.05)
+	_check(out["shout"] == "hostage_grab", "grabbing: it shouts a threat")
+	_check(h.is_alert(), "a hostage taker counts as alert (reinforcements hurry)")
+	h.on_hit(1, false, Vector2(200, 0))
+	_check(h.state != S.HOLD and not h.has_hostage, "hit: lets go")
+
+	var c := _new_brain(NpcBrain.Role.CIVILIAN)
+	c.capture()
+	_check(c.state == S.CAPTIVE and c.on_command(NpcBrain.Cmd.DOWN) == "ignored" and not c.restrainable(), "a captive civilian cannot obey or be cuffed")
+	c.set_free(false)
+	_check(c.state == S.DOWN and c.restrainable(), "freed by a captor that gave up: lies down for the cuffs")
+	c = _new_brain(NpcBrain.Role.CIVILIAN)
+	c.capture()
+	c.set_free(true)
+	_check(c.state == S.FLEE, "shoved away: runs")
+
+	var f := _new_styled("feigner")
+	var p: Dictionary = f._p
+	p["feign_spotted_chance"] = 1.0
+	_run_brain(f, 1.0, Vector2(200, 0))
+	_check(f.state == S.SURRENDER and f.feigning, "feigner: hands up at the sight of an officer, faking")
+	f.watched = true
+	_run_brain(f, float(p["feign_s"]) * 2.0)
+	_check(f.state == S.SURRENDER, "a gun kept on it: it keeps waiting")
+	f.watched = false
+	_run_brain(f, float(p["feign_s"]) + 0.2)
+	_check(f.state == S.THREAT or f.state == S.ATTACK, "looked away: it draws")
+
+
 func _run_brain_laser(b: NpcBrain, seconds: float) -> void:
 	var t := 0.0
 	while t < seconds:
@@ -945,6 +1003,7 @@ func _test_director() -> void:
 	var d: NpcDirector = w["dir"]
 	var lv: Level = w["level"]
 	d._params["ambush_chance"] = 0.0  # (the brains share these): this one walks to the sound
+	d.agents[0].brain.style = "fighter"  # (room B's enemy waits by the door in the map)
 	d.on_sound(SoundProp.Kind.KICK, Vector2(820, 500), -1)
 	d.tick(0.1)
 	_check(d.agents[0].brain.state == S.INVESTIGATE, "enemy hears a kick through a closed door")

@@ -4,13 +4,16 @@ extends RefCounted
 ## prototype values: start score, per-event penalties and the A..F boundaries.
 
 
-static func counts(m: MissionState, players_dead: int) -> Dictionary:
-	return {
+## extra: counts the mission state does not keep (unreported, evidence_missed: from the NPCs).
+static func counts(m: MissionState, players_dead: int, extra: Dictionary = {}) -> Dictionary:
+	var c := {
 		"suspect_killed": m.suspect_killed,
 		"civilian_killed": m.civ_killed,
 		"enemy_killed": m.enemy_killed,
 		"player_dead": players_dead,
 	}
+	c.merge(extra)
+	return c
 
 
 static func compute(c: Dictionary, rules: Dictionary) -> int:

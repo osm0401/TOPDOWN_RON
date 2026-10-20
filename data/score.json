@@ -1,17 +1,21 @@
 {
-  "_note": "PROTOTYPE/TUNING: 임시 점수 규칙. 시작점수, 감점, A~F 경계는 모두 확정값이 아니다. 일반 적 사살, 민간인 부상, 아군 사격, 플레이어 사망은 감점 없음(0)으로 열어 둔 항목.",
+  "_note": "PROTOTYPE/TUNING: 임시 점수 규칙. 시작점수, 감점, A~F 경계는 모두 확정값이 아니다. 일반 적 사살, 민간인 부상, 아군 사격, 플레이어 사망은 감점 없음(0)으로 열어 둔 항목. 무전 보고 누락과 증거 미회수는 남아 있는 개수만큼 감점(진행 중에도 보임).",
   "start": 100,
   "penalties": {
     "suspect_killed": 60,
     "civilian_killed": 30,
     "enemy_killed": 0,
-    "player_dead": 0
+    "player_dead": 0,
+    "unreported": 3,
+    "evidence_missed": 3
   },
   "labels": {
     "suspect_killed": "지정 용의자 사살",
     "civilian_killed": "민간인 사살",
     "enemy_killed": "일반 적 사살",
-    "player_dead": "경찰관 사망"
+    "player_dead": "경찰관 사망",
+    "unreported": "무전 보고 누락 (구속·사망)",
+    "evidence_missed": "무기 증거 미회수"
   },
   "grades": [["A", 90], ["B", 75], ["C", 60], ["D", 45], ["E", 30], ["F", 0]]
 }

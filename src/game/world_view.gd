@@ -20,7 +20,7 @@ const ENEMY_COLOR := Color(0.8, 0.15, 0.15)
 const CIVILIAN_COLOR := Color(0.2, 0.75, 0.8)
 const WEAPON_NAMES := {"pistol": "권총", "rifle_lethal": "살상 소총", "rifle_nonlethal": "비살상 소총"}
 const TOOL_NAMES := {"camera": "문틈 카메라", "lockpick": "락픽", "taser": "테이저"}
-const ACTION_LABELS: Array[String] = ["", "락픽", "구속", "카메라"]
+const ACTION_LABELS: Array[String] = ["", "락픽", "구속", "카메라", "증거 회수"]
 
 ## The game starts in the angled WorldView3D (data/view3d.json "start_3d"); F5 switches to this
 ## 2D drawing and back. Command line: --view2d / --view3d.

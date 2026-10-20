@@ -28,6 +28,8 @@ func _ready() -> void:
 	await _audio_tests()
 	await _audio_extra_tests()
 	await _death_tests()
+	await _hostage_tests()
+	await _style_tests()
 	print("---- %s" % ("FAILED: %d" % _failed if _failed > 0 else "ALL PASSED"))
 	Engine.time_scale = 1.0
 	remove_child(_w)  # like the game: the world goes before the connection, so no frame sends to a closed peer
@@ -85,6 +87,14 @@ func _park(slot: int) -> void:
 
 func _agent(i: int) -> NpcDirector.Agent:
 	return _w.director.agents[i]
+
+
+## Every restrained or dead person radioed in, every dropped weapon picked up.
+func _paperwork() -> void:
+	for a in _w.director.agents:
+		a.reported = true
+	for e in _w.director.evidence:
+		e["taken"] = true
 
 
 func _freeze_ai() -> void:
@@ -252,6 +262,8 @@ func _mission_tests() -> void:
 	_place(1, Vector2(60, 520))
 	await _frames(4)
 	_check(_w.mission.status == MissionState.Status.SUCCESS and _w.mission.phase == MissionState.Phase.RESULT, "both back at the exit: success")
+	_check(_w.current_score() == 100 - 3 * _w.director.unreported(), "nobody radioed in yet: every restrained or dead person costs 3")
+	_paperwork()
 	_check(_w.current_score() == 100 and ScoreRules.grade(_w.current_score(), _w.score_rules) == "A", "clean success scores 100 / A")
 	var spent := _w.players[0].weapons[0].current
 	_w._request_fire()
@@ -269,6 +281,8 @@ func _mission_tests() -> void:
 	await _frames(4)
 	_check(suspect.brain.state == S.DEAD and _w.mission.suspect_killed == 1, "suspect shot dead and counted")
 	_check(_w.mission.status == MissionState.Status.FAILED and _w.mission.reason_key() == "suspect_killed", "mission failed: suspect killed")
+	_check(_w.director.unreported() == 1 and _w.director.evidence_missed() == 1 and _w.current_score() == 34, "the dead suspect is not reported and his pistol lies on the floor: -3 each")
+	_paperwork()
 	_check(_w.current_score() == 40 and ScoreRules.grade(40, _w.score_rules) == "E", "failure keeps its own score and grade (40 / E)")
 
 	# failure: both players dead
@@ -288,6 +302,7 @@ func _mission_tests() -> void:
 	_w.director.resolve_player_shot(0, Vector2(400, 400), Vector2(400, 200), 2, false)
 	await _frames(4)
 	_check(civ.brain.state == S.DEAD and _w.mission.civ_killed == 1, "civilian killed and counted")
+	_paperwork()
 	_check(_w.mission.status == MissionState.Status.ACTIVE and _w.current_score() == 70, "civilian death: score only, mission continues")
 	for a in _w.director.agents:
 		if a.suspect:
@@ -295,6 +310,7 @@ func _mission_tests() -> void:
 		elif a.brain.role == NpcBrain.Role.ENEMY:
 			a.brain.state = S.DEAD
 	_w.director.agents[3].brain.state = S.RESTRAINED
+	_paperwork()
 	_place(0, Vector2(60, 480))
 	_place(1, Vector2(60, 520))
 	await _frames(4)
@@ -1376,3 +1392,134 @@ func _audio_extra_tests() -> void:
 	_check(not panel.visible and au.audition_reverb.is_empty(), "closing the panel gives the reverb back to the room")
 	_w.remove_child(au)
 	au.free()
+
+
+## Item 16/17: a hostage taker grabs the civilian next to it, holds them as a shield, gives up on a
+## command; the dropped pistol is picked up as evidence and the arrest radioed in (V).
+func _hostage_tests() -> void:
+	var S := NpcBrain.State
+	var Act := NetWorld.Act
+	await _boot(true)
+	var notices := []
+	_w.notice_emitted.connect(func(t: String) -> void: notices.append(t))
+	var taker := _agent(7)
+	var civ := _agent(3)
+	_check(taker.brain.style == "hostage" and civ.brain.role == NpcBrain.Role.CIVILIAN, "map: room D has a hostage taker next to a civilian")
+	_park(1)
+	_place(0, Vector2(650, 590), 2.2)
+	_w.players[0].flash = true
+	await _seconds(2.5)
+	_check(taker.brain.state == S.HOLD and taker.brain.has_hostage and civ.brain.state == S.CAPTIVE, "seeing an officer, it grabs the civilian (HOLD / CAPTIVE)")
+	_check(civ.pos.distance_to(taker.pos) < 26.0 and civ.captor == 7, "the hostage stands right in front of it")
+	_check(taker.brain.armed and not civ.brain.restrainable(), "it keeps its gun; the hostage cannot be cuffed while held")
+	var from := _w.players[0].pos
+	var res := _w.director.resolve_player_shot(0, from, from + (taker.pos - from).normalized() * 400.0, 0, false)
+	_check(int(res["npc"]) == 3, "a shot straight at the taker hits the hostage in front")
+	var side := (civ.pos - taker.pos).project((taker.pos - from).orthogonal().normalized())
+	var aim_at := taker.pos - side.normalized() * 8.0  # the other side of its head
+	res = _w.director.resolve_player_shot(0, from, from + (aim_at - from).normalized() * 400.0, 0, false)
+	_check(int(res["npc"]) == 7, "a careful shot past the hostage's head reaches the taker")
+	_w.director._params["hostage_comply_mult"] = 50.0
+	_aim(0, (taker.pos - _w.players[0].pos).angle())
+	for k in 8:
+		if taker.brain.state == S.HOLD:
+			_w._command(0, NpcBrain.Cmd.WEAPON_DROP)
+	await _frames(3)
+	_check(taker.brain.state == S.SURRENDER and not taker.brain.armed, "a command aimed at the pair goes to the taker: it lets go and gives up")
+	_check(civ.brain.state == S.DOWN and civ.captor == -1 and civ.brain.restrainable(), "the freed hostage drops to the floor, ready to be restrained")
+	_check(_w.director.evidence.size() == 1 and _w.director.evidence_missed() == 1, "its pistol lies on the floor as evidence")
+	var score_before := _w.current_score()
+	_place(0, _w.director.evidence[0]["pos"] + Vector2(10, 0))
+	await _frames(2)
+	_w._do_act(0, Act.REPORT, 0)
+	_check(_w.players[0].action == PlayerState.ACTION_COLLECT, "V by a dropped weapon starts picking it up")
+	await _seconds(1.3)
+	_check(_w.director.evidence[0]["taken"] and _w.current_score() == score_before + 3, "the weapon is collected: no more evidence penalty")
+	taker.brain.restrain()
+	await _frames(2)
+	_check(_w.director.unreported() == 1, "the cuffed taker waits to be reported")
+	notices.clear()
+	_place(0, taker.pos + Vector2(60, 0))
+	await _frames(2)
+	_w._do_act(0, Act.REPORT, 0)
+	_check(taker.reported and _w.director.unreported() == 0, "V near the cuffed taker radios it in")
+	_check(notices.any(func(t: String) -> bool: return t.begins_with("본부")), "the command post answers on screen")
+	_w._do_act(0, Act.REPORT, 0)
+	_check(notices.back() == "보고할 사람이나 주울 증거가 가까이에 없습니다", "nothing left nearby: a notice says so")
+	var pk := _w.director.pack()
+	var copy := NpcDirector.new(_w.level, _w.tuning, JsonData.load_dict("res://data/difficulty.json")["presets"]["normal"], _w.players, 1)
+	copy.unpack(pk[0], pk[1], pk[2])
+	_check(copy.agents[7].reported and copy.agents[3].brain.state == S.DOWN, "the reported flag and the new states travel to the client")
+
+	# patience runs out: shoves the hostage away and fights
+	await _boot(true)
+	taker = _agent(7)
+	civ = _agent(3)
+	_park(1)
+	_place(0, Vector2(650, 590), 2.2)
+	_w.players[0].flash = true
+	_w.players[0].hp = 99
+	await _seconds(2.5)
+	_check(taker.brain.state == S.HOLD and taker.brain.has_hostage, "(patience) holding")
+	taker.brain._patience = 0.3
+	await _seconds(1.0)
+	_check(taker.brain.state == S.ATTACK or taker.brain.state == S.THREAT, "its patience gone, it shoves the hostage away and attacks")
+	_check(civ.brain.state == S.FLEE or civ.brain.state == S.HIDE, "the shoved hostage runs")
+
+	# a hit makes it lose its grip
+	await _boot(true)
+	taker = _agent(7)
+	civ = _agent(3)
+	_park(1)
+	_place(0, Vector2(650, 590), 2.2)
+	_w.players[0].flash = true
+	_w.players[0].hp = 99
+	await _seconds(2.0)
+	taker.brain.on_hit(1, false, _w.players[0].pos)
+	await _frames(3)
+	_check(taker.brain.state != S.HOLD and civ.brain.state != S.CAPTIVE and civ.captor == -1, "hit, it loses its grip on the hostage")
+
+
+## Item 18: the room B enemy waits beside its door, the suspect runs, a feigner draws once nobody
+## keeps a gun on it.
+func _style_tests() -> void:
+	var S := NpcBrain.State
+	await _boot(true)
+	_park(0)
+	_park(1)
+	var camper := _agent(0)
+	_check(camper.brain.style == "camper" and _agent(4).brain.style == "runner" and _agent(1).brain.style == "feigner", "map styles: camper, runner (the suspect), feigner")
+	_w.director.on_sound(SoundProp.Kind.KICK, Vector2(820, 500), -1)
+	await _seconds(3.0)
+	var spots := [Vector2(754, 406), Vector2(886, 406)]
+	var near := spots.any(func(p: Vector2) -> bool: return camper.pos.distance_to(p) < 24.0)
+	_check(camper.brain.state == S.INVESTIGATE and camper.brain.camping and near, "a kick outside: it waits beside the door inside room B (%s)" % camper.pos)
+	_check(camper.brain.aiming and absf(angle_difference(camper.brain.facing, (Vector2(820, 440) - camper.pos).angle())) < 0.6, "gun up, covering the doorway")
+
+	await _boot(true)
+	_park(1)
+	var runner := _agent(4)
+	var start := runner.pos
+	_place(0, Vector2(1080, 300), 0.0)
+	var door_c_locked := _w.level.is_locked(2)
+	await _seconds(1.5)
+	_check(runner.brain.state == S.FLEE and runner.brain.reason == "경찰을 보고 도주", "the suspect sees an officer and runs")
+	_check(door_c_locked and not _w.level.is_locked(2), "it unlocks its own locked door to get out")
+	await _seconds(2.0)
+	_check(_w.level.room_at(runner.pos) != _w.level.room_at(start), "and leaves room C (%s)" % runner.pos)
+
+	await _boot(true)
+	_park(1)
+	var feigner := _agent(1)
+	_w.director._params["feign_spotted_chance"] = 1.0
+	_place(0, Vector2(950, 700), 0.0)
+	_w.mouse_world = func() -> Vector2: return feigner.pos  # the officer keeps his gun on it
+	_w.players[0].hp = 99
+	await _seconds(1.5)
+	_check(feigner.brain.state == S.SURRENDER and feigner.brain.feigning, "the feigner raises its hands when it sees an officer")
+	await _seconds(3.0)
+	_check(feigner.brain.state == S.SURRENDER and feigner.brain.watched, "while an officer keeps a gun on it, it waits")
+	_w.mouse_world = func() -> Vector2: return Vector2(950, 800)  # looks away
+	await _seconds(3.0)
+	_check(feigner.brain.state == S.THREAT or feigner.brain.state == S.ATTACK, "gun off it for a moment: it draws")
+	_w.mouse_world = Callable()

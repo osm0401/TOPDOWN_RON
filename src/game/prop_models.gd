@@ -11,6 +11,7 @@ extends RefCounted
 
 const CharacterModels := preload("res://src/game/character_models.gd")
 const SURFACE := preload("res://src/game/surface.gdshader")
+const SurfaceMaps := preload("res://src/game/surface_maps.gd")
 const DIR := "res://assets/props/"
 ## Kinds make() knows (anything else is drawn as a plain crate).
 const KINDS: Array[String] = ["sofa", "armchair", "coffee_table", "dining_table", "desk", "office_chair", "chair", "tv_stand",
@@ -23,6 +24,7 @@ const TALL: Array[String] = ["bookshelf", "wardrobe", "fridge", "pantry", "shelv
 	"picture", "whiteboard"]  # (a street lamp stays up: lowered, its arm would lie across the street)
 
 static var folder := DIR
+static var tex_folder := "res://assets/textures/"  ## photo textures of furniture materials (SurfaceMaps), e.g. <set>/wood_mid.png
 static var set_name := ""
 static var _meshes: Dictionary = {}  ## "<kind>|<w>|<d>" -> [ArrayMesh, metadata]
 static var _mats: Dictionary = {}
@@ -161,6 +163,10 @@ static func mat(key: String) -> Material:
 			m = _surface(0, Color(0.7, 0.68, 0.63), Color(0.6, 0.58, 0.54), 1.1, 0.75, 1.0)
 		_:
 			m = _plain(key)
+	if m is ShaderMaterial:  # a photo of this wood or cloth in the set replaces the pattern (1 m per picture)
+		var sm := m as ShaderMaterial
+		sm.set_shader_parameter("tex_m", 1.0)
+		SurfaceMaps.apply(sm, tex_folder, set_name, key)
 	_mats[key] = m
 	return m
 

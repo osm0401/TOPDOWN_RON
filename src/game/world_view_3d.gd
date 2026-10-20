@@ -26,6 +26,7 @@ const PropModels := preload("res://src/game/prop_models.gd")
 const PeopleLooks := preload("res://src/game/people_looks.gd")
 const POST := preload("res://src/game/post.gdshader")
 const Weather := preload("res://src/game/weather.gd")
+const SurfaceMaps := preload("res://src/game/surface_maps.gd")
 
 static var _zoom_to := 1.0  ## camera distance factor the mouse wheel asks for (kept across missions and F5)
 static var tex_folder := "res://assets/textures/"  ## where surface pictures are looked for (tests point it elsewhere)
@@ -74,6 +75,9 @@ var _holes: Array[Decal] = []  ## bullet holes in walls and doors, oldest first 
 var _stains: Array[Decal] = []  ## blood on the floor, oldest first (capped)
 var _casings: Array[Dictionary] = []  ## spent cases: {node, vel, spin, rest}, oldest first (capped)
 var _casing_mesh: CylinderMesh
+var _chips: Array[Dictionary] = []  ## bits of plaster and wood knocked off by shots: {node, vel, spin, rest}, oldest first (capped)
+var _prints: Array[Decal] = []  ## bloody footprints and drops, oldest first (capped)
+var _spreading: Array[Dictionary] = []  ## fresh stains still soaking out: {decal, age, to}
 static var _tex: Dictionary = {}  ## generated effect textures: "hole", "blood", "puff"
 var _zoom := 1.0  ## eased toward _zoom_to
 var _t := 0.0  ## seconds since the view opened (breathing, idle sway)
@@ -82,6 +86,7 @@ var _t := 0.0  ## seconds since the view opened (breathing, idle sway)
 func _ready() -> void:
 	_cfg = JsonData.load_dict("res://data/view3d.json")
 	GearModels.set_name = str(_cfg["characters"].get("set", ""))  # gear files of the same model set
+	PropModels.set_name = str(_cfg["characters"].get("set", ""))  # (before the doors: their wood takes the set's pictures)
 	for arg in OS.get_cmdline_user_args():  # test aid for screenshots: -- --zoom=0.5
 		if arg.begins_with("--zoom="):
 			_zoom_to = clampf(float(arg.substr(7)), float(_cfg["camera"]["zoom_min"]), float(_cfg["camera"]["zoom_max"]))
@@ -175,29 +180,15 @@ func _surface_mat(key: String) -> ShaderMaterial:
 	if wet.has(key):  # out in the rain: darker, glossy, puddles where drops ring
 		m.set_shader_parameter("wet", float(wet[key]))
 		m.set_shader_parameter("puddles", float(_cfg["weather"].get("puddles", 0.0)))
-	var tex := _surface_tex(key)
-	if tex != null:
-		m.set_shader_parameter("use_tex", true)
-		m.set_shader_parameter("tex_albedo", tex)
+	SurfaceMaps.apply(m, tex_folder, str(_cfg["characters"].get("set", "")), key)
 	return m
 
 
-## A picture of surface `key` from the model set (assets/textures/<set>/<key>.png, or .jpg), read
-## without the editor's import when there is none; null when the set has none.
+## A picture of surface `key` from the model set (assets/textures/<set>/<key>.png, or .jpg; its
+## _normal, _rough and _ao maps go with it: SurfaceMaps), read without the editor's import when
+## there is none; null when the set has none.
 func _surface_tex(key: String) -> Texture2D:
-	var set_name := str(_cfg["characters"].get("set", ""))
-	if set_name == "":
-		return null
-	for ext in ["png", "jpg"]:
-		var path := "%s%s/%s.%s" % [tex_folder, set_name, key, ext]
-		if ResourceLoader.exists(path):
-			return load(path) as Texture2D
-		if FileAccess.file_exists(path):
-			var img := Image.load_from_file(ProjectSettings.globalize_path(path))
-			if img != null and not img.is_empty():
-				img.generate_mipmaps()
-				return ImageTexture.create_from_image(img)
-	return null
+	return SurfaceMaps.load_tex(tex_folder, str(_cfg["characters"].get("set", "")), key)
 
 
 func _box(size: Vector3) -> BoxMesh:
@@ -1429,6 +1420,7 @@ func _stride(n: Dictionary, still: bool, delta: float) -> Dictionary:
 	n["walk_phase"] = phase
 	if amount > 0.35 and speed > float(g["start_mps"]) and foot_lands(before, phase):
 		footstep.emit(Vector2(at.x, at.z) / _k, speed, int(n.get("who", -1)))
+		_step_marks(n, at, vel)
 	return {"phase": phase, "amount": amount, "speed": speed, "t": _t, "dt": delta, "seed": float(n["root"].get_instance_id() % 97)}
 
 
@@ -1516,6 +1508,7 @@ func _fade(n: Dictionary, key: String, secs_key: String, delta: float) -> float:
 func _pose_officer(ps: PlayerState, n: Dictionary, delta: float) -> void:
 	var model: Dictionary = n["model"]
 	var dead := ps.dead()
+	n["bleeding"] = not dead and ps.hp < ps.max_hp
 	var s := _stride(n, dead or ps.busy(), delta)  # (also for the plain figure: its footsteps)
 	if model.get("skeleton") == null:
 		return
@@ -1559,6 +1552,7 @@ func _pose_npc(a: NpcDirector.Agent, n: Dictionary, model: Dictionary, delta: fl
 	var S := NpcBrain.State
 	var b := a.brain
 	var st: int = b.state
+	n["bleeding"] = b.alive() and b.hp < b.max_hp
 	var s := _stride(n, st in [S.DOWN, S.DEAD, S.HIDE, S.RESTRAINED], delta)  # (also for the plain figure: its footsteps)
 	if model.get("skeleton") == null:
 		return
@@ -1706,6 +1700,8 @@ func _npc_tint(st: int, flash: bool) -> Color:
 
 func _update_fx(delta: float) -> void:
 	_update_casings(delta)
+	_update_chips(delta)
+	_update_blood(delta)
 	var radii: Dictionary = world.tuning["sound_radius"]
 	var keep: Array[Dictionary] = []
 	for f in _fx:
@@ -1792,11 +1788,20 @@ func _shot_marks(n: Dictionary, muzzle: Vector3, to: Vector2, hit_npc: bool) -> 
 					debris = Color(0.85, 0.8, 0.7)
 				"hard", "full":  # wood splinters
 					debris = Color(0.5, 0.34, 0.2)
-			_burst(at + nrm * 0.03, nrm, debris, 7, 1.6, 0.6, 0.09, "dust")
+			var im: Dictionary = fx["impact"]
+			_burst(at + nrm * 0.03, nrm, debris, int(im["dust_puffs"]), 1.8, 0.7, 0.09, "dust")
+			_burst(at + nrm * 0.12, (nrm + Vector3.DOWN * 0.3).normalized(), Color(debris, 0.45), int(im["cloud_puffs"]), 0.35,
+					float(im["cloud_life_s"]), float(im["cloud_m"]), "smoke")  # a haze that hangs and sinks
 			if str(hit["what"]) != "soft":
 				_burst(at + nrm * 0.02, nrm, Color(1.0, 0.8, 0.4), 5, 4.5, 0.12, 0.02, "spark")
-	if muzzle != Vector3.INF:
-		_burst(muzzle, Vector3.UP, Color(0.6, 0.6, 0.62, 0.5), 2, 0.25, 0.9, 0.12, "smoke")
+				_knock_chips(at + nrm * 0.03, nrm, debris.darkened(0.15), int(im["chips"]))
+	if muzzle != Vector3.INF:  # smoke that hangs in the air a while, pushed out the way the gun points
+		var sm: Dictionary = fx["smoke"]
+		var gun := ((n.get("model", {}) as Dictionary).get("gear", {}) as Dictionary).get("hand") as Node3D if not n.is_empty() else null
+		var mult := float(sm["rifle_mult"]) if gun != null and gun.name.begins_with("rifle") else 1.0
+		var out := Vector3(to.x * _k - muzzle.x, 0.0, to.y * _k - muzzle.z).normalized()
+		_burst(muzzle + out * 0.08, (out + Vector3.UP * 0.35).normalized(), Color(0.62, 0.62, 0.64, float(sm["alpha"])),
+				roundi(float(sm["puffs"]) * mult), float(sm["drift_mps"]) * mult, float(sm["life_s"]), float(sm["size_m"]), "smoke")
 	if not n.is_empty():
 		_eject(n)
 
@@ -1856,8 +1861,14 @@ func _hole(at: Vector3, normal: Vector3) -> void:
 		_holes.pop_front().queue_free()
 
 
-func _stain(p: Vector2, size: float) -> Decal:
+## A blood stain on the floor at p, size m across. spread: it soaks out to that size over a moment
+## (a pool sizes itself). Every stain darkens as it dries (_update_blood).
+func _stain(p: Vector2, size: float, spread := true) -> Decal:
 	var d := _decal("blood", _p3(p, 0.04), Vector3.UP, size, 0.2)
+	d.set_meta("born", _t)
+	if spread:
+		d.size = Vector3(size * 0.45, 0.2, size * 0.45)
+		_spreading.append({"decal": d, "age": 0.0, "to": size})
 	_stains.append(d)
 	while _stains.size() > int(_cfg["effects"]["stains_max"]):
 		_stains.pop_front().queue_free()
@@ -1957,14 +1968,125 @@ func _pool(n: Dictionary, a: NpcDirector.Agent, delta: float) -> void:
 		PeopleLooks.spread_wounds(n["model"], delta * float(fx["wound"]["spread_per_s"]), float(fx["wound"]["max_radius"]))
 	if not n.has("pool"):
 		var chest := a.pos + Vector2(-0.8 / _k, 0.0).rotated(a.brain.facing)  # lying on its back, head behind it
-		n["pool"] = {"decal": _stain(chest, 0.2), "age": 0.0}
+		n["pool"] = {"decal": _stain(chest, 0.2, false), "age": 0.0}
 	var pool: Dictionary = n["pool"]
 	pool["age"] = float(pool["age"]) + delta
 	var d: Decal = pool["decal"]
-	if is_instance_valid(d):
+	if is_instance_valid(d):  # fast at first, then creeping on for minutes
+		var bt: Dictionary = fx["blood_trail"]
 		var k := clampf(float(pool["age"]) / float(fx["pool_s"]), 0.0, 1.0)
 		var size := lerpf(0.2, float(fx["pool_m"]), 1.0 - pow(1.0 - k, 2.0))
+		var late := clampf((float(pool["age"]) - float(fx["pool_s"])) / float(bt["creep_s"]), 0.0, 1.0)
+		size = lerpf(size, float(bt["pool_late_m"]), sqrt(late))
 		d.size = Vector3(size, 0.2, size)
+
+
+## Bits knocked off a wall or a piece of furniture: they fly out of the face, fall, bounce and stay
+## on the floor (the oldest go first past chips_max).
+func _knock_chips(at: Vector3, nrm: Vector3, color: Color, count: int) -> void:
+	var im: Dictionary = _cfg["effects"]["impact"]
+	var m := StandardMaterial3D.new()
+	m.albedo_color = color
+	m.roughness = 0.95
+	for k in count:
+		var b := BoxMesh.new()
+		var s := float(im["chip_m"]) * randf_range(0.4, 1.0)
+		b.size = Vector3(s, s * randf_range(0.3, 0.7), s * randf_range(0.6, 1.2))
+		var mi := MeshInstance3D.new()
+		mi.mesh = b
+		mi.material_override = m
+		mi.layers = 2  # takes no decals
+		mi.gi_mode = GeometryInstance3D.GI_MODE_DISABLED
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+		mi.position = at
+		mi.rotation = Vector3(randf() * TAU, randf() * TAU, randf() * TAU)
+		var spread := Vector3(randf_range(-0.6, 0.6), randf_range(-0.2, 0.7), randf_range(-0.6, 0.6))
+		var v := (nrm + spread).normalized() * randf_range(1.0, 2.6)
+		_chips.append({"node": mi, "vel": v, "spin": Vector3(randf_range(-25, 25), randf_range(-25, 25), randf_range(-25, 25)), "rest": false})
+	while _chips.size() > int(im["chips_max"]):
+		(_chips.pop_front()["node"] as Node).queue_free()
+
+
+func _update_chips(delta: float) -> void:
+	for c in _chips:
+		if c["rest"]:
+			continue
+		var mi: MeshInstance3D = c["node"]
+		var v: Vector3 = c["vel"]
+		v.y -= 9.8 * delta
+		var p := mi.position + v * delta
+		mi.rotation += (c["spin"] as Vector3) * delta
+		var floor_y := (mi.mesh as BoxMesh).size.y * 0.5
+		if p.y <= floor_y:
+			p.y = floor_y
+			if absf(v.y) > 0.8:
+				v = Vector3(v.x * 0.4, -v.y * 0.25, v.z * 0.4)
+				c["spin"] = (c["spin"] as Vector3) * 0.4
+			else:
+				c["rest"] = true
+				mi.rotation = Vector3(0.0, mi.rotation.y, 0.0)  # flat on the floor
+		mi.position = p
+		c["vel"] = v
+
+
+## A step of figure n landing at `at` (3D) while moving at vel: stepping in blood dirties its soles
+## for the next steps, dirty soles leave fading prints, and a wounded figure drips.
+func _step_marks(n: Dictionary, at: Vector3, vel: Vector3) -> void:
+	var bt: Dictionary = _cfg["effects"]["blood_trail"]
+	var heading := Vector3(vel.x, 0.0, vel.z)
+	if heading.length_squared() < 1e-4:
+		return
+	heading = heading.normalized()
+	var side := 1.0 if bool(n.get("foot_left", false)) else -1.0
+	n["foot_left"] = side < 0.0
+	var foot := at + heading.cross(Vector3.UP) * 0.1 * side
+	for d in _stains:  # (pools are stains too)
+		if is_instance_valid(d) and Vector2(d.position.x - foot.x, d.position.z - foot.z).length() < d.size.x * 0.35:
+			n["blood_steps"] = int(bt["steps"])
+			break
+	var left := int(n.get("blood_steps", 0))
+	if left > 0:
+		n["blood_steps"] = left - 1
+		var pr := _decal("foot", foot + Vector3.UP * 0.04, Vector3.UP, float(bt["print_m"]), 0.2)
+		pr.basis = Basis(Vector3.UP, atan2(heading.x, heading.z))  # the sole along the way it walks (texture top = toe = +Z)
+		pr.modulate.a = 0.25 + 0.75 * float(left) / float(bt["steps"])
+		_mark_blood(pr)
+	if bool(n.get("bleeding", false)) and randf() < float(bt["drip_chance"]):
+		var drop := _decal("blood", at + Vector3(randf_range(-0.15, 0.15), 0.04, randf_range(-0.15, 0.15)), Vector3.UP, randf_range(0.07, 0.16), 0.2)
+		_mark_blood(drop)
+
+
+func _mark_blood(d: Decal) -> void:
+	d.set_meta("born", _t)
+	_prints.append(d)
+	while _prints.size() > int(_cfg["effects"]["blood_trail"]["prints_max"]):
+		_prints.pop_front().queue_free()
+
+
+## Fresh stains soak out to their size; all blood darkens toward dried brown over dry_s.
+func _update_blood(delta: float) -> void:
+	var bt: Dictionary = _cfg["effects"]["blood_trail"]
+	var keep: Array[Dictionary] = []
+	for sp in _spreading:
+		var d: Decal = sp["decal"]
+		if not is_instance_valid(d):
+			continue
+		sp["age"] = float(sp["age"]) + delta
+		var k := clampf(float(sp["age"]) / float(bt["spread_s"]), 0.0, 1.0)
+		var size := lerpf(float(sp["to"]) * 0.45, float(sp["to"]), 1.0 - pow(1.0 - k, 3.0))
+		d.size = Vector3(size, d.size.y, size)
+		if k < 1.0:
+			keep.append(sp)
+	_spreading = keep
+	var dry_s := float(bt["dry_s"])
+	for list: Array[Decal] in [_stains, _prints]:
+		for d in list:
+			if is_instance_valid(d) and d.has_meta("born"):
+				var k := clampf((_t - float(d.get_meta("born"))) / dry_s, 0.0, 1.0)
+				var a := d.modulate.a
+				d.modulate = Color(1.0, 1.0, 1.0).lerp(Color(0.5, 0.42, 0.4), k)
+				d.modulate.a = a
 
 
 ## Generated textures: a bullet hole (dark core, chipped rim, cracks), a blood splash (a pool with
@@ -2018,6 +2140,15 @@ func _effect_tex(kind: String) -> Texture2D:
 					if a > 0.0:
 						var shade := 0.75 + noise.get_noise_2d(x * 3.0, y * 3.0) * 0.25
 						c = Color(0.5 * shade, 0.025, 0.02, a)
+				"foot":  # a shoe sole in blood: toe at the top (+Z), heel below, a gap at the arch, tread lines
+					var sole := Vector2(u.x / 0.36, u.y / 0.9)
+					var toe := Vector2(u.x / 0.34, (u.y + 0.38) / 0.52).length() < 1.0
+					var heel := Vector2(u.x / 0.28, (u.y - 0.64) / 0.26).length() < 1.0
+					var a := 0.0
+					if (toe or heel) and absf(sole.x) < 1.0:
+						var tread := 1.0 if fposmod((u.y + 1.0) * 9.0, 1.0) > 0.35 else 0.55
+						a = 0.95 * tread * clampf(0.8 + noise.get_noise_2d(x * 2.0, y * 2.0) * 0.6, 0.0, 1.0)
+					c = Color(0.32, 0.02, 0.02, a)
 				"puff":
 					var a := clampf(1.0 - r, 0.0, 1.0)
 					c = Color(1, 1, 1, a * a)

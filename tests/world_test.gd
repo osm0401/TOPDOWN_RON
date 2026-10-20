@@ -1107,6 +1107,50 @@ func _scenery_tests(v3: WorldView3D, k: float) -> void:
 	for f in 120:
 		v3._update_npcs(0.05)
 	_check((n["pool"]["decal"] as Decal).size.x > first + 0.4, "the pool spreads (%.2f -> %.2f m)" % [first, (n["pool"]["decal"] as Decal).size.x])
+	var fx: Dictionary = v3._cfg["effects"]
+	var fast: float = (n["pool"]["decal"] as Decal).size.x
+	n["pool"]["age"] = float(fx["pool_s"]) + float(fx["blood_trail"]["creep_s"])
+	v3._update_npcs(0.016)
+	_check((n["pool"]["decal"] as Decal).size.x > fast + 0.2, "then it creeps on for minutes (%.2f -> %.2f m)" % [fast, (n["pool"]["decal"] as Decal).size.x])
+	# a hit stain soaks out, and blood dries darker
+	v3._on_shot(0, Vector2(300, 500), Vector2(400, 300), true)
+	var fresh: Decal = v3._stains.back()
+	var small := fresh.size.x
+	for f in 60:
+		v3._update_fx(0.05)
+	_check(fresh.size.x > small * 1.5, "a fresh stain soaks out (%.2f -> %.2f m)" % [small, fresh.size.x])
+	fresh.set_meta("born", v3._t - float(fx["blood_trail"]["dry_s"]))
+	v3._update_fx(0.016)
+	_check(fresh.modulate.r < 0.6 and is_equal_approx(fresh.modulate.a, 1.0), "old blood is darker (dried)")
+	# stepping in the pool leaves fading bloody prints; a wounded figure drips
+	var walker := {"root": Node3D.new()}
+	var pool_at: Vector3 = (n["pool"]["decal"] as Decal).position
+	var prints := v3._prints.size()
+	v3._step_marks(walker, pool_at, Vector3(1, 0, 0))
+	for st in 4:
+		v3._step_marks(walker, pool_at + Vector3(2.0 + st * 0.7, 0, 0), Vector3(1, 0, 0))
+	_check(v3._prints.size() == prints + 5 and int(walker["blood_steps"]) == int(fx["blood_trail"]["steps"]) - 5, "stepping in a pool leaves bloody footprints")
+	_check(v3._prints.back().modulate.a < v3._prints[prints].modulate.a, "the prints fade step by step")
+	walker["blood_steps"] = 0
+	walker["bleeding"] = true
+	prints = v3._prints.size()
+	for st in 20:
+		v3._step_marks(walker, Vector3(30.0 + st * 0.7, 0, 30.0), Vector3(1, 0, 0))
+	_check(v3._prints.size() > prints + 4, "a wounded figure drips blood as it walks (%d drops)" % (v3._prints.size() - prints))
+	(walker["root"] as Node3D).free()
+	# muzzle smoke hangs a while; a wall hit throws chips that stay on the floor
+	var smoke_life := 0.0
+	var chips := v3._chips.size()
+	v3._on_shot(0, Vector2(300, 500), Vector2(300, 450), false)
+	for f2: Dictionary in v3._fx:
+		if f2["type"] == "burst" and f2["kind"] == "smoke":
+			smoke_life = maxf(smoke_life, float(f2["life"]))
+	_check(smoke_life >= 2.0, "gun smoke and wall dust hang in the air (%.1f s)" % smoke_life)
+	_check(v3._chips.size() == chips + int(fx["impact"]["chips"]), "a wall hit knocks off chips")
+	for f in 150:
+		v3._update_fx(0.016)
+	var chip: Dictionary = v3._chips.back()
+	_check(chip["rest"] and (chip["node"] as Node3D).position.y < 0.03, "the chips fall and lie on the floor")
 	# signs of use: the same marks every run, inside the map
 	_check(v3._wear.size() > 30 and v3._wear.all(func(d: Decal) -> bool: return lv.bounds.has_point(Vector2(d.position.x, d.position.z) / k)),
 			"grime, scuffs, cracks and papers are laid about the map (%d)" % v3._wear.size())
@@ -1127,6 +1171,17 @@ func _scenery_tests(v3: WorldView3D, k: float) -> void:
 	img.save_png(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood.png"))
 	WorldView3D.tex_folder = tex_dir
 	_check(v3._surface_tex("floor_wood") != null and v3._surface_tex("floor_carpet") == null, "a surface picture in the set is used; without one the pattern stays")
+	img.fill(Color(0.5, 0.5, 1.0))
+	img.save_png(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood_normal.png"))
+	img.fill(Color(0.7, 0.7, 0.7))
+	img.save_png(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood_rough.png"))
+	var sm := ShaderMaterial.new()
+	var used := WorldView3D.SurfaceMaps.apply(sm, tex_dir, "gemini", "floor_wood")
+	_check(used == ["albedo", "normal", "rough"] and sm.get_shader_parameter("use_normal") and sm.get_shader_parameter("use_rough")
+			and not sm.get_shader_parameter("use_ao"), "a surface picture brings its normal and roughness maps (%s)" % [used])
+	_check(WorldView3D.SurfaceMaps.apply(ShaderMaterial.new(), tex_dir, "gemini", "floor_carpet").is_empty(), "no picture: no maps either")
+	for f in ["floor_wood_normal.png", "floor_wood_rough.png"]:
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir + "gemini/" + f))
 	WorldView3D.tex_folder = "res://assets/textures/"
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir + "gemini/floor_wood.png"))
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(tex_dir + "gemini"))
